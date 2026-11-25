@@ -194,6 +194,11 @@ import {
 } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
+import {
+  claudeDescendants,
+  parseClaudeProcessTable,
+  type ClaudeProcessRow,
+} from "../../claudeSessions/ClaudeProcessTable.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -484,57 +489,12 @@ export function spawnClaudeProcessGroup(
   return child as ClaudeSpawnedProcess & Pick<NodeChildProcess.ChildProcess, "pid">;
 }
 
-interface ClaudeProcessRow {
-  readonly pid: number;
-  readonly ppid: number;
-  readonly pgid: number;
-  readonly started: string;
-}
-
-/** Parses `ps -A -o pid=,ppid=,pgid=,lstart=`; pid plus start time tells a process from a reused pid. */
-function parseClaudeProcessTable(table: string): ReadonlyArray<ClaudeProcessRow> {
-  return table.split("\n").flatMap((line) => {
-    const [pid, ppid, pgid, ...started] = line.trim().split(/\s+/);
-    const row = {
-      pid: Number(pid),
-      ppid: Number(ppid),
-      pgid: Number(pgid),
-      started: started.join(" "),
-    };
-    return Number.isSafeInteger(row.pid) &&
-      Number.isSafeInteger(row.ppid) &&
-      Number.isSafeInteger(row.pgid) &&
-      row.started
-      ? [row]
-      : [];
-  });
-}
-
 // A job leading its own group takes the processes it started since with it.
 function killClaudeDescendant(row: ClaudeProcessRow) {
   try {
     if (row.pgid === row.pid) signalProcessGroup(row.pid, "SIGKILL");
     else process.kill(row.pid, "SIGKILL");
   } catch {}
-}
-
-function claudeDescendants(
-  rows: ReadonlyArray<ClaudeProcessRow>,
-  rootPids: ReadonlyArray<number>,
-): ReadonlyArray<ClaudeProcessRow> {
-  const children = Map.groupBy(rows, (row) => row.ppid);
-  const found: Array<ClaudeProcessRow> = [];
-  const seen = new Set<number>(rootPids);
-  const pending = [...rootPids];
-  for (let parent = pending.pop(); parent !== undefined; parent = pending.pop()) {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.pid)) continue;
-      seen.add(child.pid);
-      found.push(child);
-      pending.push(child.pid);
-    }
-  }
-  return found;
 }
 
 const processIdentity = (row: ClaudeProcessRow) => `${row.pid} ${row.started}`;
