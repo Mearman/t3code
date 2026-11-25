@@ -196,6 +196,13 @@ import {
 import * as ServerConfig from "../../config.ts";
 import { NativeTelemetryClient } from "../../resourceTelemetry/NativeTelemetryClient.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
+import {
+  claudeDescendants,
+  indexClaudeProcessTable,
+  parseClaudeProcessTable,
+  type ClaudeProcessRow,
+  type ClaudeProcessTable,
+} from "../../claudeSessions/ClaudeProcessTable.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -486,72 +493,12 @@ export function spawnClaudeProcessGroup(
   return child as ClaudeSpawnedProcess & Pick<NodeChildProcess.ChildProcess, "pid">;
 }
 
-interface ClaudeProcessRow {
-  readonly pid: number;
-  readonly ppid: number;
-  readonly pgid: number;
-  readonly startTimeSeconds: number;
-  readonly startTimeMicros?: number;
-}
-
-const isClaudeProcessRow = Schema.is(
-  Schema.Struct({
-    pid: Schema.Int,
-    ppid: Schema.Int,
-    pgid: Schema.Int,
-    startTimeSeconds: Schema.Int,
-  }),
-);
-
-/** Parses the C-locale, UTC output of `ps -A -o pid=,ppid=,pgid=,lstart=`. */
-function parseClaudeProcessTable(table: string): ReadonlyArray<ClaudeProcessRow> {
-  return table.split("\n").flatMap((line) => {
-    const [pid, ppid, pgid, ...started] = line.trim().split(/\s+/);
-    const start = DateTime.make(started.join(" ") + " GMT");
-    if (Option.isNone(start)) return [];
-    const row = {
-      pid: Number(pid),
-      ppid: Number(ppid),
-      pgid: Number(pgid),
-      startTimeSeconds: DateTime.toEpochSeconds(start.value),
-    };
-    return isClaudeProcessRow(row) ? [row] : [];
-  });
-}
-
 // A job leading its own group takes the processes it started since with it.
 function killClaudeDescendant(row: ClaudeProcessRow) {
   try {
     if (row.pgid === row.pid) signalProcessGroup(row.pid, "SIGKILL");
     else process.kill(row.pid, "SIGKILL");
   } catch {}
-}
-
-function indexClaudeProcessTable(rows: ReadonlyArray<ClaudeProcessRow>) {
-  return {
-    byPid: new Map(rows.map((row) => [row.pid, row] as const)),
-    children: Map.groupBy(rows, (row) => row.ppid),
-  };
-}
-
-type ClaudeProcessTable = ReturnType<typeof indexClaudeProcessTable>;
-
-function claudeDescendants(
-  { children }: ClaudeProcessTable,
-  rootPids: ReadonlyArray<number>,
-): ReadonlyArray<ClaudeProcessRow> {
-  const found: Array<ClaudeProcessRow> = [];
-  const seen = new Set<number>(rootPids);
-  const pending = [...rootPids];
-  for (let parent = pending.pop(); parent !== undefined; parent = pending.pop()) {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.pid)) continue;
-      seen.add(child.pid);
-      found.push(child);
-      pending.push(child.pid);
-    }
-  }
-  return found;
 }
 
 /** What one CLI started, validated by pid and start time on every successful read. */
