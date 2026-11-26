@@ -384,24 +384,62 @@ export function checkClaudeTranscriptTurns(input: {
   }
   const turnOfLine = (uuid: string) => (turnIds.has(uuid) ? uuid : lineTurn.get(uuid));
 
-  // Turns reached from a true root, by start: a root filed by time joins the latest at or before it.
-  const rootedTurns = input.structure.turns
+  // Roots filed by time are taken in order of time then uuid. Each joins the latest turn started
+  // at or before it among the turns of true roots' trees and earlier roots' trees, preferring one
+  // whose prompt id its compaction summary names.
+  const byTimeThenId = (left: RawLine, right: RawLine) =>
+    timeOf(left) - timeOf(right) || (left.uuid < right.uuid ? -1 : left.uuid > right.uuid ? 1 : 0);
+  const turnsByStart = input.structure.turns
     .flatMap((turn) => {
       const opener = first.get(turn.id);
-      return opener !== undefined && !filedByTime(rootOf(opener))
-        ? [{ id: turn.id, start: timeOf(opener) }]
-        : [];
+      return opener === undefined ? [] : [{ id: turn.id, opener }];
     })
-    .toSorted(
-      (left, right) =>
-        left.start - right.start || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
-    );
-  const hostOf = (root: RawLine) => {
-    const time = timeOf(root);
-    return rootedTurns.findLast((turn) => turn.start <= time)?.id;
+    .toSorted((left, right) => byTimeThenId(left.opener, right.opener));
+  const promptIds = new Map<string, string | undefined>();
+  const turnPromptId = (turnId: string): string | undefined => {
+    if (promptIds.has(turnId)) return promptIds.get(turnId);
+    const opener = first.get(turnId);
+    let promptId: string | undefined;
+    if (opener !== undefined && isQueued(opener.record)) {
+      const above = upOf(opener) === undefined ? hostOf(rootOf(opener)) : chainTurn(opener);
+      promptId = above === undefined ? undefined : turnPromptId(above);
+    } else if (opener !== undefined && !isCommandInput(opener.record)) {
+      promptId = text(field(opener.record, "promptId"));
+    }
+    promptIds.set(turnId, promptId);
+    return promptId;
   };
+  const summaryPromptId = (root: RawLine) => {
+    if (subtypeOf(root.record) !== "compact_boundary") return undefined;
+    const summaries = (children.get(root.uuid) ?? [])
+      .filter(
+        (child) =>
+          field(child.record, "isCompactSummary") === true &&
+          isString(field(child.record, "promptId")),
+      )
+      .toSorted(byTimeThenId);
+    const summary = summaries[0];
+    return summary === undefined ? undefined : text(field(summary.record, "promptId"));
+  };
+  const hosts = new Map<string, string | undefined>();
+  function hostOf(root: RawLine): string | undefined {
+    if (hosts.has(root.uuid)) return hosts.get(root.uuid);
+    const time = timeOf(root);
+    const eligible = turnsByStart.filter(({ opener }) => {
+      if (timeOf(opener) > time) return false;
+      const top = rootOf(opener);
+      return !filedByTime(top) || byTimeThenId(top, root) < 0;
+    });
+    const named = summaryPromptId(root);
+    const host =
+      (named === undefined
+        ? undefined
+        : eligible.findLast((turn) => turnPromptId(turn.id) === named)) ?? eligible.at(-1);
+    hosts.set(root.uuid, host?.id);
+    return host?.id;
+  }
   // The turn a line's chain puts it in: that of the nearest line above with one, else by time.
-  const chainTurn = (raw: RawLine): string | undefined => {
+  function chainTurn(raw: RawLine): string | undefined {
     let top = raw;
     for (let up = upOf(raw); up !== undefined; up = upOf(up)) {
       const turn = turnOfLine(up.uuid);
@@ -409,7 +447,7 @@ export function checkClaudeTranscriptTurns(input: {
       top = up;
     }
     return filedByTime(top) ? hostOf(top) : undefined;
-  };
+  }
   // The nearest line up the chain that holds content or opens a turn, through lines that hold neither.
   const anchorOf = (raw: RawLine): RawLine | undefined => {
     for (let up = upOf(raw); up !== undefined; up = upOf(up)) {
@@ -490,6 +528,16 @@ export function checkClaudeTranscriptTurns(input: {
     }
     if (turnIds.has(raw.uuid)) continue;
     if (chainTurn(raw) !== turn) report("item-outside-its-chain", raw);
+  }
+
+  // A compaction is an item of the turn its chain, or time, puts it in.
+  for (const raw of first.values()) {
+    if (typeOf(raw.record) !== "system" || subtypeOf(raw.record) !== "compact_boundary") continue;
+    const expected = chainTurn(raw);
+    const actual = lineTurn.get(raw.uuid);
+    if (expected === undefined && actual === undefined) continue;
+    if (actual === undefined) report("content-line-missing", raw);
+    else if (actual !== expected) report("item-outside-its-chain", raw);
   }
 
   // Turns open where the lines say a turn starts, and only there.
