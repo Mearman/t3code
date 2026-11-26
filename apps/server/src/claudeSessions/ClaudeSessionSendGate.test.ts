@@ -28,6 +28,7 @@ import {
   type ClaudeSessionHold,
 } from "./ClaudeSessionSendGate.ts";
 
+const isClaudeProcessTableError = Schema.is(ClaudeProcessTableError);
 const encodeEntry = Schema.encodeSync(Schema.fromJsonString(ClaudeSessionRegistryEntry));
 
 const START = "Thu Jan  1 00:00:00 2026";
@@ -62,10 +63,9 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         sessionsDir,
         sessionId,
         ownRootPids: [100],
-        readProcesses:
-          duringPs instanceof ClaudeProcessTableError
-            ? Effect.fail(duringPs)
-            : write(duringPs).pipe(Effect.as(processes)),
+        readProcesses: isClaudeProcessTableError(duringPs)
+          ? Effect.fail(duringPs)
+          : write(duringPs).pipe(Effect.as(processes)),
       });
     });
   const entry = (
