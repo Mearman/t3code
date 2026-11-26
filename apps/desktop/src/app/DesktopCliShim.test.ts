@@ -399,21 +399,24 @@ describe("renderCliShim", () => {
     }
   });
 
-  // A trapped signal ends `wait` early, and the server can exit before the launcher looks again.
+  // A trapped signal ends `wait` early, and a server that exits right then loses its status.
   it.skipIf(!hasSetsid).each(SHELLS)(
-    "exits with the server's status when an interrupted wait finds it gone, under %s",
+    "ignores Ctrl-C while it waits for the server, under %s",
     async (shell) => {
-      const fake = fakeAppImage("ready", "#!/bin/sh\nexit 7\n");
+      const fake = fakeAppImage("ready", SLOW_SERVER);
       editLauncher(fake.shim, (script) =>
         script
           .replace("#!/bin/sh", `#!/usr/bin/env ${shell}`)
-          // Stands in for the interrupted wait: the server is reaped, its status not yet read.
-          .replace(
-            /^wait "\$cli" \|\| status=\$\?$/m,
-            () => 'while kill -0 "$cli" 2>/dev/null; do sleep 0.01; done; status=130',
-          ),
+          .replace(/^wait "\$cli" \|\| status=\$\?$/m, (wait) => `echo waiting >&3\n${wait}`),
       );
-      await withLauncher(fake, async ({ closed }) => {
+      await withLauncher(fake, async ({ child, events, closed }) => {
+        await events.until((line) => line === "waiting");
+        const status = NodeFS.readFileSync(`/proc/${child.pid}/status`, "utf8");
+        // INT is signal 2, the second bit of the mask.
+        expect(BigInt(`0x${/^SigIgn:\s*(\w+)$/m.exec(status)![1]}`) & 2n).toBe(2n);
+        process.kill(child.pid!, "SIGTERM");
+        await events.until((line) => line === "stopping");
+        child.stdin!.end("go\n");
         expect(await closed).toBe(7);
       });
     },
