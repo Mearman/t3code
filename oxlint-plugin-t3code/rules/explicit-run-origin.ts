@@ -345,7 +345,7 @@ export default defineRule({
         const returns = returnsOf(node.body as Node);
         if (
           returns.length > 0 &&
-          returns.every((value) => runCollection(value, decided) === "decided")
+          returns.some((value) => runCollection(value, decided) === "decided")
         ) {
           learn(functions, scope, node.id.name);
         }
