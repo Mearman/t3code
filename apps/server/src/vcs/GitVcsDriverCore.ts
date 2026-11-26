@@ -51,6 +51,7 @@ import { removeEmptyDirectory, type RemoveEmptyDirectoryError } from "./removeEm
 import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
 import { gitConfigEnv, serverGitConfigEnv, unsetInheritedRepositoryEnv } from "./VcsProcess.ts";
 import { makeWorktreeCheckoutCache } from "./worktreeCheckoutCache.ts";
+import { outsideIndexSwap, reserveIndexSwap } from "./worktreeIndexSwap.ts";
 import { removeLinkedWorktree } from "./worktreeRemoval.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
@@ -1589,6 +1590,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       // Outside the process permit: resolving the repository may itself need one.
       (execution) =>
         input.writesSharedConfig ? withSharedConfigLock(input.cwd, execution) : execution,
+      (execution) => outsideIndexSwap(input.cwd, execution),
     );
 
   const checkoutCache = yield* makeWorktreeCheckoutCache({
@@ -6532,6 +6534,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const lockPath = `${indexPath}.lock`;
     const stamp = (info: FileSystem.File.Info) =>
       `${info.size}:${Option.getOrUndefined(info.ino)}:${Option.getOrUndefined(info.mtime)?.getTime()}`;
+    // Reserved before the worktree is returned, so T3's own Git commands there never meet the lock.
+    const swap = yield* reserveIndexSwap([worktreePath, yield* fileSystem.realPath(worktreePath)]);
     yield* Effect.gen(function* () {
       yield* Effect.sleep(Duration.millis(delay));
       const copied = stamp(yield* fileSystem.stat(indexPath));
@@ -6553,9 +6557,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             ),
           ),
         ),
-      );
+      ).pipe(swap.exclusive);
     }).pipe(
       Effect.ensuring(fileSystem.remove(copyPath).pipe(Effect.ignore)),
+      Effect.ensuring(swap.release),
       Effect.ignore({ log: "Debug" }),
       Effect.forkIn(serviceScope),
     );
