@@ -1,6 +1,7 @@
 import {
   CheckpointScopeId,
   CommandId,
+  isNativeOriginRun,
   type OrchestrationV2Checkpoint,
   type OrchestrationV2CheckpointScope,
   type OrchestrationV2ExecutionNode,
@@ -87,6 +88,10 @@ export const layer: Layer.Layer<
       }
       // Rollback uses the same lane and can precede a capture retry; preserve the restored workspace and discarded run.
       if (run?.status === "rolled_back") {
+        return;
+      }
+      // The workspace now says nothing about a run T3 read back from a provider transcript.
+      if (run !== undefined && isNativeOriginRun(run)) {
         return;
       }
 

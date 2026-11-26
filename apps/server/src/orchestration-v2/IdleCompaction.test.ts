@@ -222,6 +222,20 @@ describe("idleCompactionWindow", () => {
     ];
     expect(idleCompactionWindow(delegating, NOW_MS)?.runId).toBe(runId);
   });
+
+  it("never compacts after a run read back from the Claude transcript", () => {
+    const native = records({ cacheExpiresInMs: 60 * MINUTE_MS });
+    expect(idleCompactionWindow(native, NOW_MS)?.runId).toBe(runId);
+    native.runs = native.runs.map((run) => ({
+      ...run,
+      nativeOrigin: {
+        kind: "claude_transcript" as const,
+        nativeSessionId: "session-1",
+        promptUuid: "prompt-1",
+      },
+    }));
+    expect(idleCompactionWindow(native, NOW_MS)).toBeNull();
+  });
 });
 
 describe("IdleCompactionService", () => {

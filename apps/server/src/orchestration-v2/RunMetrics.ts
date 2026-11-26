@@ -1,8 +1,9 @@
-import type {
-  OrchestrationV2Run,
-  OrchestrationV2StoredEvent,
-  RunId,
-  ThreadId,
+import {
+  isNativeOriginRun,
+  type OrchestrationV2Run,
+  type OrchestrationV2StoredEvent,
+  type RunId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import type * as Duration from "effect/Duration";
@@ -56,7 +57,8 @@ export const makeRunOutcomeRecorder = <E>(
     for (const { event } of events) {
       if (event.type !== "run.updated") continue;
       const run = event.payload;
-      if (!OUTCOMES.has(run.status)) continue;
+      // A transcript-read run's timings are the transcript's, not work T3 queued or ran.
+      if (!OUTCOMES.has(run.status) || isNativeOriginRun(run)) continue;
       let delegated = run.delegatedTaskId !== undefined || delegatedThreads.get(run.threadId);
       if (delegated === undefined) {
         delegated = yield* isSubagentThread(run.threadId).pipe(Effect.orElseSucceed(() => false));
