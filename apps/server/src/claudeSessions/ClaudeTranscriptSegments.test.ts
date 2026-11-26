@@ -457,7 +457,7 @@ describe("parseClaudeTranscriptLines", () => {
 
   it("never attaches lines replayed from earlier segments, however far back", () => {
     const at = (second: number) => ({
-      timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString(),
+      timestamp: `2026-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
     });
     const earlier = [
       user("p1", null, "First", { promptId: "prompt-1", ...at(1) }),
