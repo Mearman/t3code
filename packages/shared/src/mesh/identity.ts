@@ -5,15 +5,17 @@ import * as Base64Url from "effect/encoding/Base64Url";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
+import { MeshProtocolError } from "./errors.ts";
+
 const PUBLIC_KEY_BYTES = 32;
 const SIGNATURE_BYTES = 64;
 const HANDSHAKE_HASH_BYTES = 32;
 const FINGERPRINT_BYTES = 20;
 const FINGERPRINT_GROUP = 4;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-// Distinct prefixes keep a signature made for one purpose from verifying as another.
-const CERTIFICATE_CONTEXT = "t3code-mesh/v1/static-key-certificate\u0000";
-const PEER_HELLO_CONTEXT = "t3code-mesh/v1/peer-hello/initiator\u0000";
+// Each signed statement has its own context, so a signature for one never verifies as another.
+const CERTIFICATE_CONTEXT = "t3code-mesh/v1 static-key-certificate\u0000";
+const INITIATOR_HELLO_CONTEXT = "t3code-mesh/v1 initiator-hello\u0000";
 
 export interface MeshIdentityKeyPair {
   readonly publicKey: Uint8Array;
@@ -42,13 +44,13 @@ const MeshStaticKeyCertificate = Schema.Struct({
 export type MeshStaticKeyCertificate = typeof MeshStaticKeyCertificate.Type;
 const decodeCertificate = Schema.decodeUnknownResult(MeshStaticKeyCertificate);
 
-/** The initiator's proof, sent inside the channel, that it holds an environment's identity key. */
-const MeshPeerHello = Schema.Struct({
+/** A server initiator's proof, sent inside the channel, that it holds an identity key. */
+const MeshInitiatorHello = Schema.Struct({
   environmentId: EnvironmentId,
   signature: base64UrlOf(SIGNATURE_BYTES),
 });
-export type MeshPeerHello = typeof MeshPeerHello.Type;
-const decodePeerHello = Schema.decodeUnknownResult(MeshPeerHello);
+export type MeshInitiatorHello = typeof MeshInitiatorHello.Type;
+const decodeInitiatorHello = Schema.decodeUnknownResult(MeshInitiatorHello);
 
 const utf8 = new TextEncoder();
 
@@ -82,7 +84,12 @@ function certificateMessage(environmentId: EnvironmentId, staticKey: Uint8Array,
 }
 
 function checkLength(bytes: Uint8Array, length: number, what: string) {
-  if (bytes.length !== length) throw new Error(`${what} must be ${length} bytes.`);
+  if (bytes.length !== length) {
+    throw new MeshProtocolError({
+      reason: "invalid_input",
+      detail: `${what} must be ${length} bytes.`,
+    });
+  }
 }
 
 // Only the canonical encoding is accepted, so one key or signature has one spelling.
@@ -101,7 +108,10 @@ export function signMeshStaticKeyCertificate(input: {
 }): MeshStaticKeyCertificate {
   checkLength(input.staticPublicKey, PUBLIC_KEY_BYTES, "An X25519 public key");
   if (!Number.isSafeInteger(input.notAfter) || input.notAfter <= 0) {
-    throw new Error("notAfter must be a positive whole number of Unix seconds.");
+    throw new MeshProtocolError({
+      reason: "invalid_input",
+      detail: "notAfter must be a positive whole number of Unix seconds.",
+    });
   }
   const signature = ed25519.sign(
     certificateMessage(input.environmentId, input.staticPublicKey, input.notAfter),
@@ -119,11 +129,18 @@ export type MeshCertificateVerification =
   | { readonly ok: true; readonly staticPublicKey: Uint8Array; readonly notAfter: number }
   | {
       readonly ok: false;
-      readonly reason: "malformed" | "environment_mismatch" | "expired" | "invalid_signature";
+      readonly reason:
+        | "invalid_input"
+        | "malformed"
+        | "environment_mismatch"
+        | "expired"
+        | "invalid_signature";
     };
 
 /**
- * Checks a certificate received from the wire against the identity key pinned for the environment the caller meant to reach. Only an `ok` result's static key may be used for NK.
+ * Checks a certificate from the wire against the identity key pinned for the environment the
+ * caller meant to reach. Only an `ok` result's static key may be used for NK. It never throws:
+ * a bad pinned key or a clock reading that is not a safe integer is `invalid_input`.
  */
 export function verifyMeshStaticKeyCertificate(
   certificate: unknown,
@@ -133,6 +150,12 @@ export function verifyMeshStaticKeyCertificate(
     readonly nowSeconds: number;
   },
 ): MeshCertificateVerification {
+  if (
+    !Number.isSafeInteger(expected.nowSeconds) ||
+    expected.identityPublicKey.length !== PUBLIC_KEY_BYTES
+  ) {
+    return { ok: false, reason: "invalid_input" };
+  }
   const decoded = decodeCertificate(certificate);
   if (Result.isFailure(decoded)) return { ok: false, reason: "malformed" };
   const { environmentId, notAfter } = decoded.success;
@@ -157,49 +180,53 @@ export function verifyMeshStaticKeyCertificate(
     : { ok: false, reason: "invalid_signature" };
 }
 
-/** Binds the initiator's identity to one channel by signing that channel's handshake hash. */
-export function signMeshPeerHello(input: {
+/** Binds a server initiator's identity to one channel by signing its handshake hash. */
+export function signMeshInitiatorHello(input: {
   readonly identityPrivateKey: Uint8Array;
   readonly environmentId: EnvironmentId;
   readonly handshakeHash: Uint8Array;
-}): MeshPeerHello {
+}): MeshInitiatorHello {
   checkLength(input.handshakeHash, HANDSHAKE_HASH_BYTES, "A handshake hash");
   const signature = ed25519.sign(
-    message(PEER_HELLO_CONTEXT, input.environmentId, input.handshakeHash),
+    message(INITIATOR_HELLO_CONTEXT, input.environmentId, input.handshakeHash),
     input.identityPrivateKey,
   );
   return { environmentId: input.environmentId, signature: Base64Url.encode(signature) };
 }
 
-export type MeshPeerHelloVerification =
+export type MeshInitiatorHelloVerification =
   | { readonly ok: true; readonly environmentId: EnvironmentId }
   | {
       readonly ok: false;
-      readonly reason: "malformed" | "unknown_environment" | "invalid_signature";
+      readonly reason: "invalid_input" | "malformed" | "unknown_environment" | "invalid_signature";
     };
 
 /**
- * Checks a peer-hello received inside the channel whose handshake hash is given. The hello names its environment; only a key the responder has pinned for that environment is tried.
+ * Checks an initiator hello received inside the channel whose handshake hash is given. The
+ * hello names its environment, and only the key the responder pinned for it is tried. It never
+ * throws: a bad handshake hash or pinned key is `invalid_input`.
  */
-export function verifyMeshPeerHello(
+export function verifyMeshInitiatorHello(
   hello: unknown,
   channel: {
     readonly handshakeHash: Uint8Array;
     readonly pinnedIdentityKey: (environmentId: EnvironmentId) => Uint8Array | undefined;
   },
-): MeshPeerHelloVerification {
-  const decoded = decodePeerHello(hello);
+): MeshInitiatorHelloVerification {
+  if (channel.handshakeHash.length !== HANDSHAKE_HASH_BYTES) {
+    return { ok: false, reason: "invalid_input" };
+  }
+  const decoded = decodeInitiatorHello(hello);
   if (Result.isFailure(decoded)) return { ok: false, reason: "malformed" };
   const { environmentId } = decoded.success;
   const signature = canonicalBytes(decoded.success.signature, SIGNATURE_BYTES);
-  if (signature === undefined || channel.handshakeHash.length !== HANDSHAKE_HASH_BYTES) {
-    return { ok: false, reason: "malformed" };
-  }
+  if (signature === undefined) return { ok: false, reason: "malformed" };
   const identityPublicKey = channel.pinnedIdentityKey(environmentId);
   if (identityPublicKey === undefined) return { ok: false, reason: "unknown_environment" };
+  if (identityPublicKey.length !== PUBLIC_KEY_BYTES) return { ok: false, reason: "invalid_input" };
   const valid = ed25519.verify(
     signature,
-    message(PEER_HELLO_CONTEXT, environmentId, channel.handshakeHash),
+    message(INITIATOR_HELLO_CONTEXT, environmentId, channel.handshakeHash),
     identityPublicKey,
     { zip215: false },
   );
