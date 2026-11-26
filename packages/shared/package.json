@@ -698,6 +698,10 @@
     "./mesh/identity": {
       "types": "./src/mesh/identity.ts",
       "import": "./src/mesh/identity.ts"
+    },
+    "./mesh/mux": {
+      "types": "./src/mesh/mux.ts",
+      "import": "./src/mesh/mux.ts"
     }
   },
   "scripts": {
