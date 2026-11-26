@@ -4137,7 +4137,7 @@ const CLAUDE_KNOWN_TOOL_CLASSIFICATIONS: Record<
   write: { itemType: "file_change", requestKind: "file-change" },
 };
 
-function classifyClaudeNativeTool(toolName: string): ClaudeToolClassification {
+export function classifyClaudeNativeTool(toolName: string): ClaudeToolClassification {
   const normalizedName = normalizedClaudeToolName(toolName);
   const known = CLAUDE_KNOWN_TOOL_CLASSIFICATIONS[normalizedName];
   return known === undefined
@@ -4185,7 +4185,7 @@ const EMPTY_CLAUDE_NATIVE_TOOL_INPUT = {
   value: {},
 } satisfies ClaudeNativeToolInput;
 
-function claudeNativeToolInputFromUnknown(input: unknown): ClaudeNativeToolInput {
+export function claudeNativeToolInputFromUnknown(input: unknown): ClaudeNativeToolInput {
   return isClaudeNativeToolInputRecord(input)
     ? { type: "record", value: input }
     : { type: "non_record", value: input };
@@ -4223,7 +4223,7 @@ function jsonStringifyForTool(value: unknown): string {
   return JSON.stringify(value) ?? String(value);
 }
 
-function commandInputFromClaudeTool(toolName: string, input: ClaudeNativeToolInput): string {
+export function commandInputFromClaudeTool(toolName: string, input: ClaudeNativeToolInput): string {
   return (
     firstStringInputField(input, ["command", "cmd", "script"]) ??
     `${toolName}: ${jsonStringifyForTool(claudeNativeToolInputValue(input))}`
@@ -4374,7 +4374,7 @@ function parseClaudeBackgroundTaskEntry(
   });
 }
 
-function fileNameFromClaudeTool(toolName: string, input: ClaudeNativeToolInput): string {
+export function fileNameFromClaudeTool(toolName: string, input: ClaudeNativeToolInput): string {
   return (
     firstStringInputField(input, ["file_path", "notebook_path", "path", "filename", "fileName"]) ??
     `${toolName} result`
@@ -5762,6 +5762,18 @@ interface ClaudeSubagentProjectionTarget {
   readonly stopRequestedAt?: number | undefined;
 }
 
+// Persisted so a transcript reader can tell T3 Code's own prompts from a terminal's.
+function claudeNativePromptUuids(context: {
+  readonly promptUuid: string | null;
+  readonly steerUuids: ReadonlySet<string>;
+}): { readonly nativePromptUuids?: ReadonlyArray<string> } {
+  const uuids = [
+    ...(context.promptUuid === null ? [] : [context.promptUuid]),
+    ...context.steerUuids,
+  ];
+  return uuids.length === 0 ? {} : { nativePromptUuids: uuids };
+}
+
 /** Claude writes blocks separately with stop_reason null until the last.
  * Missing stop_reason keeps the turn open; pre-tool text is not the reply. */
 export function isClaudeTranscriptTurnEnd(entry: unknown): boolean {
@@ -7051,6 +7063,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 nativeId: context.nativeTurnId,
                 strength: "strong",
               },
+              ...claudeNativePromptUuids(context),
               ordinal: context.providerTurnOrdinal,
               status: "running",
               startedAt: context.startedAt,
@@ -7764,6 +7777,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             nativeId: input.context.nativeMessageCursor ?? input.context.nativeTurnId,
             strength: "weak",
           },
+          ...claudeNativePromptUuids(input.context),
           ordinal: input.context.providerTurnOrdinal,
           status: input.status,
           startedAt: input.context.startedAt,

@@ -1398,6 +1398,10 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   /** True when the provider dropped this turn's request before persisting it to native history. */
   promptDropped: Schema.optional(Schema.Literal(true)),
+  /**
+   * The uuids T3 Code gave the prompts it sent in this turn: the first from the turn's start, before it is sent, and steers by the turn's end. A transcript reader matches them against a prompt line's uuid and prompt id to recognise T3 Code's own turns.
+   */
+  nativePromptUuids: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type OrchestrationV2ProviderTurn = typeof OrchestrationV2ProviderTurn.Type;
 
