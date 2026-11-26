@@ -35,6 +35,7 @@ import { makeRunOutcomeRecorder, type RunOutcome } from "./RunMetrics.ts";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import { claudeNativeIdIndex } from "../persistence/ForkIndexes.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -264,6 +265,25 @@ export interface EventSinkV2Shape {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
 }
+
+/**
+ * The provider thread, other than the importing one, that already holds a native session in its instance. For Claude it repeats the fork's native id index condition, so SQLite seeks that index instead of scanning the instance's threads.
+ */
+export const nativeThreadOwnerQuery = (
+  sql: SqlClient.SqlClient,
+  imported: Pick<OrchestrationV2ProviderThread, "driver" | "providerInstanceId" | "appThreadId"> & {
+    readonly nativeId: string | null;
+  },
+) => sql`
+  SELECT provider_thread_id
+  FROM orchestration_v2_projection_provider_threads
+  WHERE driver = ${imported.driver}
+    AND provider_instance_id = ${imported.providerInstanceId}
+    AND thread_id IS NOT ${imported.appThreadId}
+    AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${imported.nativeId}
+    ${imported.driver === claudeNativeIdIndex.driver ? sql`AND ${claudeNativeIdIndex.predicate(sql)}` : sql``}
+  LIMIT 1
+`;
 
 export class EventSinkV2 extends Context.Service<EventSinkV2, EventSinkV2Shape>()(
   "t3/orchestration-v2/EventSink/EventSinkV2",
@@ -502,15 +522,10 @@ const layerBase: Layer.Layer<
           // Check ownership in the same transaction that claims the native session.
           const imported = input.unlessNativeThreadOwned;
           if (imported?.nativeThreadRef != null) {
-            const owners = yield* sql`
-              SELECT provider_thread_id
-              FROM orchestration_v2_projection_provider_threads
-              WHERE driver = ${imported.driver}
-                AND provider_instance_id = ${imported.providerInstanceId}
-                AND thread_id IS NOT ${imported.appThreadId}
-                AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${imported.nativeThreadRef.nativeId}
-              LIMIT 1
-            `;
+            const owners = yield* nativeThreadOwnerQuery(sql, {
+              ...imported,
+              nativeId: imported.nativeThreadRef.nativeId,
+            });
             if (owners.length > 0) return { committed: [], outcomes: [] };
           }
           // Checkpoint capture can finish after a cohort writer reads its parent run.
