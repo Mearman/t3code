@@ -2,18 +2,27 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { field } from "../orchestration-v2/unknownField.ts";
-import type { ClaudeTranscriptEvent } from "./ClaudeTranscriptSegments.ts";
+import type { ClaudeTranscriptTurnContent } from "./ClaudeTranscriptContent.ts";
+import type { ClaudeTranscriptStructure, ClaudeTranscriptTurn } from "./ClaudeTranscriptTurns.ts";
 
-/** A rule a transcript's events break, named for the checker's report. */
+/** A rule the parser's turns break, judged from the transcript's raw lines alone. */
 export type ClaudeTranscriptViolationKind =
-  | "content-line-without-event"
+  | "content-line-missing"
+  | "line-in-two-turns"
   | "repeat-emitted"
-  | "split-read-differs"
   | "item-outside-its-chain"
+  | "prompt-not-opened"
+  | "opened-without-cause"
+  | "queued-filed-wrongly"
   | "interrupt-not-kept"
+  | "duration-not-kept"
+  | "running-before-last"
   | "superseded-end-kept"
+  | "start-not-opener-time"
   | "end-before-start"
-  | "raw-command-markup";
+  | "raw-command-markup"
+  | "unreadable-but-readable"
+  | "differs-from-whole-read";
 
 /** A broken rule, described by line number and record shape only, never by content. */
 export interface ClaudeTranscriptViolation {
@@ -31,22 +40,25 @@ export interface ClaudeTranscriptCheck {
 interface RawLine {
   readonly number: number;
   readonly record: unknown;
-  readonly uuid: string | undefined;
-  readonly parentUuid: string | undefined;
+  readonly uuid: string;
 }
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
-const COMMAND_MARKUP =
-  /^\s*<(?:command-(?:name|message|args)|local-command-(?:stdout|stderr|caveat))>/;
+const MARKUP =
+  /^\s*<(?:command-(?:name|message|args)|local-command-(?:stdout|stderr|caveat)|bash-(?:stdout|stderr|input))>/;
+const OUTPUT_TAG = /^\s*<(?:local-command-(?:stdout|stderr)|bash-(?:stdout|stderr))>/;
 const INTERRUPT_MARKERS = new Set([
   "[Request interrupted by user]",
   "[Request interrupted by user for tool use]",
 ]);
 const SYNTHETIC_MODEL = "<synthetic>";
-// A cycle or a chain this long is not a conversation; the walk gives up on it.
+// A cycle or a chain this long is not a conversation; a walk gives up on it.
 const MAX_CHAIN_STEPS = 100_000;
 
 const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+const isString = (value: unknown) => typeof value === "string";
+const absentOr = (value: unknown, check: (value: unknown) => boolean) =>
+  value === undefined || check(value);
 
 /** A record's type, subtype, sorted keys and Claude Code version: never any of its values. */
 function shapeOf(record: unknown): string {
@@ -58,44 +70,155 @@ function shapeOf(record: unknown): string {
   return `${kind === undefined ? type : `${type}/${kind}`} keys=[${keys}]${version === undefined ? "" : ` version=${version}`}`;
 }
 
-function isContentLine(record: unknown): boolean {
-  if (field(record, "isSidechain") === true) return false;
-  const type = field(record, "type");
-  if (type === "user" || type === "assistant") {
-    return field(record, "isMeta") !== true && field(record, "isCompactSummary") !== true;
-  }
-  if (type === "attachment") return field(field(record, "attachment"), "type") === "queued_command";
-  return type === "system" && field(record, "subtype") === "local_command";
+const typeOf = (record: unknown) => text(field(record, "type"));
+const subtypeOf = (record: unknown) => text(field(record, "subtype"));
+const contentOf = (record: unknown) => field(field(record, "message"), "content");
+const isMeta = (record: unknown) => field(record, "isMeta") === true;
+const isQueued = (record: unknown) =>
+  typeOf(record) === "attachment" &&
+  field(field(record, "attachment"), "type") === "queued_command";
+const isLocalCommand = (record: unknown) =>
+  typeOf(record) === "system" && subtypeOf(record) === "local_command";
+const isCommandInput = (record: unknown) =>
+  isLocalCommand(record) &&
+  /^<command-(?:name|message)>/.test(text(field(record, "content")) ?? "");
+
+function blocksOf(content: unknown): ReadonlyArray<unknown> {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return Array.isArray(content) ? content : [];
 }
 
-function blockTexts(record: unknown): ReadonlyArray<string> {
-  const content = field(field(record, "message"), "content");
-  if (typeof content === "string") return [content];
-  if (!Array.isArray(content)) return [];
-  return content.flatMap((block: unknown) =>
-    field(block, "type") === "text" && typeof field(block, "text") === "string"
-      ? [String(field(block, "text"))]
-      : [],
-  );
+function textsOf(record: unknown): ReadonlyArray<string> {
+  return blocksOf(contentOf(record)).flatMap((block) => {
+    const value = field(block, "type") === "text" ? text(field(block, "text")) : undefined;
+    return value === undefined ? [] : [value];
+  });
 }
+
+const hasBlock = (record: unknown, type: string) =>
+  blocksOf(contentOf(record)).some((block) => field(block, "type") === type);
 
 function isInterruptLine(record: unknown): boolean {
-  const texts = blockTexts(record);
+  const texts = textsOf(record);
   return (
-    field(record, "type") === "user" &&
+    typeOf(record) === "user" &&
     texts.length > 0 &&
     texts.every((value) => INTERRUPT_MARKERS.has(value.trim()))
   );
 }
 
+const isReply = (record: unknown) => typeOf(record) === "assistant";
+const isRealReply = (record: unknown) =>
+  isReply(record) && field(field(record, "message"), "model") !== SYNTHETIC_MODEL;
+// A reply whose stop reason ends the turn: any recorded reason but a tool call.
+function isEndingReply(record: unknown): boolean {
+  const stop = field(field(record, "message"), "stop_reason");
+  return (
+    isReply(record) &&
+    typeof stop === "string" &&
+    stop !== "tool_use" &&
+    !hasBlock(record, "tool_use")
+  );
+}
+
+// Lines that carry no content of their own; the conversation's chain runs through them.
+function passesThrough(record: unknown): boolean {
+  const type = typeOf(record);
+  if (type === "user") return isMeta(record) || field(record, "isCompactSummary") === true;
+  if (type === "assistant") return false;
+  if (type === "attachment") return !isQueued(record);
+  if (type === "system")
+    return subtypeOf(record) !== "local_command" && subtypeOf(record) !== "turn_duration";
+  return true;
+}
+
+const REQUIRED: ReadonlyMap<string, ReadonlyArray<string>> = new Map([
+  ["text", ["text"]],
+  ["thinking", ["thinking"]],
+  ["redacted_thinking", ["data"]],
+  ["tool_use", ["id", "name"]],
+  ["tool_result", ["tool_use_id"]],
+]);
+
+function readableContent(content: unknown): boolean {
+  if (typeof content === "string") return true;
+  if (!Array.isArray(content)) return false;
+  return content.every((block: unknown) => {
+    const type = field(block, "type");
+    if (typeof type !== "string") return false;
+    return (REQUIRED.get(type) ?? []).every((key) => isString(field(block, key)));
+  });
+}
+
+/** Whether the line carries every field a reader of its kind needs, judged without the parser. */
+function isReadable(record: unknown): boolean {
+  const type = typeOf(record);
+  const header = isString(field(record, "uuid")) && isString(field(record, "timestamp"));
+  const parent = field(record, "parentUuid") === null || isString(field(record, "parentUuid"));
+  if (type === "user" || type === "assistant") {
+    const message = field(record, "message");
+    return (
+      header &&
+      parent &&
+      readableContent(field(message, "content")) &&
+      absentOr(field(record, "isMeta"), (value) => typeof value === "boolean") &&
+      absentOr(field(record, "isCompactSummary"), (value) => typeof value === "boolean") &&
+      absentOr(field(record, "promptId"), (value) => value === null || isString(value)) &&
+      absentOr(field(message, "model"), isString) &&
+      absentOr(field(message, "id"), isString) &&
+      absentOr(field(message, "stop_reason"), (value) => value === null || isString(value))
+    );
+  }
+  if (isQueued(record))
+    return header && parent && readableContent(field(field(record, "attachment"), "prompt"));
+  if (isLocalCommand(record)) return header && parent && isString(field(record, "content"));
+  if (type === "system" && subtypeOf(record) === "turn_duration") {
+    return header && typeof field(record, "durationMs") === "number";
+  }
+  if (type === "system" && subtypeOf(record) === "compact_boundary") {
+    const metadata = field(record, "compactMetadata");
+    return (
+      header &&
+      isString(field(metadata, "trigger")) &&
+      typeof field(metadata, "preTokens") === "number"
+    );
+  }
+  return true;
+}
+
+function isContentLine(record: unknown): boolean {
+  const type = typeOf(record);
+  if (type === "user" || type === "assistant") {
+    return !isMeta(record) && field(record, "isCompactSummary") !== true;
+  }
+  return isQueued(record) || isLocalCommand(record);
+}
+
+// A prompt the user typed: text, no tool result, and none of Claude Code's own markup.
+function mustOpen(record: unknown): boolean {
+  if (typeOf(record) !== "user" || isMeta(record) || field(record, "isCompactSummary") === true)
+    return false;
+  if (hasBlock(record, "tool_result")) return false;
+  const joined = textsOf(record).join("\n").trim();
+  return joined.length > 0 && !joined.startsWith("<") && !INTERRUPT_MARKERS.has(joined);
+}
+
+function sameText(left: unknown, right: unknown): boolean {
+  const commandText = text(field(right, "content"))?.trim();
+  return commandText !== undefined && textsOf(left).join("").trim() === commandText;
+}
+
 /**
- * Checks the events a whole read of a transcript gave against the transcript's own lines, and against the events of the same transcript read in parts. `lines` are the transcript's complete lines in file order; `malformedLines` are the one-based numbers of lines the parser stepped past.
+ * Checks a parser's turns against the transcript's lines, in file order, by rules derived from the lines alone: the parser's segmentation is never taken as truth, and nothing it can cause is excused. `contents` are the turns' contents in the structure's order; `others` are structures of the same lines read another way (in pieces, or permuted), which must be equal.
  */
-export function checkClaudeTranscriptEvents(input: {
+export function checkClaudeTranscriptTurns(input: {
   readonly lines: ReadonlyArray<string>;
-  readonly whole: ReadonlyArray<ClaudeTranscriptEvent>;
-  readonly split: ReadonlyArray<ClaudeTranscriptEvent>;
-  readonly malformedLines: ReadonlySet<number>;
+  readonly structure: ClaudeTranscriptStructure;
+  readonly contents: ReadonlyArray<ClaudeTranscriptTurnContent>;
+  readonly others: ReadonlyArray<{
+    readonly name: string;
+    readonly structure: ClaudeTranscriptStructure;
+  }>;
 }): ClaudeTranscriptCheck {
   const violations: Array<ClaudeTranscriptViolation> = [];
   const counts: Record<string, number> = {};
@@ -104,207 +227,271 @@ export function checkClaudeTranscriptEvents(input: {
   };
   const report = (
     kind: ClaudeTranscriptViolationKind,
-    line: RawLine | undefined,
-    shape: string,
+    raw: RawLine | undefined,
+    shape?: string,
   ) => {
-    violations.push({ kind, line: line?.number, shape });
+    violations.push({ kind, line: raw?.number, shape: shape ?? shapeOf(raw?.record) });
     count(`violation ${kind}`);
   };
 
-  // The first line written with each uuid, which is the one the parser reads.
-  const firstByUuid = new Map<string, RawLine>();
-  const rawLines: Array<RawLine> = [];
+  // The first readable line with each uuid, else its first line, as Claude Code's reader keeps.
+  const first = new Map<string, RawLine>();
   input.lines.forEach((value, index) => {
     if (value.trim().length === 0) return;
     const decoded = decodeJson(value);
-    if (Option.isNone(decoded)) return;
+    if (Option.isNone(decoded)) {
+      count("lines that are not JSON");
+      return;
+    }
     const record = decoded.value;
     const uuid = text(field(record, "uuid"));
-    const parentUuid = text(field(record, "parentUuid"));
-    const raw = { number: index + 1, record, uuid, parentUuid };
-    rawLines.push(raw);
-    if (uuid !== undefined && field(record, "isSidechain") !== true && !firstByUuid.has(uuid)) {
-      firstByUuid.set(uuid, raw);
+    if (uuid === undefined || field(record, "isSidechain") === true) return;
+    const known = first.get(uuid);
+    if (known !== undefined) count("repeated lines");
+    if (known === undefined || (!isReadable(known.record) && isReadable(record))) {
+      first.set(uuid, { number: index + 1, record, uuid });
     }
   });
   count("lines", input.lines.length);
-  count("lines stepped past as malformed", input.malformedLines.size);
 
-  const segmentOrder: Array<string> = [];
-  const segmentStarts = new Map<string, string>();
-  const emittedLines = new Set<string>();
-  const emittedIds = new Set<string>();
-  const segmentItems = new Map<
-    string,
-    Array<{ readonly lineUuid: string; readonly role: string }>
-  >();
-  const endsAfterStart = new Map<
-    string,
-    Array<Extract<ClaudeTranscriptEvent, { _tag: "SegmentEnded" }>>
-  >();
-
-  const noteEmitted = (id: string, lineUuid: string, raw: RawLine | undefined) => {
-    if (emittedIds.has(id)) report("repeat-emitted", raw, shapeOf(raw?.record));
-    emittedIds.add(id);
-    emittedLines.add(lineUuid);
+  const parentOf = (raw: RawLine) => {
+    const parent = text(field(raw.record, "parentUuid"));
+    if (parent !== undefined) return parent;
+    return subtypeOf(raw.record) === "compact_boundary"
+      ? text(field(raw.record, "logicalParentUuid"))
+      : undefined;
   };
-
-  for (const event of input.whole) {
-    switch (event._tag) {
-      case "SegmentStarted": {
-        const raw = firstByUuid.get(event.segmentId);
-        noteEmitted(`segment:${event.segmentId}`, event.segmentId, raw);
-        segmentOrder.push(event.segmentId);
-        segmentStarts.set(event.segmentId, event.timestamp);
-        count("segments");
-        const prompt = event.prompt;
-        if (
-          prompt !== undefined &&
-          (COMMAND_MARKUP.test(prompt.text) || COMMAND_MARKUP.test(prompt.title ?? ""))
-        ) {
-          report("raw-command-markup", raw, `prompt of ${shapeOf(raw?.record)}`);
-        }
-        break;
-      }
-      case "Item": {
-        const raw = firstByUuid.get(event.item.lineUuid);
-        noteEmitted(event.item.id, event.item.lineUuid, raw);
-        count("items");
-        const items = segmentItems.get(event.segmentId) ?? [];
-        items.push({ lineUuid: event.item.lineUuid, role: event.item.role });
-        segmentItems.set(event.segmentId, items);
-        const block = event.item.block;
-        if (
-          event.item.role === "user" &&
-          event.item.lineUuid !== event.segmentId &&
-          block.type === "text" &&
-          COMMAND_MARKUP.test(block.text)
-        ) {
-          report("raw-command-markup", raw, `item of ${shapeOf(raw?.record)}`);
-        }
-        if (segmentOrder.at(-1) !== event.segmentId) count("items filed under an earlier segment");
-        break;
-      }
-      case "QueuedPrompt":
-        noteEmitted(event.id, event.lineUuid, firstByUuid.get(event.lineUuid));
-        count("queued prompts into a running turn");
-        break;
-      case "CommandOutput": {
-        noteEmitted(event.id, event.lineUuid, firstByUuid.get(event.lineUuid));
-        count("command output lines");
-        const items = segmentItems.get(event.segmentId) ?? [];
-        items.push({ lineUuid: event.lineUuid, role: "user" });
-        segmentItems.set(event.segmentId, items);
-        break;
-      }
-      case "SegmentEnded": {
-        const ends = endsAfterStart.get(event.segmentId) ?? [];
-        ends.push(event);
-        endsAfterStart.set(event.segmentId, ends);
-        const startedAt = segmentStarts.get(event.segmentId);
-        if (startedAt !== undefined && Date.parse(event.timestamp) < Date.parse(startedAt)) {
-          report(
-            "end-before-start",
-            firstByUuid.get(event.segmentId),
-            shapeOf(firstByUuid.get(event.segmentId)?.record),
-          );
-        }
-        break;
-      }
-      case "Branch":
-        count("branches");
-        break;
-      default:
-        break;
-    }
+  const children = new Map<string, Array<RawLine>>();
+  for (const raw of first.values()) {
+    const parent = parentOf(raw);
+    if (parent === undefined) continue;
+    const list = children.get(parent) ?? [];
+    list.push(raw);
+    children.set(parent, list);
   }
 
-  // Every first occurrence of a content line yields an event, unless the parser stepped past it.
-  for (const raw of firstByUuid.values()) {
-    if (raw.uuid === undefined || !isContentLine(raw.record)) continue;
-    count("first-occurrence content lines");
-    if (emittedLines.has(raw.uuid) || input.malformedLines.has(raw.number)) continue;
-    // Claude Code can record one slash command as a user line and as a system record.
-    const parent = raw.parentUuid === undefined ? undefined : firstByUuid.get(raw.parentUuid);
-    if (
-      field(raw.record, "type") === "system" &&
-      parent !== undefined &&
-      segmentStarts.has(parent.uuid ?? "")
-    ) {
-      count("slash commands recorded twice, read once");
-      continue;
-    }
-    report("content-line-without-event", raw, shapeOf(raw.record));
+  const turnIds = new Map<string, ClaudeTranscriptTurn>();
+  const lineTurn = new Map<string, string>();
+  const itemIds = new Set<string>();
+  for (const turn of input.structure.turns) {
+    turnIds.set(turn.id, turn);
+    count(`turns opened by ${turn.opener}`);
+    count(`turns ended ${turn.end?.reason ?? "running"}`);
+    if (turn.branchedFrom !== undefined) count("branches");
   }
-  count(
-    "repeated lines",
-    rawLines.length - firstByUuid.size - rawLines.filter((raw) => raw.uuid === undefined).length,
-  );
+  for (const content of input.contents) {
+    const turnId = content.turn.id;
+    for (const item of content.items) {
+      count("items");
+      if (itemIds.has(item.id)) report("repeat-emitted", first.get(item.lineUuid));
+      itemIds.add(item.id);
+      const owner = lineTurn.get(item.lineUuid);
+      if (owner !== undefined && owner !== turnId)
+        report("line-in-two-turns", first.get(item.lineUuid));
+      lineTurn.set(item.lineUuid, turnId);
+    }
+  }
+  const turnOfLine = (uuid: string) => (turnIds.has(uuid) ? uuid : lineTurn.get(uuid));
 
-  // An item belongs to the segment of the nearest segment opener up its parent chain.
-  const openerOf = (start: string) => {
-    let uuid: string | undefined = start;
+  // The nearest line up the chain that holds content or opens a turn, through lines that hold neither.
+  const anchorOf = (raw: RawLine): RawLine | undefined => {
+    let uuid = parentOf(raw);
     for (let steps = 0; uuid !== undefined && steps < MAX_CHAIN_STEPS; steps += 1) {
-      if (segmentStarts.has(uuid)) return uuid;
-      uuid = firstByUuid.get(uuid)?.parentUuid;
+      const up = first.get(uuid);
+      if (up === undefined) return undefined;
+      if (turnIds.has(up.uuid) || !passesThrough(up.record)) return up;
+      uuid = parentOf(up);
     }
     return undefined;
   };
-  for (const [segmentId, items] of segmentItems) {
-    for (const item of items) {
-      const opener = openerOf(item.lineUuid);
-      if (opener === undefined) {
-        count("items with no opener up their chain");
-      } else if (opener !== segmentId) {
-        const raw = firstByUuid.get(item.lineUuid);
-        report("item-outside-its-chain", raw, shapeOf(raw?.record));
-      }
+  const descendants = function* (raw: RawLine, within: string) {
+    const stack = [...(children.get(raw.uuid) ?? [])];
+    const seen = new Set<string>();
+    while (stack.length > 0) {
+      const next = stack.pop();
+      if (next === undefined || seen.has(next.uuid)) continue;
+      seen.add(next.uuid);
+      const turn = turnOfLine(next.uuid);
+      if (turn !== undefined && turn !== within) continue;
+      yield next;
+      stack.push(...(children.get(next.uuid) ?? []));
     }
+  };
+  const repliesThrough = (raw: RawLine) => {
+    const stack = [...(children.get(raw.uuid) ?? [])];
+    for (let steps = 0; stack.length > 0 && steps < MAX_CHAIN_STEPS; steps += 1) {
+      const next = stack.pop();
+      if (next === undefined) break;
+      if (isReply(next.record)) return true;
+      if (passesThrough(next.record)) stack.push(...(children.get(next.uuid) ?? []));
+    }
+    return false;
+  };
+  const endsTurn = (raw: RawLine) => {
+    const owner = turnOfLine(raw.uuid);
+    const opener = owner === undefined ? undefined : first.get(owner);
+    return (
+      isEndingReply(raw.record) ||
+      (isReply(raw.record) && !isRealReply(raw.record)) ||
+      (typeOf(raw.record) === "system" && subtypeOf(raw.record) === "turn_duration") ||
+      isInterruptLine(raw.record) ||
+      (opener !== undefined && isCommandInput(opener.record))
+    );
+  };
+  const waitsOnTool = (anchor: RawLine | undefined) =>
+    anchor !== undefined &&
+    isReply(anchor.record) &&
+    hasBlock(anchor.record, "tool_use") &&
+    (children.get(anchor.uuid) ?? []).some((child) => hasBlock(child.record, "tool_result"));
+
+  // Every content line is in exactly one turn, and every turn's lines follow its chain.
+  for (const raw of first.values()) {
+    if (!isContentLine(raw.record)) continue;
+    count("first-occurrence content lines");
+    const parent = parentOf(raw);
+    const parentRaw = parent === undefined ? undefined : first.get(parent);
+    const duplicateCommand =
+      isCommandInput(raw.record) &&
+      parentRaw !== undefined &&
+      typeOf(parentRaw.record) === "user" &&
+      sameText(parentRaw.record, raw.record);
+    const empty =
+      Array.isArray(contentOf(raw.record)) && blocksOf(contentOf(raw.record)).length === 0;
+    const turn = turnOfLine(raw.uuid);
+    if (turn === undefined) {
+      if (duplicateCommand || empty) count("content lines with nothing to show");
+      else report("content-line-missing", raw);
+      continue;
+    }
+    if (turnIds.has(raw.uuid)) continue;
+    const anchor = anchorOf(raw);
+    if (anchor === undefined || turnOfLine(anchor.uuid) !== turn)
+      report("item-outside-its-chain", raw);
   }
 
-  // Each segment's last end agrees with the markers its own lines carry.
-  for (const [segmentId, items] of segmentItems) {
-    const last = endsAfterStart.get(segmentId)?.at(-1);
-    if (last === undefined) continue;
-    const records = items.flatMap((item) => {
-      const raw = firstByUuid.get(item.lineUuid);
+  // Turns open where the lines say a turn starts, and only there.
+  for (const raw of first.values()) {
+    const opened = turnIds.has(raw.uuid);
+    const anchor = anchorOf(raw);
+    if (mustOpen(raw.record) && !opened) report("prompt-not-opened", raw);
+    if (isQueued(raw.record)) {
+      const startsTurn = anchor === undefined || endsTurn(anchor);
+      if (startsTurn !== opened) report("queued-filed-wrongly", raw);
+    }
+    if (isCommandInput(raw.record) && !opened) {
+      const parent = parentOf(raw);
+      const parentRaw = parent === undefined ? undefined : first.get(parent);
+      const duplicate =
+        parentRaw !== undefined &&
+        typeOf(parentRaw.record) === "user" &&
+        sameText(parentRaw.record, raw.record);
+      if (!duplicate && !waitsOnTool(anchor)) report("prompt-not-opened", raw);
+    }
+    if (!opened) continue;
+    const record = raw.record;
+    const orphan = anchor === undefined;
+    const cause =
+      (typeOf(record) === "user" &&
+        !isMeta(record) &&
+        field(record, "isCompactSummary") !== true &&
+        !hasBlock(record, "tool_result") &&
+        !isInterruptLine(record) &&
+        !OUTPUT_TAG.test(textsOf(record).join(""))) ||
+      (typeOf(record) === "user" &&
+        isMeta(record) &&
+        isString(field(record, "promptId")) &&
+        repliesThrough(raw)) ||
+      isQueued(record) ||
+      isCommandInput(record) ||
+      (orphan && (isContentLine(record) || !isReadable(record)));
+    if (!cause) report("opened-without-cause", raw);
+  }
+
+  const last = input.structure.turns.at(-1);
+  for (const content of input.contents) {
+    const { turn } = content;
+    const opener = first.get(turn.id);
+    if (turn !== last && turn.end === undefined) report("running-before-last", opener);
+    const openerTime = Date.parse(text(field(opener?.record, "timestamp")) ?? "");
+    if (!Number.isNaN(openerTime) && Date.parse(turn.startedAt) !== openerTime) {
+      report("start-not-opener-time", opener);
+    }
+    if (turn.end !== undefined && Date.parse(turn.end.at) < Date.parse(turn.startedAt)) {
+      report("end-before-start", opener);
+    }
+    const lines = [...new Set(content.items.map((item) => item.lineUuid))].flatMap((uuid) => {
+      const raw = first.get(uuid);
       return raw === undefined ? [] : [raw];
     });
-    const unique = [...new Map(records.map((raw) => [raw.number, raw])).values()];
-    const lastInterrupt = unique.findLastIndex((raw) => isInterruptLine(raw.record));
-    if (lastInterrupt !== -1) {
-      const after = unique.slice(lastInterrupt + 1);
-      const onlySynthetic = after.every(
-        (raw) =>
-          field(raw.record, "type") === "assistant" &&
-          field(field(raw.record, "message"), "model") === SYNTHETIC_MODEL,
+    const answered = (raw: RawLine) =>
+      [...descendants(raw, turn.id)].some(
+        (next) => isRealReply(next.record) && lineTurn.get(next.uuid) === turn.id,
       );
-      if (onlySynthetic && last.reason !== "interrupted") {
-        report("interrupt-not-kept", unique[lastInterrupt], `ended ${last.reason}`);
+    for (const raw of lines) {
+      if (isInterruptLine(raw.record) && !answered(raw) && turn.end?.reason !== "interrupted") {
+        report("interrupt-not-kept", raw, `ended ${turn.end?.reason ?? "running"}`);
       }
     }
-    const lastReply = unique.findLast(
-      (raw) =>
-        field(raw.record, "type") === "assistant" &&
-        field(field(raw.record, "message"), "model") !== SYNTHETIC_MODEL,
-    );
-    const stop = text(field(field(lastReply?.record, "message"), "stop_reason"));
-    if (last.reason === "next-prompt" && stop !== undefined && stop !== "tool_use") {
-      report("superseded-end-kept", lastReply, `stop_reason=${stop}`);
+    if (
+      turn.end?.reason === "next-prompt" &&
+      lines.some((raw) => isEndingReply(raw.record) && isRealReply(raw.record) && !answered(raw))
+    ) {
+      report("superseded-end-kept", opener);
+    }
+    for (const item of content.items) {
+      const raw = first.get(item.lineUuid);
+      if (item._tag === "Unreadable") {
+        count("unreadable lines");
+        if (raw !== undefined && isReadable(raw.record)) report("unreadable-but-readable", raw);
+      }
+      const marked =
+        (item._tag === "Block" &&
+          item.role === "user" &&
+          item.lineUuid !== turn.id &&
+          item.block.type === "text" &&
+          MARKUP.test(item.block.text)) ||
+        (item._tag === "Command" && item.text.trimStart().startsWith("<")) ||
+        (item._tag === "CommandOutput" && item.output.some((part) => OUTPUT_TAG.test(part.text)));
+      if (marked) report("raw-command-markup", raw, `${item._tag} of ${shapeOf(raw?.record)}`);
+    }
+    const prompt = content.prompt;
+    if (prompt !== undefined && (MARKUP.test(prompt.text) || MARKUP.test(prompt.title ?? ""))) {
+      report("raw-command-markup", opener, `prompt of ${shapeOf(opener?.record)}`);
     }
   }
 
-  const wholeText = JSON.stringify(input.whole);
-  const splitText = JSON.stringify(input.split);
-  if (wholeText !== splitText) {
-    const index = input.whole.findIndex(
-      (event, position) => JSON.stringify(event) !== JSON.stringify(input.split[position]),
+  // A turn_duration line times the turn its chain is in, whatever else ended it.
+  const durations = new Map<
+    string,
+    Array<{ readonly raw: RawLine; readonly durationMs: unknown }>
+  >();
+  for (const raw of first.values()) {
+    if (typeOf(raw.record) !== "system" || subtypeOf(raw.record) !== "turn_duration") continue;
+    const anchor = anchorOf(raw);
+    const turnId = anchor === undefined ? undefined : turnOfLine(anchor.uuid);
+    if (turnId === undefined) continue;
+    const list = durations.get(turnId) ?? [];
+    list.push({ raw, durationMs: field(raw.record, "durationMs") });
+    durations.set(turnId, list);
+  }
+  for (const [turnId, list] of durations) {
+    const end = turnIds.get(turnId)?.end;
+    const kept =
+      (end?.reason === "turn-duration" || end?.reason === "interrupted") &&
+      list.some((timed) => timed.durationMs === end.durationMs);
+    if (!kept) report("duration-not-kept", list[0]?.raw, `ended ${end?.reason ?? "running"}`);
+  }
+
+  const wholeText = JSON.stringify(input.structure);
+  for (const other of input.others) {
+    if (JSON.stringify(other.structure) === wholeText) continue;
+    const index = input.structure.turns.findIndex(
+      (turn, position) => JSON.stringify(turn) !== JSON.stringify(other.structure.turns[position]),
     );
-    const differs = index === -1 ? input.whole.length : index;
     report(
-      "split-read-differs",
+      "differs-from-whole-read",
       undefined,
-      `event ${differs}: whole ${input.whole[differs]?._tag ?? "none"}, split ${input.split[differs]?._tag ?? "none"}; ${input.whole.length} against ${input.split.length} events`,
+      `${other.name}: turn ${index === -1 ? input.structure.turns.length : index}; ${input.structure.turns.length} against ${other.structure.turns.length} turns`,
     );
   }
   return { violations, counts };
