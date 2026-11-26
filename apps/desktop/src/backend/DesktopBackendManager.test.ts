@@ -1016,7 +1016,12 @@ describe("DesktopBackendManager", () => {
       });
       yield* Queue.offer(sessions, "pending");
       yield* instance.start;
+      // The watcher takes the next answer only after the pending one has been handled.
+      yield* Queue.offer(sessions, "pending");
+      yield* TestClock.adjust(Duration.seconds(2));
       yield* Queue.offer(sessions, "ready");
+      assert.equal(yield* Queue.size(events), 0);
+      assert.isFalse((yield* instance.snapshot).ready);
       yield* TestClock.adjust(Duration.seconds(2));
       assert.equal(yield* Queue.take(events), "ready");
       yield* Queue.offer(sessions, "renewed");

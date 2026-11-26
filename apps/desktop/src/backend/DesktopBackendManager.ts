@@ -123,7 +123,13 @@ export type AttachedServerProbe =
 export class AttachedSessionError extends Schema.TaggedError<AttachedSessionError>()(
   "AttachedSessionError",
   {
-    reason: Schema.Literals(["owner-unavailable", "schema-behind", "issue-failed"]),
+    // Only "schema-behind" and "token-rejected" are permanent; the others are retried.
+    reason: Schema.Literals([
+      "owner-unavailable",
+      "schema-behind",
+      "token-rejected",
+      "issue-failed",
+    ]),
     cause: Schema.optionalKey(Schema.Defect()),
   },
 ) {
@@ -133,8 +139,10 @@ export class AttachedSessionError extends Schema.TaggedError<AttachedSessionErro
         return "No current server owns this T3 home, or its owner changed while a desktop session was issued.";
       case "schema-behind":
         return "The server owning this T3 home is older than this app's database, so no desktop session can be issued.";
+      case "token-rejected":
+        return "The server owning this T3 home rejected a desktop session it had just issued.";
       case "issue-failed":
-        return "Could not issue a desktop session on the server owning this T3 home.";
+        return "Could not issue a desktop session on the server owning this T3 home yet.";
     }
   }
 }

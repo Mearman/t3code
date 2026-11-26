@@ -7,13 +7,16 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION,
   SERVER_EXIT_CODE_SCHEMA_BEHIND,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -40,13 +43,16 @@ const SERVER: DesktopBackendManager.AttachedServer = {
   serverVersion: "1.2.3",
 };
 
-const handle = (stdout: string, exitCode: number) =>
+const handle = (
+  stdout: string,
+  exitCode: Effect.Effect<ChildProcessSpawner.ExitCode, never>,
+): ChildProcessSpawner.ChildProcessHandle =>
   ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(321),
     stdout: Stream.encodeText(Stream.make(stdout)),
     stderr: Stream.empty,
     all: Stream.empty,
-    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+    exitCode,
     isRunning: Effect.succeed(false),
     kill: () => Effect.void,
     stdin: Sink.drain,
@@ -55,14 +61,27 @@ const handle = (stdout: string, exitCode: number) =>
     unref: Effect.succeed(Effect.void),
   });
 
+type IssueBehaviour =
+  | { readonly _tag: "Issue" }
+  | { readonly _tag: "Exit"; readonly code: number }
+  /** The CLI never answers; the deferred completes once it has been spawned. */
+  | { readonly _tag: "Hang"; readonly spawned: Deferred.Deferred<void> };
+
 interface Harness {
   readonly home: string;
   readonly userdata: string;
-  readonly sessionsPath: string;
+  readonly ledgerPath: string;
   readonly commands: Array<ReadonlyArray<string>>;
   readonly revocations: Array<{ readonly sessionId: string; readonly bearer: string }>;
-  /** Tokens the server no longer accepts. */
-  readonly rejected: Set<string>;
+  /** What the next `auth session issue` runs do, in order; once used up, each issues a session. */
+  readonly issues: Array<IssueBehaviour>;
+  /** Sessions `auth session list` reports, beside the ones this harness issued. */
+  readonly listed: Array<{ readonly sessionId: string; readonly subject: string }>;
+  /** Tokens the server no longer accepts; "all" rejects every token. */
+  rejected: Set<string> | "all";
+  revokeStatus: number;
+  /** A session check never answers; the deferred completes when one starts. */
+  sessionCheckHangs: Option.Option<Deferred.Deferred<void>>;
 }
 
 type AttachedHomeServices =
@@ -72,14 +91,13 @@ type AttachedHomeServices =
   | HttpClient.HttpClient
   | ChildProcessSpawner.ChildProcessSpawner;
 
+const flagValue = (args: ReadonlyArray<string>, name: string) =>
+  args.flatMap((arg, i) => (args[i - 1] === name ? [arg] : []));
+
 /** A home whose lock a current server holds, answering for its environment, with a scripted CLI. */
 const withAttachedHome = <A, E>(
   run: (harness: Harness) => Effect.Effect<A, E, AttachedHomeServices>,
-  options: {
-    readonly issueExitCode?: number;
-    readonly revokeStatus?: number;
-    readonly onIssue?: (harness: Harness) => Effect.Effect<void, never, FileSystem.FileSystem>;
-  } = {},
+  onIssue?: (harness: Harness) => Effect.Effect<void, never, FileSystem.FileSystem>,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -99,12 +117,16 @@ const withAttachedHome = <A, E>(
     const harness: Harness = {
       home,
       userdata,
-      sessionsPath: `${userdata}/desktop-attached-sessions.json`,
+      ledgerPath: `${userdata}/desktop-attached-sessions.json`,
       commands: [],
       revocations: [],
+      issues: [],
+      listed: [],
       rejected: new Set(),
+      revokeStatus: 200,
+      sessionCheckHangs: Option.none(),
     };
-    let issued = 0;
+    const issuedSessions: Array<{ readonly sessionId: string; readonly subject: string }> = [];
     const spawner = ChildProcessSpawner.make((command) =>
       Effect.gen(function* () {
         const args =
@@ -112,15 +134,31 @@ const withAttachedHome = <A, E>(
             ? command.args.map((arg) => (typeof arg === "string" ? arg : "<redacted>"))
             : [];
         harness.commands.push(args);
-        const exitCode = options.issueExitCode ?? 0;
-        if (exitCode !== 0) return handle("", exitCode);
-        issued += 1;
-        if (options.onIssue !== undefined) {
-          yield* options.onIssue(harness).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+        if (args.includes("list")) {
+          return handle(
+            JSON.stringify([...issuedSessions, ...harness.listed]),
+            Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          );
+        }
+        const behaviour: IssueBehaviour = harness.issues.shift() ?? { _tag: "Issue" };
+        if (behaviour._tag === "Exit") {
+          return handle("", Effect.succeed(ChildProcessSpawner.ExitCode(behaviour.code)));
+        }
+        if (behaviour._tag === "Hang") {
+          yield* Deferred.succeed(behaviour.spawned, undefined);
+          return handle("", Effect.never);
+        }
+        const n = issuedSessions.length + 1;
+        issuedSessions.push({
+          sessionId: `session-${n}`,
+          subject: flagValue(args, "--subject")[0] ?? "",
+        });
+        if (onIssue !== undefined) {
+          yield* onIssue(harness).pipe(Effect.provideService(FileSystem.FileSystem, fs));
         }
         return handle(
-          JSON.stringify({ sessionId: `session-${issued}`, token: `token-${issued}` }, null, 2),
-          0,
+          JSON.stringify({ sessionId: `session-${n}`, token: `token-${n}` }, null, 2),
+          Effect.succeed(ChildProcessSpawner.ExitCode(0)),
         );
       }),
     );
@@ -133,25 +171,35 @@ const withAttachedHome = <A, E>(
         return Effect.succeed(
           HttpClientResponse.fromWeb(
             request,
-            Response.json({ revoked: true }, { status: options.revokeStatus ?? 200 }),
+            Response.json({ revoked: true }, { status: harness.revokeStatus }),
+          ),
+        );
+      }
+      if (request.url.endsWith("/api/auth/session")) {
+        if (Option.isSome(harness.sessionCheckHangs)) {
+          return Deferred.succeed(harness.sessionCheckHangs.value, undefined).pipe(
+            Effect.andThen(Effect.never),
+          );
+        }
+        const rejected = harness.rejected === "all" || harness.rejected.has(bearer);
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            rejected ? new Response(null, { status: 401 }) : Response.json({ authenticated: true }),
           ),
         );
       }
       return Effect.succeed(
         HttpClientResponse.fromWeb(
           request,
-          request.url.endsWith("/api/auth/session")
-            ? harness.rejected.has(bearer)
-              ? new Response(null, { status: 401 })
-              : Response.json({ authenticated: true })
-            : Response.json({
-                environmentId: "environment-1",
-                label: "Local",
-                platform: { os: "darwin", arch: "arm64" },
-                serverVersion: "1.2.3",
-                orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
-                capabilities: {},
-              }),
+          Response.json({
+            environmentId: "environment-1",
+            label: "Local",
+            platform: { os: "darwin", arch: "arm64" },
+            serverVersion: "1.2.3",
+            orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+            capabilities: {},
+          }),
         ),
       );
     });
@@ -182,103 +230,211 @@ const withAttachedHome = <A, E>(
 
 const makeConfig = DesktopAttachedServer.makeAttachConfig();
 
-const readSessionIds = (harness: Harness) =>
-  Effect.flatMap(FileSystem.FileSystem, (fs) => fs.readFileString(harness.sessionsPath)).pipe(
-    Effect.map((raw): ReadonlyArray<string> => JSON.parse(raw).sessionIds),
+const issueRuns = (harness: Harness) =>
+  harness.commands.filter((args) => args.includes("issue")).length;
+
+const readLedger = (harness: Harness) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) => fs.readFileString(harness.ledgerPath)).pipe(
+    Effect.map(
+      (
+        raw,
+      ): { readonly sessionIds: ReadonlyArray<string>; readonly attempts: ReadonlyArray<string> } =>
+        JSON.parse(raw),
+    ),
   );
 
-const writeSessionIds = (harness: Harness, sessionIds: ReadonlyArray<string>) =>
+const writeLedger = (harness: Harness, sessionIds: ReadonlyArray<string>) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) =>
-    fs.writeFileString(harness.sessionsPath, JSON.stringify({ sessionIds })),
+    fs.writeFileString(harness.ledgerPath, JSON.stringify({ sessionIds, attempts: [] })),
   );
+
+// Makes every later ledger write fail, as a full or read-only disk would.
+const blockLedgerWrites = (harness: Harness) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs
+      .remove(harness.ledgerPath, { force: true })
+      .pipe(Effect.andThen(fs.makeDirectory(harness.ledgerPath))),
+  ).pipe(Effect.orDie);
+
+const changeOwner = (harness: Harness) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.writeFileString(
+      `${harness.userdata}/server-runtime.json`,
+      JSON.stringify({ ...OWNER_RECORD, ownerId: "owner-2" }),
+    ),
+  ).pipe(Effect.orDie);
+
+// Past every backoff the harness can reach.
+const waitOutBackoff = TestClock.adjust("10 minutes");
 
 describe("DesktopAttachedServer", () => {
   it.effect("issues one scoped session without migrating, and revokes the previous over HTTP", () =>
     withAttachedHome((harness) =>
       Effect.gen(function* () {
-        yield* writeSessionIds(harness, ["previous"]);
+        yield* writeLedger(harness, ["previous"]);
         const config = yield* makeConfig;
         assert.equal(yield* config.ensureSession(SERVER), "ready");
         assert.equal(yield* config.bearerToken, "token-1");
 
-        assert.equal(harness.commands.length, 1);
+        assert.equal(issueRuns(harness), 1);
         const issue = harness.commands[0] ?? [];
-        const flag = (name: string) =>
-          issue.flatMap((arg, i) => (issue[i - 1] === name ? [arg] : []));
         const command = issue.indexOf("auth");
         assert.deepEqual(issue.slice(command, command + 3), ["auth", "session", "issue"]);
-        assert.deepEqual(flag("--base-dir"), [harness.home]);
-        assert.deepEqual(flag("--scope"), [...AuthAdministrativeClientScopes]);
-        assert.deepEqual(flag("--ttl"), ["30d"]);
+        assert.deepEqual(flagValue(issue, "--base-dir"), [harness.home]);
+        assert.deepEqual(flagValue(issue, "--scope"), [...AuthAdministrativeClientScopes]);
+        assert.deepEqual(flagValue(issue, "--ttl"), ["30d"]);
         assert.include(issue, "--require-current-schema");
         assert.include(issue, "--json");
         assert.isFalse(harness.commands.flat().some((arg) => arg.includes("token-")));
         // Revocation never runs the CLI, which could take the home's lock from a restarting service.
         assert.deepEqual(harness.revocations, [{ sessionId: "previous", bearer: "token-1" }]);
-        assert.deepEqual(yield* readSessionIds(harness), ["session-1"]);
+        assert.deepEqual(yield* readLedger(harness), { sessionIds: ["session-1"], attempts: [] });
       }),
     ),
   );
 
   it.effect("keeps a session id on disk until the server confirms its revocation", () =>
-    withAttachedHome(
-      (harness) =>
-        Effect.gen(function* () {
-          yield* writeSessionIds(harness, ["previous"]);
-          const config = yield* makeConfig;
-          assert.equal(yield* config.ensureSession(SERVER), "ready");
-          assert.deepEqual(yield* readSessionIds(harness), ["previous", "session-1"]);
-        }),
-      { revokeStatus: 503 },
-    ),
-  );
-
-  it.effect("revokes a session it could not record and refuses to use it", () =>
     withAttachedHome((harness) =>
       Effect.gen(function* () {
-        // A directory where the record goes makes every write fail.
-        yield* Effect.flatMap(FileSystem.FileSystem, (fs) =>
-          fs.makeDirectory(harness.sessionsPath),
-        );
+        yield* writeLedger(harness, ["previous"]);
+        harness.revokeStatus = 503;
         const config = yield* makeConfig;
-        assert.equal(yield* config.ensureSession(SERVER), "refused");
-        assert.deepEqual(harness.revocations, [{ sessionId: "session-1", bearer: "token-1" }]);
-        assert.equal(Option.getOrThrow(yield* config.refusal).reason, "session-failed");
+        assert.equal(yield* config.ensureSession(SERVER), "ready");
+        assert.deepEqual((yield* readLedger(harness)).sessionIds, ["previous", "session-1"]);
       }),
     ),
   );
 
   it.effect("names an older service as the cause and stops issuing for it", () =>
+    withAttachedHome((harness) =>
+      Effect.gen(function* () {
+        harness.issues.push({ _tag: "Exit", code: SERVER_EXIT_CODE_SCHEMA_BEHIND });
+        const config = yield* makeConfig;
+        assert.equal(yield* config.ensureSession(SERVER), "refused");
+        yield* waitOutBackoff;
+        assert.equal(yield* config.ensureSession(SERVER), "refused");
+        assert.equal((yield* Effect.flip(config.bearerToken)).reason, "issue-failed");
+        assert.deepEqual(
+          yield* config.refusal,
+          Option.some({ reason: "older-server" as const, pid: process.pid, version: "1.2.3" }),
+        );
+        assert.equal(issueRuns(harness), 1);
+      }),
+    ),
+  );
+
+  it.effect("refuses once when the server rejects a session it has just issued", () =>
+    withAttachedHome((harness) =>
+      Effect.gen(function* () {
+        harness.rejected = "all";
+        const config = yield* makeConfig;
+        assert.equal(yield* config.ensureSession(SERVER), "refused");
+        yield* waitOutBackoff;
+        assert.equal(yield* config.ensureSession(SERVER), "refused");
+        assert.equal(Option.getOrThrow(yield* config.refusal).reason, "session-failed");
+        assert.equal(issueRuns(harness), 1);
+      }),
+    ),
+  );
+
+  it.effect("retries a failed CLI run after a backoff, without refusing", () =>
+    withAttachedHome((harness) =>
+      Effect.gen(function* () {
+        harness.issues.push({ _tag: "Exit", code: 1 });
+        const config = yield* makeConfig;
+        assert.equal(yield* config.ensureSession(SERVER), "pending");
+        // Within the backoff no CLI runs.
+        assert.equal(yield* config.ensureSession(SERVER), "pending");
+        assert.equal(issueRuns(harness), 1);
+        assert.isTrue(Option.isNone(yield* config.refusal));
+        yield* waitOutBackoff;
+        assert.equal(yield* config.ensureSession(SERVER), "ready");
+        assert.equal(issueRuns(harness), 2);
+      }),
+    ),
+  );
+
+  it.effect("revokes the session of a CLI run that timed out, found by its subject", () =>
+    withAttachedHome((harness) =>
+      Effect.gen(function* () {
+        const spawned = yield* Deferred.make<void>();
+        harness.issues.push({ _tag: "Hang", spawned });
+        const config = yield* makeConfig;
+        const first = yield* Effect.forkChild(config.ensureSession(SERVER));
+        yield* Deferred.await(spawned);
+        yield* TestClock.adjust("30 seconds");
+        assert.equal(yield* Fiber.join(first), "pending");
+        const [attempt] = (yield* readLedger(harness)).attempts;
+        assert.isDefined(attempt);
+        // The killed CLI had already written its session.
+        harness.listed.push({ sessionId: "timed-out", subject: attempt ?? "" });
+
+        yield* waitOutBackoff;
+        assert.equal(yield* config.ensureSession(SERVER), "ready");
+        assert.deepEqual(harness.revocations, [{ sessionId: "timed-out", bearer: "token-1" }]);
+        assert.deepEqual(yield* readLedger(harness), { sessionIds: ["session-1"], attempts: [] });
+      }),
+    ),
+  );
+
+  it.effect("revokes a session it could not record, and keeps it named until it can", () =>
+    withAttachedHome(
+      (harness) =>
+        Effect.gen(function* () {
+          harness.revokeStatus = 503;
+          const config = yield* makeConfig;
+          assert.equal(yield* config.ensureSession(SERVER), "pending");
+          assert.deepEqual(harness.revocations, [{ sessionId: "session-1", bearer: "token-1" }]);
+
+          // Once writes work again, the next session's write names the first, which is revoked.
+          yield* Effect.flatMap(FileSystem.FileSystem, (fs) =>
+            fs.remove(harness.ledgerPath, { recursive: true }),
+          );
+          harness.revokeStatus = 200;
+          yield* waitOutBackoff;
+          assert.equal(yield* config.ensureSession(SERVER), "ready");
+          assert.deepEqual(harness.revocations.at(-1), {
+            sessionId: "session-1",
+            bearer: "token-2",
+          });
+          assert.deepEqual(yield* readLedger(harness), {
+            sessionIds: ["session-2"],
+            attempts: [],
+          });
+        }),
+      (harness) =>
+        harness.commands.filter((args) => args.includes("issue")).length === 1
+          ? blockLedgerWrites(harness)
+          : Effect.void,
+    ),
+  );
+
+  it.effect("never revokes with a new token once the home has changed owner", () =>
     withAttachedHome(
       (harness) =>
         Effect.gen(function* () {
           const config = yield* makeConfig;
-          assert.equal(yield* config.ensureSession(SERVER), "refused");
-          assert.equal(yield* config.ensureSession(SERVER), "refused");
-          assert.equal((yield* Effect.flip(config.bearerToken)).reason, "issue-failed");
-          assert.deepEqual(
-            yield* config.refusal,
-            Option.some({
-              reason: "older-server" as const,
-              pid: process.pid,
-              version: "1.2.3",
-            }),
-          );
-          assert.equal(harness.commands.length, 1);
+          assert.equal(yield* config.ensureSession(SERVER), "pending");
+          assert.deepEqual(harness.revocations, []);
         }),
-      { issueExitCode: SERVER_EXIT_CODE_SCHEMA_BEHIND },
+      (harness) => blockLedgerWrites(harness).pipe(Effect.andThen(changeOwner(harness))),
     ),
   );
 
-  it.effect("refuses with a general cause when the CLI fails for another reason", () =>
-    withAttachedHome(
-      () =>
-        Effect.gen(function* () {
-          const config = yield* makeConfig;
-          assert.equal(yield* config.ensureSession(SERVER), "refused");
-          assert.equal(Option.getOrThrow(yield* config.refusal).reason, "session-failed");
-        }),
-      { issueExitCode: 1 },
+  it.effect("sets an unreadable session record aside instead of overwriting it", () =>
+    withAttachedHome((harness) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(harness.ledgerPath, "{not json");
+        const config = yield* makeConfig;
+        assert.equal(yield* config.ensureSession(SERVER), "ready");
+        const asides = (yield* fs.readDirectory(harness.userdata)).filter((name) =>
+          name.startsWith("desktop-attached-sessions.json.unreadable-"),
+        );
+        assert.lengthOf(asides, 1);
+        assert.equal(yield* fs.readFileString(`${harness.userdata}/${asides[0]}`), "{not json");
+        assert.deepEqual((yield* readLedger(harness)).sessionIds, ["session-1"]);
+      }),
     ),
   );
 
@@ -290,17 +446,25 @@ describe("DesktopAttachedServer", () => {
           assert.equal(yield* config.ensureSession(SERVER), "pending");
           assert.isTrue(Option.isNone(yield* config.refusal));
           // The discarded session stays recorded, so a later issue revokes it.
-          assert.deepEqual(yield* readSessionIds(harness), ["session-1"]);
+          assert.deepEqual((yield* readLedger(harness)).sessionIds, ["session-1"]);
         }),
-      {
-        onIssue: ({ userdata }) =>
-          Effect.flatMap(FileSystem.FileSystem, (fs) =>
-            fs.writeFileString(
-              `${userdata}/server-runtime.json`,
-              JSON.stringify({ ...OWNER_RECORD, ownerId: "owner-2" }),
-            ),
-          ).pipe(Effect.orDie),
-      },
+      changeOwner,
+    ),
+  );
+
+  it.effect("bounds a session check that never answers", () =>
+    withAttachedHome((harness) =>
+      Effect.gen(function* () {
+        const config = yield* makeConfig;
+        assert.equal(yield* config.ensureSession(SERVER), "ready");
+        const started = yield* Deferred.make<void>();
+        harness.sessionCheckHangs = Option.some(started);
+        const check = yield* Effect.forkChild(config.ensureSession(SERVER));
+        yield* Deferred.await(started);
+        yield* TestClock.adjust("5 seconds");
+        // An unanswered check keeps the session the app already holds.
+        assert.equal(yield* Fiber.join(check), "ready");
+      }),
     ),
   );
 
@@ -309,11 +473,11 @@ describe("DesktopAttachedServer", () => {
       Effect.gen(function* () {
         const config = yield* makeConfig;
         assert.equal(yield* config.bearerToken, "token-1");
-        harness.rejected.add("token-1");
+        harness.rejected = new Set(["token-1"]);
         assert.equal(yield* config.bearerToken, "token-2");
-        harness.rejected.add("token-2");
+        harness.rejected = new Set(["token-1", "token-2"]);
         assert.equal(yield* config.ensureSession(SERVER), "renewed");
-        assert.deepEqual(yield* readSessionIds(harness), ["session-3"]);
+        assert.deepEqual((yield* readLedger(harness)).sessionIds, ["session-3"]);
       }),
     ),
   );
