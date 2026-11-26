@@ -55,6 +55,13 @@ const NativeSegmentRecord = Schema.Struct({
   branchedFrom: Schema.optional(Schema.String),
   /** Tool uses still waiting for their result, by `tool_use_id`, as their item ids. */
   pendingTools: Schema.Record(Schema.String, Schema.String),
+  /** Results read before their tool use, by `tool_use_id`, kept until the use arrives. */
+  earlyResults: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({ output: Schema.String, failed: Schema.Boolean, timestamp: Schema.String }),
+    ),
+  ),
 });
 type NativeSegmentRecord = typeof NativeSegmentRecord.Type;
 
@@ -144,7 +151,7 @@ export function claudeNativeRunLookups(input: {
       const pending =
         toolUseId === undefined ? undefined : input.state.current?.pendingTools[toolUseId];
       if (pending !== undefined) pendingToolItemIds.add(pending);
-    } else if (event._tag === "QueuedPrompt") {
+    } else if (event._tag === "QueuedPrompt" || event._tag === "CommandOutput") {
       segmentIds.add(event.segmentId);
       itemIds.add(event.id);
     } else if (event._tag === "SegmentEnded") {
@@ -236,8 +243,6 @@ interface OpenSegment {
   readonly baseline: StoredNativeRun | undefined;
   readonly items: Array<OrchestrationV2DomainEvent>;
   readonly toolItems: Map<string, OrchestrationV2TurnItem>;
-  /** Results that came before their tool use in this read, by `tool_use_id`. */
-  readonly earlyResults: Map<string, ClaudeTranscriptItem>;
   readonly promptParts: Array<string>;
   promptText: string | undefined;
   createdBy: "user" | "system";
@@ -393,7 +398,6 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     baseline,
     items: [],
     toolItems: new Map(),
-    earlyResults: new Map(),
     promptParts: [],
     promptText: undefined,
     createdBy: "system",
@@ -594,28 +598,31 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     return reopened;
   };
 
-  const onToolResult = (current: OpenSegment, item: ClaudeTranscriptItem, toolUseId: string) => {
+  const completeTool = (
+    current: OpenSegment,
+    toolUseId: string,
+    result: { readonly output: string; readonly failed: boolean; readonly timestamp: string },
+  ) => {
     const pendingId = current.record.pendingTools[toolUseId];
     const tool =
       current.toolItems.get(toolUseId) ??
       (pendingId === undefined ? undefined : input.storedToolItems.get(pendingId));
     if (tool === undefined) {
-      // Claude Code can write a result before its tool use; it waits for the use in this read.
-      current.earlyResults.set(toolUseId, item);
+      // Claude Code can write a result before its tool use; it waits, across reads, for the use.
+      current.record.earlyResults = { ...current.record.earlyResults, [toolUseId]: result };
       return;
     }
     current.record.pendingTools = Object.fromEntries(
       Object.entries(current.record.pendingTools).filter(([id]) => id !== toolUseId),
     );
     current.toolItems.delete(toolUseId);
-    const output = capped(blockText(field(item.block, "content")));
-    const failed = field(item.block, "is_error") === true;
     const finished: OrchestrationV2TurnItem = {
       ...tool,
-      status: failed ? "failed" : "completed",
-      completedAt: at(item.timestamp),
-      updatedAt: at(item.timestamp),
+      status: result.failed ? "failed" : "completed",
+      completedAt: at(result.timestamp),
+      updatedAt: at(result.timestamp),
     };
+    const { output, failed } = result;
     pushItem(
       current,
       finished.type === "command_execution"
@@ -623,9 +630,16 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         : finished.type === "dynamic_tool"
           ? { ...finished, output }
           : finished,
-      item.timestamp,
+      result.timestamp,
     );
   };
+
+  const onToolResult = (current: OpenSegment, item: ClaudeTranscriptItem, toolUseId: string) =>
+    completeTool(current, toolUseId, {
+      output: capped(blockText(field(item.block, "content"))),
+      failed: field(item.block, "is_error") === true,
+      timestamp: item.timestamp,
+    });
 
   const onToolUse = (current: OpenSegment, item: ClaudeTranscriptItem) => {
     const { block } = item;
@@ -658,10 +672,12 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     current.toolItems.set(block.id, tool);
     current.record.pendingTools = { ...current.record.pendingTools, [block.id]: item.id };
     advance(current, item.timestamp);
-    const early = current.earlyResults.get(block.id);
+    const early = current.record.earlyResults?.[block.id];
     if (early !== undefined) {
-      current.earlyResults.delete(block.id);
-      onToolResult(current, early, block.id);
+      current.record.earlyResults = Object.fromEntries(
+        Object.entries(current.record.earlyResults ?? {}).filter(([id]) => id !== block.id),
+      );
+      completeTool(current, block.id, early);
     }
   };
 
@@ -878,6 +894,25 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         if (parsed.source === "custom") customTitle = parsed.title;
         else if (parsed.title !== null) aiTitle = parsed.title;
         break;
+      case "CommandOutput": {
+        const current = resume(parsed.segmentId);
+        if (current === undefined || current.record.own) break;
+        const text = parsed.output.map((part) => part.text).join("\n");
+        if (text.trim().length === 0) break;
+        pushItem(
+          current,
+          {
+            ...itemBase(current, parsed.id, parsed.timestamp, "completed"),
+            type: "system_notice",
+            message: capped(text),
+            ...(parsed.output.some((part) => part.stream === "stderr")
+              ? { level: "warning" as const }
+              : {}),
+          },
+          parsed.timestamp,
+        );
+        break;
+      }
       case "QueuedPrompt": {
         const current = resume(parsed.segmentId);
         if (current === undefined || current.record.own) break;

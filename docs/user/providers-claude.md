@@ -38,6 +38,10 @@ Add a second Claude instance in **Settings → Providers** (or **Add Claude acco
 - **Skills**: Loaded from `<CLAUDE_CONFIG_DIR>/skills`, the project's `.claude/skills` (config dir wins on name collisions), and enabled Claude plugins (e.g. `plugin:review`). Invoke via `$`. Send `disable-model-invocation` skills one per message.
 - **MCP OAuth**: When a Claude MCP server needs sign-in, click **Sign in** on the thread notice, approve in your browser, and paste the final redirect URL into T3 Code (**Finish sign-in**). Connectors added on `claude.ai` authenticate there instead.
 
+## Sessions from your terminal
+
+Every Claude Code session in your Claude homes shows up as a thread, in the project of the folder it ran in. A session a terminal is running is followed as it goes; an older one shows its history when you open it. Send to a session no terminal holds and T3 Code continues that same session, so `claude --resume <id>` in the terminal picks up where it left off (with `CLAUDE_CONFIG_DIR` set for a home other than `~/.claude`). Turn it off, add further Claude homes, exclude folders or restore a session whose thread you deleted under **Settings → Threads → Claude Code sessions**. To keep disk use down, history of sessions you have not opened is read only if you turn on **Read unopened sessions in the background**, and never while the disk has less than the free space you set.
+
 ## Claude in Chrome
 
 To use the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome) in T3 Code threads, add `--chrome` to **Launch arguments** in the Claude instance settings (applies to new sessions). Requires a direct Anthropic `/login` plan—not supported with API keys, `setup-token`, Bedrock/Vertex, or WSL.
