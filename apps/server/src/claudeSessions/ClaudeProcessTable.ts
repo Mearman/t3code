@@ -144,7 +144,7 @@ export const makeClaudeProcessTableReader = Effect.fn("makeClaudeProcessTableRea
           startTimeMicros,
         });
       }
-      return table.length === 0 ? undefined : table;
+      return table;
     }),
     Effect.orElseSucceed(() => undefined),
     Effect.filterOrElse(
