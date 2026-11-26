@@ -153,7 +153,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
           return hold === undefined ? Effect.void : refuse(providerThread, holdDetail(hold), hold);
         }
         // This session's own process has it open, so an unreadable table cannot hide a new writer.
-        return Effect.flatMap(runtime.liveNativeThreadId ?? Effect.succeed(undefined), (live) =>
+        return Effect.flatMap(runtime.liveNativeThreadId ?? Effect.undefined, (live) =>
           live === sessionId
             ? Effect.void
             : refuse(providerThread, uncheckedDetail(probed.failure), probed.failure),
