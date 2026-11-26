@@ -187,7 +187,10 @@ const REQUIRED_BLOCK_FIELDS: ReadonlyMap<string, (block: unknown) => boolean> = 
 ]);
 
 class MalformedLine {
-  constructor(readonly cause: unknown) {}
+  readonly cause: unknown;
+  constructor(cause: unknown) {
+    this.cause = cause;
+  }
 }
 
 function decoded<A>(exit: Exit.Exit<A, unknown>): A {
