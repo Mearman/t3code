@@ -15,6 +15,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
@@ -57,11 +58,19 @@ const NativeSegmentRecord = Schema.Struct({
 });
 type NativeSegmentRecord = typeof NativeSegmentRecord.Type;
 
-/** What the next read of a transcript needs to extend the run the last read left open. */
-export const ClaudeNativeRunState = Schema.Struct({ current: Schema.NullOr(NativeSegmentRecord) });
+/**
+ * What the next read of a transcript needs: the run the last read left open, and how many of T3 Code's older turns, by prompt-text digest, earlier segments were matched to.
+ */
+export const ClaudeNativeRunState = Schema.Struct({
+  current: Schema.NullOr(NativeSegmentRecord),
+  ownTextsMatched: Schema.Record(Schema.String, Schema.Number),
+});
 export type ClaudeNativeRunState = typeof ClaudeNativeRunState.Type;
 
-export const initialClaudeNativeRunState: ClaudeNativeRunState = { current: null };
+export const initialClaudeNativeRunState: ClaudeNativeRunState = {
+  current: null,
+  ownTextsMatched: {},
+};
 
 export interface ClaudeNativeRunTarget {
   readonly sessionId: string;
@@ -69,12 +78,26 @@ export interface ClaudeNativeRunTarget {
   readonly providerThreadId: ProviderThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly modelSelection: ModelSelection;
+  /** The thread is a T3 Code fork, which shows its parent's history, so lines copied from it are not written again. */
+  readonly skipCopied: boolean;
 }
 
-/** Prompt and assistant line uuids of the turns T3 Code ran itself in this session. */
+/** What identifies the turns T3 Code ran itself in this session. */
 export interface ClaudeOwnTurns {
   readonly promptUuids: ReadonlySet<string>;
   readonly assistantUuids: ReadonlySet<string>;
+  /** Prompt-text digests of T3 Code turns that recorded no prompt uuid (older builds, or no reply), with their counts. */
+  readonly promptTexts: ReadonlyMap<string, number>;
+}
+
+/** A short FNV-1a digest of a prompt's text, so run state stays small however long the prompt. */
+export function claudePromptTextDigest(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${text.length}:${hash.toString(16)}`;
 }
 
 export function claudeNativeRunIds(sessionId: string, segmentId: string) {
@@ -138,6 +161,10 @@ export interface ClaudeNativeRunPlanInput {
   readonly nextRunOrdinal: number;
   readonly nextProviderTurnOrdinal: number;
   readonly eventId: () => EventId;
+  /** Maps a model id Claude Code recorded to the slug T3 Code selects it by. */
+  readonly modelSlug: (reported: string) => string;
+  /** Stands in for a line whose timestamp is missing or not a time, until a valid one follows. */
+  readonly fallbackAt: DateTime.Utc;
 }
 
 export interface ClaudeNativeRunPlan {
@@ -151,6 +178,10 @@ export interface ClaudeNativeRunPlan {
   /** The latest of each title kind this read saw; a null custom title clears a rename. */
   readonly aiTitle: string | undefined;
   readonly customTitle: string | null | undefined;
+  /** The latest transcript time this read saw, which is when the session last changed. */
+  readonly lastActivityAt: DateTime.Utc | undefined;
+  /** The session this one was forked from, from a copied line or a `derived-from` fork record. */
+  readonly forkedFromSessionId: string | undefined;
 }
 
 const SETTLED_ITEM_STATUSES: ReadonlySet<string> = new Set([
@@ -185,17 +216,9 @@ function blockText(content: unknown): string {
     .join("\n");
 }
 
-const at = (timestamp: string) => DateTime.makeUnsafe(timestamp);
-const millis = (timestamp: string) => DateTime.toEpochMillis(at(timestamp));
-
-function sameRun(left: StoredNativeRun, right: StoredNativeRun): boolean {
-  return (
-    millis(left.completedAt) === millis(right.completedAt) &&
-    left.interrupted === right.interrupted &&
-    left.lastAssistantUuid === right.lastAssistantUuid &&
-    left.model === right.model
-  );
-}
+/** A transcript time, or undefined when the text is not one; a malformed time is never fatal. */
+export const parseTranscriptTime = (timestamp: string): DateTime.Utc | undefined =>
+  Option.getOrUndefined(Option.map(DateTime.make(timestamp), DateTime.toUtc));
 
 interface OpenSegment {
   readonly record: Mutable<NativeSegmentRecord>;
@@ -207,6 +230,8 @@ interface OpenSegment {
   promptText: string | undefined;
   createdBy: "user" | "system";
   itemOrdinal: number;
+  /** This read saw the segment end, so its run's final state is written. */
+  endedNow: boolean;
 }
 
 /**
@@ -223,14 +248,42 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
   let aiTitle: string | undefined;
   let customTitle: string | null | undefined;
   let latestRecord: NativeSegmentRecord | null = input.state.current;
+  let lastActivity: DateTime.Utc | undefined;
+  let forkedFromSessionId: string | undefined;
   const branches = new Map<string, string>();
+  const ownTextsMatched: Record<string, number> = { ...input.state.ownTextsMatched };
 
-  // A segment is T3 Code's when its prompt carries a uuid T3 Code allocated or a reply T3 Code saw.
+  let lastGood = input.fallbackAt;
+  const at = (timestamp: string): DateTime.Utc => {
+    const parsed = parseTranscriptTime(timestamp);
+    if (parsed !== undefined) lastGood = parsed;
+    return parsed ?? lastGood;
+  };
+  const iso = (timestamp: string) => DateTime.formatIso(at(timestamp));
+  const millis = (timestamp: string) => DateTime.toEpochMillis(at(timestamp));
+  const noteActivity = (instant: DateTime.Utc) => {
+    if (
+      lastActivity === undefined ||
+      DateTime.toEpochMillis(instant) > DateTime.toEpochMillis(lastActivity)
+    ) {
+      lastActivity = instant;
+    }
+  };
+  const sameRun = (left: StoredNativeRun, right: StoredNativeRun) =>
+    millis(left.completedAt) === millis(right.completedAt) &&
+    left.interrupted === right.interrupted &&
+    left.lastAssistantUuid === right.lastAssistantUuid &&
+    left.model === right.model;
+
+  // A segment is T3 Code's when its prompt carries a uuid T3 Code allocated, holds a reply T3 Code
+  // saw, or, for T3 Code turns that recorded neither, has the prompt text of one not yet matched.
   const ownSegments = new Set<string>();
   for (const parsed of input.events) {
     if (parsed._tag === "SegmentStarted") {
       const promptId = parsed.prompt?.promptId;
+      const copied = input.target.skipCopied && parsed.forkedFrom !== undefined;
       if (
+        copied ||
         input.own.promptUuids.has(parsed.segmentId) ||
         (promptId !== undefined && input.own.promptUuids.has(promptId))
       ) {
@@ -244,6 +297,18 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
       ownSegments.add(parsed.segmentId);
     }
   }
+  for (const parsed of input.events) {
+    if (parsed._tag !== "SegmentStarted" || ownSegments.has(parsed.segmentId)) continue;
+    if (input.storedRuns.has(parsed.segmentId)) continue;
+    const text = parsed.prompt?.text.trim() ?? "";
+    if (text.length === 0) continue;
+    const digest = claudePromptTextDigest(text);
+    const matched = ownTextsMatched[digest] ?? 0;
+    if (matched < (input.own.promptTexts.get(digest) ?? 0)) {
+      ownTextsMatched[digest] = matched + 1;
+      ownSegments.add(parsed.segmentId);
+    }
+  }
 
   const event = (body: EventBody): OrchestrationV2DomainEvent => ({
     id: input.eventId(),
@@ -253,6 +318,10 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     ...body,
     occurredAt: at(body.occurredAt),
   });
+  const modelSelectionOf = (record: NativeSegmentRecord) =>
+    record.model === undefined
+      ? target.modelSelection
+      : { instanceId: target.providerInstanceId, model: record.model };
 
   const itemBase = (
     segment: OpenSegment,
@@ -280,8 +349,9 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
   };
 
   const advance = (segment: OpenSegment, timestamp: string) => {
+    noteActivity(at(timestamp));
     if (millis(timestamp) > millis(segment.record.completedAt)) {
-      segment.record.completedAt = timestamp;
+      segment.record.completedAt = iso(timestamp);
     }
   };
 
@@ -315,6 +385,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     promptText: undefined,
     createdBy: "system",
     itemOrdinal: 1,
+    endedNow: false,
   });
 
   let segment: OpenSegment | undefined;
@@ -332,7 +403,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
       threadId: target.threadId,
       ordinal: record.ordinal,
       providerInstanceId: target.providerInstanceId,
-      modelSelection: target.modelSelection,
+      modelSelection: modelSelectionOf(record),
       providerThreadId: target.providerThreadId,
       userMessageId: ids.userMessageId,
       rootNodeId: ids.nodeId,
@@ -468,11 +539,15 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     if (current === undefined) return;
     latestRecord = { ...current.record };
     if (current.record.own) return;
-    const changed =
+    // An open turn's run is written when it first appears and again when it ends, not on every
+    // line, so following a long live turn adds only its items.
+    const writeRun =
       current.baseline === undefined ||
-      current.items.length > 0 ||
-      !sameRun(current.baseline, current.record);
-    if (!changed) return;
+      (current.endedNow && !sameRun(current.baseline, current.record));
+    if (!writeRun) {
+      if (current.items.length > 0) groups.push(current.items);
+      return;
+    }
     firstRunOrdinal = Math.min(firstRunOrdinal ?? current.record.ordinal, current.record.ordinal);
     lastRunOrdinal = Math.max(lastRunOrdinal ?? 0, current.record.ordinal);
     lastProviderTurnOrdinal = Math.max(
@@ -577,8 +652,9 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
       return;
     }
     current.record.lastAssistantUuid = item.lineUuid;
+    noteActivity(at(item.timestamp));
     if (item.model !== undefined && item.model !== "<synthetic>") {
-      current.record.model ??= item.model;
+      current.record.model ??= input.modelSlug(item.model);
     }
     if (block.type === "text" && block.text.trim().length > 0) {
       const messageId = MessageId.make(item.id);
@@ -705,8 +781,8 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
             ...allocated,
             segmentId: parsed.segmentId,
             own,
-            requestedAt: parsed.timestamp,
-            completedAt: parsed.timestamp,
+            requestedAt: iso(parsed.timestamp),
+            completedAt: iso(parsed.timestamp),
             interrupted: false,
             ...(prompt?.originKind === undefined ? {} : { turnOrigin: prompt.originKind }),
             ...(branchedFrom === undefined ? {} : { branchedFrom }),
@@ -720,6 +796,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
           started.createdBy = "user";
         }
         segment = started;
+        noteActivity(at(parsed.timestamp));
         break;
       }
       case "Item": {
@@ -731,7 +808,9 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         const current = resume(parsed.segmentId);
         if (current === undefined || current.record.own) break;
         current.record.interrupted = parsed.reason === "interrupted";
-        current.record.completedAt = parsed.timestamp;
+        current.record.completedAt = iso(parsed.timestamp);
+        current.endedNow = true;
+        noteActivity(at(parsed.timestamp));
         if (parsed.lastAssistantUuid !== undefined) {
           current.record.lastAssistantUuid = parsed.lastAssistantUuid;
         }
@@ -767,8 +846,13 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         onQueuedPrompt(current, parsed);
         break;
       }
-      case "DerivedFrom":
       case "ForkedFrom":
+        forkedFromSessionId ??= parsed.sessionId;
+        break;
+      case "DerivedFrom":
+        forkedFromSessionId ??= parsed.sessions.find(
+          (session) => session.via === "fork",
+        )?.sessionId;
         break;
     }
   }
@@ -776,11 +860,13 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
 
   return {
     groups,
-    state: { current: latestRecord },
+    state: { current: latestRecord, ownTextsMatched },
     firstRunOrdinal,
     lastRunOrdinal,
     lastProviderTurnOrdinal,
     aiTitle,
     customTitle,
+    lastActivityAt: lastActivity,
+    forkedFromSessionId,
   };
 }
