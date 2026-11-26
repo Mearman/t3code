@@ -25,6 +25,7 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -158,6 +159,7 @@ const make = Effect.gen(function* () {
   const syncState = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
+  const random = yield* SecureRandom.SecureRandom;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const placements = yield* ClaudeSessionProjects.ClaudeSessionProjects;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -170,6 +172,13 @@ const make = Effect.gen(function* () {
       ? ceiling
       : DEFAULT_RUNTIME_MODE;
   const model = DEFAULT_MODEL_BY_PROVIDER[CLAUDE_PROVIDER] ?? DEFAULT_MODEL;
+
+  // Helpers shared with other modules read the file system as a service; this one supplies its own.
+  const withHost = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
 
   const fail = (operation: string, sessionId?: string) => (cause: unknown) =>
     new ClaudeSessionSyncError({
@@ -553,12 +562,15 @@ const make = Effect.gen(function* () {
     if (active.length > 0) return { row, atEnd: false, deferred: true };
     const saved = Option.flatMap(Option.fromNullishOr(row.parserState), decodeSyncCursorState);
     const cursor = Option.isSome(saved) ? saved.value.cursor : initialClaudeTranscriptCursor;
+    // Event ids only need to be unique; one random token per read and a counter make them so.
+    const readToken = yield* random.uuidV4();
+    let nextEvent = 0;
     const read = yield* readClaudeTranscript({
       filePath: row.filePath,
       sessionId: row.sessionId,
       cursor,
       maxBytes: READ_BUDGET_BYTES,
-    });
+    }).pipe(withHost);
     if (read.malformed.length > 0) {
       yield* Effect.logWarning("Skipped Claude transcript lines that could not be read", {
         sessionId: row.sessionId,
@@ -608,7 +620,7 @@ const make = Effect.gen(function* () {
       storedToolItems,
       nextRunOrdinal: nextRun?.next ?? 1,
       nextProviderTurnOrdinal: nextTurn?.next ?? 1,
-      eventId: () => EventId.make(`event:claude-sync:${globalThis.crypto.randomUUID()}`),
+      eventId: () => EventId.make(`event:claude-sync:${readToken}:${nextEvent++}`),
     });
     yield* writeGroups(plan.groups);
     yield* updateThreadAfterRead({ target, plan });
@@ -797,6 +809,7 @@ const make = Effect.gen(function* () {
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const recentSince = now - settings.claudeSessionSync.hydrateRecentDays * DAY_MS;
     const registry = yield* readClaudeSessionRegistry(store.sessionsDir).pipe(
+      withHost,
       Effect.mapError(fail("read the session registry")),
     );
     const live = new Set(registry.entries.map((entry) => entry.sessionId));

@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type { DeepPartial } from "@t3tools/shared/Struct";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -82,6 +83,7 @@ const persistence = Layer.mergeAll(
   ProviderSessionRuntime.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
   ClaudeSessionSyncState.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
   IdAllocator.layer,
+  SecureRandom.layerWebCrypto,
   ThreadCommandExecutor.layer,
   Layer.mock(ClaudeSessionProjects.ClaudeSessionProjects)({
     resolve: () => Effect.succeed({ projectId, worktreePath: null }),
