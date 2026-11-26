@@ -6,57 +6,67 @@ import * as TestClock from "effect/testing/TestClock";
 import type { LiveStreamProgress } from "../orchestration-v2/LiveStreamBudget.ts";
 import { waitForLiveSubscribers } from "./ClaudeSyncCapacity.ts";
 
-/** A subscriber holding `fullness` of its budget, which releases `perTick` items each time it is read. */
-const subscriber = (fullness: number, perTick: number) => {
+/** A subscriber holding `fullness` of its budget; each `ack` releases one item and frees 0.1. */
+const subscriber = (fullness: number) => {
   let released = 0;
   let full = fullness;
-  const progress: LiveStreamProgress = {
-    fullness: () => full,
-    released: () => released,
-  };
+  const progress: LiveStreamProgress = { fullness: () => full, released: () => released };
   return {
     progress,
-    tick: () => {
-      released += perTick;
-      if (perTick > 0) full = Math.max(0, full - 0.1);
+    ack: () => {
+      released += 1;
+      full = Math.max(0, full - 0.1);
     },
   };
 };
 
 describe("waitForLiveSubscribers", () => {
-  it.effect("goes on past a subscriber that acknowledges nothing, and stays passed it", () =>
+  it.effect("waits for a slow subscriber that acknowledges every few seconds", () =>
     Effect.gen(function* () {
-      const stalled = subscriber(0.9, 0);
-      const wait = waitForLiveSubscribers(() => [stalled.progress]);
-      const first = yield* Effect.forkChild(wait);
-      yield* TestClock.adjust("50 millis");
-      yield* Fiber.join(first);
-      // Already found stalled, it holds no later step back: under the test clock a sleep never ends.
-      yield* wait;
-    }),
-  );
-
-  it.effect("waits for a subscriber that is still reading until it falls below the bound", () =>
-    Effect.gen(function* () {
-      const reading = subscriber(0.5, 1);
+      const slow = subscriber(0.5);
       let done = false;
       const fiber = yield* Effect.forkChild(
-        waitForLiveSubscribers(() => [reading.progress]).pipe(
+        waitForLiveSubscribers(() => [slow.progress]).pipe(
           Effect.ensuring(Effect.sync(() => (done = true))),
         ),
       );
-      // The wait takes its first reading before the subscriber acknowledges anything.
-      yield* Effect.yieldNow;
-      // It acknowledges between each check and drops 0.1 each time: 0.5, 0.4, 0.3, 0.2.
-      for (let check = 0; check < 2; check++) {
-        reading.tick();
-        yield* TestClock.adjust("50 millis");
+      // One acknowledgement every 3 seconds, far slower than the 50 ms the wait checks at: 0.4, 0.3, then 0.2.
+      for (let ack = 0; ack < 2; ack++) {
+        yield* TestClock.adjust("3 seconds");
         expect(done).toBe(false);
+        slow.ack();
       }
-      reading.tick();
+      yield* TestClock.adjust("3 seconds");
+      expect(done).toBe(false);
+      slow.ack();
       yield* TestClock.adjust("50 millis");
       yield* Fiber.join(fiber);
       expect(done).toBe(true);
     }),
+  );
+
+  it.effect(
+    "passes over a subscriber that acknowledges nothing for the stall window, then keeps passing it",
+    () =>
+      Effect.gen(function* () {
+        const stuck = subscriber(0.9);
+        const wait = waitForLiveSubscribers(() => [stuck.progress]);
+        let done = false;
+        const first = yield* Effect.forkChild(
+          wait.pipe(Effect.ensuring(Effect.sync(() => (done = true)))),
+        );
+        yield* TestClock.adjust("9 seconds");
+        expect(done).toBe(false);
+        yield* TestClock.adjust("2 seconds");
+        yield* Fiber.join(first);
+        // Judged stalled, it holds no later step back: under the test clock a sleep would never end.
+        yield* wait;
+        // Once it acknowledges again it is waited for again.
+        stuck.ack();
+        let again = false;
+        yield* Effect.forkChild(wait.pipe(Effect.ensuring(Effect.sync(() => (again = true)))));
+        yield* TestClock.adjust("1 second");
+        expect(again).toBe(false);
+      }),
   );
 });

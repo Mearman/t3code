@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  EventId,
   MessageId,
   NodeId,
   ProjectId,
@@ -92,7 +93,7 @@ const ROOMY = 1024 ** 4;
 const capacityOf = (overrides: Partial<ClaudeSyncCapacity.ClaudeSyncCapacity["Service"]> = {}) =>
   Layer.succeed(ClaudeSyncCapacity.ClaudeSyncCapacity, {
     subscribersReady: Effect.void,
-    hostIdle: Effect.void,
+    hostIdle: Effect.succeed(true),
     freeDiskBytes: Effect.succeed(ROOMY),
     ...overrides,
   });
@@ -311,6 +312,73 @@ const insertRunningRun = (threadId: ThreadId) =>
 const OTHER = "00000000-0000-4000-8000-0000000000bb";
 const THIRD = "00000000-0000-4000-8000-0000000000cc";
 const threadOf = (sessionId: string) => ThreadId.make(`claude:${sessionId}`);
+
+/** An event sink that fails, once, the first write that holds this item, as a full disk or a lost lock would. */
+const sinkFailingOnceAt = (itemId: string) =>
+  Layer.effect(
+    EventSink.EventSinkV2,
+    Effect.gen(function* () {
+      const real = yield* EventSink.EventSinkV2;
+      let failed = false;
+      return EventSink.EventSinkV2.of({
+        ...real,
+        write: (input) =>
+          !failed &&
+          input.events.some(
+            (event) => event.type === "turn-item.updated" && event.payload.id === itemId,
+          )
+            ? Effect.sync(() => (failed = true)).pipe(Effect.andThen(Effect.die("write failed")))
+            : real.write(input),
+      });
+    }),
+  );
+
+/** A finished T3 Code run with this ordinal, copied from a native run, that owns the session's provider thread. */
+const insertT3Run = (threadId: ThreadId, ordinal: number) =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const { runs, providerThreads } = yield* projections.getThreadRecords(threadId, [
+      "runs",
+      "providerThreads",
+    ]);
+    const [template] = runs;
+    const [providerThread] = providerThreads;
+    if (template === undefined || providerThread === undefined) {
+      return yield* Effect.die("No run or provider thread to copy.");
+    }
+    const { nativeOrigin: _nativeOrigin, ...run } = template;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("event:test-t3-run"),
+          type: "run.created",
+          threadId,
+          driver: providerThread.driver,
+          providerInstanceId: providerThread.providerInstanceId,
+          runId: RunId.make("run:t3-owner"),
+          occurredAt: template.requestedAt,
+          payload: { ...run, id: RunId.make("run:t3-owner"), ordinal },
+        },
+        {
+          id: EventId.make("event:test-t3-owner"),
+          type: "provider-thread.updated",
+          threadId,
+          driver: providerThread.driver,
+          providerInstanceId: providerThread.providerInstanceId,
+          occurredAt: providerThread.updatedAt,
+          payload: { ...providerThread, firstRunOrdinal: ordinal, lastRunOrdinal: ordinal },
+        },
+      ],
+    });
+  });
+
+const providerThreadOf = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const { providerThreads } = yield* projections.getThreadRecords(threadId, ["providerThreads"]);
+    return providerThreads[0];
+  });
 
 const withTempRoot = <A, E, R>(body: (root: string) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -737,7 +805,7 @@ describe("ClaudeSessionSync", () => {
               ProjectionStore.ProjectionStoreV2 | EventSink.EventSinkV2 | IdAllocator.IdAllocatorV2
             >();
             return {
-              hostIdle: Effect.void,
+              hostIdle: Effect.succeed(true),
               subscribersReady: Effect.gen(function* () {
                 const projections = yield* ProjectionStore.ProjectionStoreV2;
                 const thread = yield* projections.findThread(claudeThreadId);
@@ -1221,7 +1289,7 @@ describe("ClaudeSessionSync", () => {
         yield* append(home, [...firstTurn, ...secondTurn]);
         yield* append(home, firstTurn, "-work-project", OTHER);
         yield* markLive(OTHER);
-        const busy = capacityOf({ hostIdle: Effect.never });
+        const busy = capacityOf({ hostIdle: Effect.succeed(false) });
         yield* Effect.gen(function* () {
           yield* syncAll({ full: true });
           expect((yield* sessionRow(home))?.hydrationState).toBe("entry");
@@ -1567,6 +1635,274 @@ describe("ClaudeSessionSync", () => {
             );
           }
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+  it.effect("keeps turns that start in the same second in the order they ran", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [
+          prompt("p1", null, "prompt-1", "2026-11-26T10:00:00.100Z"),
+          reply("a1", "p1", "2026-11-26T10:00:00.300Z"),
+          prompt("p2", "a1", "prompt-2", "2026-11-26T10:00:00.500Z"),
+          reply("a2", "p2", "2026-11-26T10:00:00.700Z"),
+          prompt("p3", "a2", "prompt-3", "2026-11-26T10:00:00.900Z"),
+          reply("a3", "p3", "2026-11-26T10:00:00.950Z"),
+        ]);
+        yield* Effect.gen(function* () {
+          yield* syncAll({ full: true });
+          yield* openThread(claudeThreadId);
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([
+            [1, "completed", "p1"],
+            [2, "completed", "p2"],
+            [3, "completed", "p3"],
+          ]);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("moves only the runs a turn filed among earlier ones pushes on, with their items", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [
+          prompt("p1", null, "prompt-1", "2026-11-26T10:00:00.000Z"),
+          reply("a1", "p1", "2026-11-26T10:00:00.100Z"),
+          prompt("p2", "a1", "prompt-2", "2026-11-26T10:00:01.000Z"),
+          reply("a2", "p2", "2026-11-26T10:00:01.100Z"),
+          prompt("p9", "a2", "prompt-9", "2026-11-26T10:05:00.000Z"),
+          reply("a9", "p9", "2026-11-26T10:05:05.000Z"),
+        ]);
+        yield* markLive();
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* syncAll({ full: true });
+          const runsOf = () =>
+            Effect.map(
+              projections.getThreadRecords(claudeThreadId, ["runs"]),
+              ({ runs }) => new Map(runs.map((run) => [run.nativeOrigin?.promptUuid, run.ordinal])),
+            );
+          const before = yield* runsOf();
+          // A root written late with an earlier time files a turn between p1 and p2.
+          yield* append(home, [
+            prompt("px", null, "prompt-x", "2026-11-26T10:00:00.500Z"),
+            reply("ax", "px", "2026-11-26T10:00:00.600Z"),
+          ]);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          const after = yield* runsOf();
+          expect(after.get("p1")).toBe(before.get("p1"));
+          expect(after.get("p9")).toBe(before.get("p9"));
+          const p2 = after.get("p2");
+          expect(p2).toBe((before.get("p2") ?? 0) + 1);
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([
+            [1, "completed", "p1"],
+            [2, "completed", "px"],
+            [3, "completed", "p2"],
+            [4, "completed", "p9"],
+          ]);
+          // The moved run's reply follows it into its ordinal's range of item positions.
+          const moved = yield* projections.getTurnItem({
+            threadId: claudeThreadId,
+            itemId: TurnItemId.make(`x:${SESSION}:a2:0`),
+          });
+          expect(Math.floor((moved?.ordinal ?? 0) / 1_000_000)).toBe(p2);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("leaves the provider thread with the T3 Code run that owns it", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, firstTurn);
+        yield* Effect.gen(function* () {
+          yield* syncAll({ full: true });
+          yield* openThread(claudeThreadId);
+          // A run from before this change, with a low ordinal, that owns the provider thread.
+          yield* insertT3Run(claudeThreadId, 1);
+          // A terminal then continues the session; its turn is read when the thread is opened again.
+          yield* append(home, secondTurn);
+          yield* openThread(claudeThreadId);
+          expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
+          expect((yield* providerThreadOf(claudeThreadId))?.lastRunOrdinal).toBe(1);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("writes a live turn's lines again after a write of them fails", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [
+          prompt("p1", null, "prompt-1", "2026-11-26T10:00:00.000Z"),
+          line({
+            type: "assistant",
+            uuid: "a1",
+            parentUuid: "p1",
+            timestamp: "2026-11-26T10:00:01.000Z",
+            message: {
+              id: "msg-a1",
+              model: "claude-test",
+              role: "assistant",
+              content: [{ type: "thinking", thinking: "Planning", signature: "s" }],
+              stop_reason: null,
+            },
+          }),
+        ]);
+        yield* markLive();
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* syncAll({ full: true });
+          // The open turn's cache is in memory; the write of the next line fails once.
+          yield* append(home, [reply("a2", "a1", "2026-11-26T10:00:05.000Z")]);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toHaveLength(1);
+          yield* append(home, [reply("a3", "a2", "2026-11-26T10:00:09.000Z")]);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          const item = (uuid: string) =>
+            projections.getTurnItem({
+              threadId: claudeThreadId,
+              itemId: TurnItemId.make(`x:${SESSION}:${uuid}:0`),
+            });
+          expect((yield* item("a2"))?.type).toBe("assistant_message");
+          expect((yield* item("a3"))?.type).toBe("assistant_message");
+        }).pipe(
+          Effect.provide(
+            syncLayer(settingsFor([home]), capacityFree, sinkFailingOnceAt(`x:${SESSION}:a2:0`)),
+          ),
+        );
+      }),
+    ),
+  );
+
+  it.effect("queues an opened session again when its step is interrupted, and frees its turn", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        for (const sessionId of [SESSION, OTHER, THIRD]) {
+          yield* append(home, firstTurn, "-work-project", sessionId);
+        }
+        let hold = false;
+        const reached = { count: 0 };
+        const waiting = yield* Deferred.make<void>();
+        // Each opened step waits here; the first two are interrupted, as a settings change does.
+        const holding = capacityOf({
+          subscribersReady: Effect.suspend(() =>
+            hold
+              ? Effect.sync(() => reached.count++).pipe(
+                  Effect.andThen(Deferred.succeed(waiting, undefined)),
+                  Effect.andThen(Effect.never),
+                )
+              : Effect.void,
+          ),
+        });
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          expect(yield* sync.sweep({ full: true })).toEqual([]);
+          hold = true;
+          for (const sessionId of [SESSION, OTHER]) {
+            yield* sync.hydrateThread(threadOf(sessionId));
+            const reading = yield* Effect.forkChild(sync.drain);
+            yield* Deferred.await(waiting);
+            yield* Fiber.interrupt(reading);
+          }
+          hold = false;
+          yield* sync.hydrateThread(threadOf(THIRD));
+          expect(yield* sync.drain).toEqual([]);
+          for (const sessionId of [SESSION, OTHER, THIRD]) {
+            expect((yield* sessionRow(home, sessionId))?.hydrationState).toBe("full");
+          }
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]), holding)));
+      }),
+    ),
+  );
+
+  it.effect("follows live and opened sessions while the fill waits for a busy host", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, firstTurn);
+        yield* append(home, firstTurn, "-work-project", OTHER);
+        yield* append(home, firstTurn, "-work-project", THIRD);
+        const busy = capacityOf({ hostIdle: Effect.succeed(false) });
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          expect(yield* sync.sweep({ full: true })).toEqual([]);
+          yield* markLive(OTHER);
+          yield* sync.pollLive;
+          yield* sync.hydrateThread(claudeThreadId);
+          expect(yield* sync.drain).toEqual([]);
+          expect((yield* sessionRow(home))?.hydrationState).toBe("full");
+          expect(yield* nativeRuns(threadOf(OTHER))).toHaveLength(1);
+          // The fill would have taken THIRD; the busy host holds it back without holding the rest.
+          expect((yield* sessionRow(home, THIRD))?.hydrationState).toBe("entry");
+        }).pipe(Effect.provide(syncLayer(settingsFor([home], { backgroundFill: true }), busy)));
+      }),
+    ),
+  );
+
+  it.effect(
+    "says why a loaded session stops being followed below the disk floor, and when it goes on",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const home = yield* makeHome(root, "home");
+          yield* append(home, firstTurn);
+          yield* markLive();
+          let free = ROOMY;
+          const floor = capacityOf({ freeDiskBytes: Effect.sync(() => free) });
+          yield* Effect.gen(function* () {
+            const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const notice = () =>
+              projections.getTurnItem({
+                threadId: claudeThreadId,
+                itemId: TurnItemId.make(`x:${SESSION}:disk`),
+              });
+            yield* syncAll({ full: true });
+            expect((yield* sessionRow(home))?.hydrationState).toBe("full");
+            free = 1024 ** 3;
+            yield* append(home, secondTurn);
+            yield* sync.pollLive;
+            expect(yield* sync.drain).toEqual([]);
+            expect(yield* notice()).toMatchObject({ type: "system_notice", status: "failed" });
+            expect(yield* nativeRuns(claudeThreadId)).toHaveLength(1);
+            free = ROOMY;
+            expect(yield* sync.sweep()).toEqual([]);
+            expect(yield* sync.drain).toEqual([]);
+            expect(yield* notice()).toMatchObject({ status: "completed" });
+            expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
+          }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), floor)));
+        }),
+      ),
+  );
+
+  it.effect("removes the instance of an additional home once the home is no longer listed", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        const extra = yield* makeHome(root, "extra");
+        yield* Effect.gen(function* () {
+          const settings = yield* ServerSettingsModule.ServerSettingsService;
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          expect(yield* sync.registerAdditionalHomes).toBe(true);
+          expect(Object.keys((yield* settings.getSettings).providerInstances)).toHaveLength(2);
+          yield* settings.updateSettings({ claudeSessionSync: { additionalHomes: [] } });
+          expect(yield* sync.registerAdditionalHomes).toBe(true);
+          expect(Object.keys((yield* settings.getSettings).providerInstances)).toEqual([
+            Object.keys(settingsFor([home]).providerInstances ?? {})[0],
+          ]);
+          // The instance the user configured stays.
+          expect(yield* sync.registerAdditionalHomes).toBe(false);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home], { additionalHomes: [extra] }))));
       }),
     ),
   );
