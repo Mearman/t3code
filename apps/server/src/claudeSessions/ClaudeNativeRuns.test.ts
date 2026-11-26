@@ -18,6 +18,7 @@ import type * as Scope from "effect/Scope";
 import {
   claimClaudeOwnTurnByText,
   claudeNativeItemLineUuid,
+  claudeNativeOrdinals,
   claudeNativeResultsNeedWholeTurn,
   claudeNativeRunIds,
   claudePromptTextKey,
@@ -105,12 +106,14 @@ const planOf = (
     readonly storedItems?: ReadonlyMap<string, StoredNativeItem>;
     readonly ordinal?: number;
     readonly cache?: ClaudeNativeTurnCache;
+    readonly rewrite?: boolean;
   } = {},
 ) =>
   planClaudeNativeTurn({
     target,
     content,
     cache: overrides.cache ?? newClaudeNativeTurnCache(),
+    rewrite: overrides.rewrite ?? false,
     ordinal: overrides.ordinal ?? 1,
     providerTurnOrdinal: overrides.ordinal ?? 1,
     stored: overrides.stored ?? false,
@@ -483,6 +486,67 @@ describe("planClaudeNativeTurn across reads", () => {
       }),
     ),
   );
+});
+
+describe("claudeNativeOrdinals", () => {
+  const at = (iso: string) => DateTime.toEpochMillis(DateTime.makeUnsafe(iso));
+  const s = Math.floor(at("2026-11-26T10:00:00.000Z") / 1000);
+
+  it("keeps turns that start in the same second in turn order", () => {
+    const ordinals = claudeNativeOrdinals(
+      [
+        { id: "a", startMs: at("2026-11-26T10:00:00.100Z") },
+        { id: "b", startMs: at("2026-11-26T10:00:00.900Z") },
+        { id: "c", startMs: at("2026-11-26T10:00:01.000Z") },
+      ],
+      new Set(),
+    );
+    expect([...ordinals]).toEqual([
+      ["a", s],
+      ["b", s + 1],
+      ["c", s + 2],
+    ]);
+  });
+
+  it("passes over ordinals T3 Code's runs hold, and follows an untimed turn after the one before it", () => {
+    const ordinals = claudeNativeOrdinals(
+      [
+        { id: "a", startMs: at("2026-11-26T10:00:00.000Z") },
+        { id: "b", startMs: Number.NaN },
+        { id: "c", startMs: at("2026-11-26T10:00:00.000Z") },
+      ],
+      new Set([s + 1]),
+    );
+    expect([...ordinals]).toEqual([
+      ["a", s],
+      ["b", s + 2],
+      ["c", s + 3],
+    ]);
+  });
+
+  it("changes no earlier ordinal when a turn is appended, and only pushed ones when one is filed earlier", () => {
+    const a = { id: "a", startMs: at("2026-11-26T10:00:00.000Z") };
+    const base = [
+      a,
+      { id: "b", startMs: at("2026-11-26T10:00:00.500Z") },
+      { id: "c", startMs: at("2026-11-26T10:05:00.000Z") },
+    ];
+    const before = claudeNativeOrdinals(base, new Set());
+    const appended = claudeNativeOrdinals(
+      [...base, { id: "d", startMs: at("2026-11-26T10:06:00.000Z") }],
+      new Set(),
+    );
+    expect([...appended].slice(0, 3)).toEqual([...before]);
+    // A late line files `x` between `a` and `b`: `b` is pushed one on, `c` stays.
+    const filed = claudeNativeOrdinals(
+      [a, { id: "x", startMs: at("2026-11-26T10:00:00.200Z") }, ...base.slice(1)],
+      new Set(),
+    );
+    expect(filed.get("a")).toBe(before.get("a"));
+    expect(filed.get("x")).toBe(s + 1);
+    expect(filed.get("b")).toBe(s + 2);
+    expect(filed.get("c")).toBe(before.get("c"));
+  });
 });
 
 describe("planClaudeRemovedItems", () => {

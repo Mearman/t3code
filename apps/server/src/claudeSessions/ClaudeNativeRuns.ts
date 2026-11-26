@@ -130,6 +130,25 @@ export function claimClaudeOwnTurnByText(input: {
   return true;
 }
 
+/**
+ * The ordinal each native turn's run takes, from the session's whole turn list in turn order (by start, then the tracker's order): o_i = max(startSecond_i, o_(i-1) + 1), passing over every value in `taken` (T3 Code's runs and provider turns, and native runs no longer shown). It depends only on the turns and `taken`, never on the order runs are written in. A turn appended last changes no earlier ordinal; a turn filed among earlier ones changes only the later ordinals its value pushes up. A turn whose start is not a time follows the one before it.
+ */
+export function claudeNativeOrdinals(
+  turns: ReadonlyArray<{ readonly id: string; readonly startMs: number }>,
+  taken: ReadonlySet<number>,
+): ReadonlyMap<string, number> {
+  const ordinals = new Map<string, number>();
+  let previous = 0;
+  for (const turn of turns) {
+    const start = Number.isNaN(turn.startMs) ? 0 : Math.floor(turn.startMs / 1000);
+    let ordinal = Math.max(start, previous + 1);
+    while (taken.has(ordinal)) ordinal += 1;
+    ordinals.set(turn.id, ordinal);
+    previous = ordinal;
+  }
+  return ordinals;
+}
+
 /** The prompt text key `claimClaudeOwnTurnByText` matches a T3 Code turn's message by. */
 export const claudePromptTextKey = (text: string) => hashClaudeTranscriptText(text);
 
@@ -411,6 +430,8 @@ export interface ClaudeNativeTurnPlanInput {
   readonly modelSlug: (reported: string) => string;
   /** Stands in for a line whose timestamp is missing or not a time, until a valid one follows. */
   readonly fallbackAt: DateTime.Utc;
+  /** Writes every item even when stored as it is, so items follow a run whose ordinal moved into its range. */
+  readonly rewrite: boolean;
 }
 
 export interface ClaudeNativeTurnPlan {
@@ -482,6 +503,7 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
 
   const event = eventMaker(target, input.eventId);
   const unchanged = (id: string, status: string) => {
+    if (input.rewrite) return false;
     const stored = input.storedItems.get(id);
     return stored !== undefined && stored.runId === ids.runId && stored.status === status;
   };
