@@ -5,7 +5,9 @@ import * as NodePath from "node:path";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import {
   checkClaudeTranscriptEvents,
@@ -76,78 +78,82 @@ function transcriptsUnder(root: string): Array<string> {
 }
 
 const BUDGET = Number.MAX_SAFE_INTEGER;
+const encodeReport = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 // Reads `filePath` to its end in reads of at most `maxBytes`, as the consumer would.
-const readAll = (
+const readAll = Effect.fn("checkClaudeTranscripts.readAll")(function* (
   filePath: string,
   known: Set<string>,
   cursor: ClaudeTranscriptCursor,
   maxBytes: () => number,
-) =>
-  Effect.gen(function* () {
-    const events: Array<ClaudeTranscriptEvent> = [];
-    const malformedOffsets: Array<number> = [];
-    let next = cursor;
-    for (;;) {
-      const read = yield* readClaudeTranscript({
-        filePath,
-        sessionId: "check",
-        cursor: next,
-        maxBytes: maxBytes(),
-        knownUuids: (uuids) => Effect.succeed(new Set(uuids.filter((uuid) => known.has(uuid)))),
-      });
-      if (read.rewritten) return yield* Effect.die(`A transcript changed while it was checked.`);
-      events.push(...read.events);
-      malformedOffsets.push(...read.malformed.map((line) => line.offset));
-      for (const uuid of read.consumedUuids) known.add(uuid);
-      next = read.cursor;
-      if (read.atEnd) return { events, malformedOffsets, cursor: next };
-    }
-  });
-
-const checkFile = (filePath: string, options: Options, scratch: string, seed: number) =>
-  Effect.gen(function* () {
-    const bytes = NodeFS.readFileSync(filePath);
-    const complete = bytes.subarray(0, bytes.lastIndexOf(0x0a) + 1);
-    const lines = complete.toString("utf8").split("\n").slice(0, -1);
-    const lineStarts: Array<number> = [];
-    for (let at = 0; at < complete.length; at = complete.indexOf(0x0a, at) + 1) lineStarts.push(at);
-
-    const whole = yield* readAll(filePath, new Set(), initialClaudeTranscriptCursor, () => BUDGET);
-    const malformedLines = new Set(
-      whole.malformedOffsets.map((offset) => lineStarts.indexOf(offset) + 1),
-    );
-
-    // The same bytes again, written in random pieces that can end mid-line, each read with a random byte budget, carrying the consumer's known uuids between reads.
-    const next = random(seed);
-    const growing = NodePath.join(scratch, "transcript.jsonl");
-    NodeFS.writeFileSync(growing, "");
-    const cuts = Array.from({ length: options.splits - 1 }, () => next(complete.length)).toSorted(
-      (left, right) => left - right,
-    );
-    const known = new Set<string>();
-    const split: Array<ClaudeTranscriptEvent> = [];
-    let cursor = initialClaudeTranscriptCursor;
-    let written = 0;
-    for (const cut of [...cuts, complete.length]) {
-      NodeFS.appendFileSync(growing, complete.subarray(written, cut));
-      written = cut;
-      const part = yield* readAll(growing, known, cursor, () => 1 + next(64 * 1024));
-      split.push(...part.events);
-      cursor = part.cursor;
-    }
-    return checkClaudeTranscriptEvents({
-      lines,
-      whole: whole.events,
-      split,
-      malformedLines,
+) {
+  const events: Array<ClaudeTranscriptEvent> = [];
+  const malformedOffsets: Array<number> = [];
+  let next = cursor;
+  for (;;) {
+    const read = yield* readClaudeTranscript({
+      filePath,
+      sessionId: "check",
+      cursor: next,
+      maxBytes: maxBytes(),
+      knownUuids: (uuids) => Effect.succeed(new Set(uuids.filter((uuid) => known.has(uuid)))),
     });
+    if (read.rewritten) return yield* Effect.die(`A transcript changed while it was checked.`);
+    events.push(...read.events);
+    malformedOffsets.push(...read.malformed.map((line) => line.offset));
+    for (const uuid of read.consumedUuids) known.add(uuid);
+    next = read.cursor;
+    if (read.atEnd) return { events, malformedOffsets, cursor: next };
+  }
+});
+
+const checkFile = Effect.fn("checkClaudeTranscripts.checkFile")(function* (
+  filePath: string,
+  options: Options,
+  scratch: string,
+  seed: number,
+) {
+  const bytes = NodeFS.readFileSync(filePath);
+  const complete = bytes.subarray(0, bytes.lastIndexOf(0x0a) + 1);
+  const lines = complete.toString("utf8").split("\n").slice(0, -1);
+  const lineStarts: Array<number> = [];
+  for (let at = 0; at < complete.length; at = complete.indexOf(0x0a, at) + 1) lineStarts.push(at);
+
+  const whole = yield* readAll(filePath, new Set(), initialClaudeTranscriptCursor, () => BUDGET);
+  const malformedLines = new Set(
+    whole.malformedOffsets.map((offset) => lineStarts.indexOf(offset) + 1),
+  );
+
+  // The same bytes again, written in random pieces that can end mid-line, each read with a random byte budget, carrying the consumer's known uuids between reads.
+  const next = random(seed);
+  const growing = NodePath.join(scratch, "transcript.jsonl");
+  NodeFS.writeFileSync(growing, "");
+  const cuts = Array.from({ length: options.splits - 1 }, () => next(complete.length)).toSorted(
+    (left, right) => left - right,
+  );
+  const known = new Set<string>();
+  const split: Array<ClaudeTranscriptEvent> = [];
+  let cursor = initialClaudeTranscriptCursor;
+  let written = 0;
+  for (const cut of [...cuts, complete.length]) {
+    NodeFS.appendFileSync(growing, complete.subarray(written, cut));
+    written = cut;
+    const part = yield* readAll(growing, known, cursor, () => 1 + next(64 * 1024));
+    split.push(...part.events);
+    cursor = part.cursor;
+  }
+  return checkClaudeTranscriptEvents({
+    lines,
+    whole: whole.events,
+    split,
+    malformedLines,
   });
+});
 
 const program = Effect.gen(function* () {
   const argv = process.argv.slice(2);
   if (argv.includes("--help")) {
-    console.log(USAGE);
+    yield* Console.log(USAGE);
     return;
   }
   const options = parseOptions(argv);
@@ -181,8 +187,8 @@ const program = Effect.gen(function* () {
   }
   totals.files = chosen.length;
   // Files are named by their index in this run, not their path, which names a project.
-  console.log(JSON.stringify({ totals, examples: Object.fromEntries(examples) }, null, 1));
-  if (examples.size > 0) process.exitCode = 1;
+  yield* Console.log(yield* encodeReport({ totals, examples: Object.fromEntries(examples) }));
+  if (examples.size > 0) return yield* Effect.die("The transcript parser broke an invariant.");
 });
 
 program.pipe(Effect.provide(NodeServices.layer), NodeRuntime.runMain);
