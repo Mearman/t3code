@@ -6,12 +6,15 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
+  TurnItemId,
   WS_METHODS,
   type IssueDetail,
   type IssueRef,
+  type OrchestrationV2TurnItem,
   type ThreadIssueLink,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
 import {
   compileResolvedKeybindingsConfig,
   mergeWithDefaultKeybindings,
@@ -767,6 +770,61 @@ it("a rejected send leaves the timeline when a new draft was typed meanwhile", a
   await expect.element(page.getByText("Attachment 'sample.png' cannot be sent.")).toBeVisible();
   await expect.element(page.getByText("Failed prompt")).not.toBeInTheDocument();
   expect(editor.element().textContent).toContain("Next draft");
+});
+
+it("forks a held session from the refused run's error row", async () => {
+  const history = threadWithHistory("held-session", 1);
+  const refused = { ...history.runs[0]!, status: "failed" as const };
+  const refusal: OrchestrationV2TurnItem = {
+    id: TurnItemId.make("held-session-error"),
+    threadId: history.id,
+    runId: refused.id,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: history.items.length,
+    status: "failed",
+    title: null,
+    startedAt: refused.startedAt,
+    completedAt: refused.completedAt,
+    updatedAt: refused.requestedAt,
+    type: "error",
+    failure: {
+      class: "provider_error",
+      code: PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+      message: "Another Claude Code process has this session open.",
+      retryable: false,
+    },
+  };
+  const thread = { ...history, runs: [refused], items: [...history.items, refusal] };
+  // The thread's visit is dispatched first, and a pending command would hold the fork.
+  using _environment = installFakeEnvironment([thread], { acceptCommands: true });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await userEvent.click(page.getByRole("button", { name: "Fork into a new session" }));
+
+  await vi.waitFor(() =>
+    expect(dispatchedCommands()).toContainEqual(
+      expect.objectContaining({
+        type: "thread.fork",
+        sourceThreadId: thread.id,
+        sourcePoint: { type: "run", runId: refused.id },
+      }),
+    ),
+  );
 });
 
 it("Enter on an empty prompt resumes an interrupted thread", async () => {
