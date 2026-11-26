@@ -7861,6 +7861,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
               fs
                 .stat(file)
                 .pipe(
+                  Effect.tap(() => path.basename(file) === "index" ? Effect.logWarning(`SWAPPROBE stat ${file}`) : Effect.void),
                   Effect.map((info) =>
                     file.startsWith(worktreesDir) && path.basename(file) === "index"
                       ? { ...info, mtime: Option.some(DateTime.toDateUtc(DateTime.makeUnsafe(0))) }
@@ -7868,8 +7869,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
                   ),
                 ),
             link: (from, to) =>
-              fs
-                .link(from, to)
+              Effect.logWarning(`SWAPPROBE link ${from} ${to}`).pipe(Effect.andThen(fs.link(from, to)))
                 .pipe(
                   Effect.andThen(Deferred.succeed(locked, undefined)),
                   Effect.andThen(Deferred.await(release)),
@@ -7882,10 +7882,11 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           const swapClock: Clock.Clock = {
             ...clock,
             sleep: (duration) =>
-              Duration.isLessThan(duration, Duration.seconds(2))
+              Effect.logWarning(`SWAPPROBE sleep ${Duration.toMillis(duration)} at ${clock.currentTimeMillisUnsafe()}`).pipe(Effect.andThen(Duration.isLessThan(duration, Duration.seconds(2))
                 ? Deferred.succeed(sleeping, undefined).pipe(Effect.andThen(clock.sleep(duration)))
-                : clock.sleep(duration),
+                : clock.sleep(duration))),
           };
+          yield* Effect.logWarning(`SWAPPROBE worktreesDir ${worktreesDir}`);
           yield* driver
             .createWorktree({
               cwd,
@@ -7894,9 +7895,13 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
               newRefName: "feature/swapped",
             })
             .pipe(Effect.provideService(Clock.Clock, swapClock));
+          yield* Effect.logWarning("SWAPPROBE created");
           yield* Deferred.await(sleeping);
+          yield* Effect.logWarning("SWAPPROBE sleeping");
           yield* TestClock.adjust("2 seconds");
+          yield* Effect.logWarning("SWAPPROBE adjusted");
           yield* Deferred.await(locked);
+          yield* Effect.logWarning("SWAPPROBE locked");
 
           yield* writeTextFile(worktreePath, "staged.txt", "staged\n");
           const waiting = yield* Deferred.make<void>();
@@ -7925,8 +7930,10 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           const staged = yield* stage.pipe(Effect.withTracer(tracer), Effect.forkChild);
           // Release once the command has failed on the lock or is waiting for the swap.
           yield* Effect.raceFirst(Fiber.await(staged).pipe(Effect.asVoid), Deferred.await(waiting));
+          yield* Effect.logWarning("SWAPPROBE raced");
           yield* Deferred.succeed(release, undefined);
           yield* Fiber.join(staged);
+          yield* Effect.logWarning("SWAPPROBE joined");
 
           assert.equal(yield* git(worktreePath, ["diff", "--cached", "--name-only"]), "staged.txt");
         }).pipe(Effect.provide(layerVcsProcess)),
