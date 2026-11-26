@@ -583,20 +583,23 @@ export class OrchestratorV2 extends Context.Service<OrchestratorV2, Orchestrator
 ) {}
 
 /**
- * Run ordinals can skip values: a queued run moves past newer runs when it starts. On a thread that shows a Claude Code session, whose terminal turns the session sync writes as runs ordered by their start second, a new run takes at least the current second, so it sorts after every turn that happened before it, even one the sync has not written yet.
+ * Run ordinals can skip values: a queued run moves past newer runs when it starts. On a thread the Claude session sync writes into, whose terminal turns it writes as runs ordered by their start second, a new run takes at least the current second, so it sorts after every turn that happened before it, even one the sync has not written yet. Such a thread holds a run read back from a transcript, or has no run yet and a provider thread naming a Claude session, as an entry whose history has not loaded.
  */
 export function nextRunOrdinal(
   projection: {
-    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "ordinal">>;
+    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "ordinal" | "nativeOrigin">>;
     readonly providerThreads: ReadonlyArray<Pick<OrchestrationV2ProviderThread, "nativeThreadRef">>;
   },
   now: DateTime.Utc,
 ): number {
   const next = projection.runs.reduce((max, run) => Math.max(max, run.ordinal), 0) + 1;
-  const showsClaudeSession = projection.providerThreads.some(
-    (providerThread) => providerThread.nativeThreadRef?.driver === "claudeAgent",
-  );
-  return showsClaudeSession ? Math.max(next, Math.floor(DateTime.toEpochMillis(now) / 1000)) : next;
+  const synced =
+    projection.runs.some((run) => run.nativeOrigin !== undefined) ||
+    (projection.runs.length === 0 &&
+      projection.providerThreads.some(
+        (providerThread) => providerThread.nativeThreadRef?.driver === "claudeAgent",
+      ));
+  return synced ? Math.max(next, Math.floor(DateTime.toEpochMillis(now) / 1000)) : next;
 }
 
 /**
