@@ -1027,6 +1027,28 @@ describe("ClaudeSessionSync", () => {
         }),
       ),
   );
+
+  it.effect("writes nothing for lines Claude Code writes again after a compaction", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [...firstTurn, ...secondTurn]);
+        yield* markLive();
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          yield* syncAll({ full: true });
+          expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
+          const events = yield* count("orchestration_v2_events");
+          // The same lines, uuids and all, appended again.
+          yield* append(home, [...firstTurn, ...secondTurn]);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
+          expect(yield* count("orchestration_v2_events")).toBe(events);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
 });
 
 const t3RunId = RunId.make("t3-run");

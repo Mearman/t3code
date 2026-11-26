@@ -469,6 +469,16 @@ describe("planClaudeNativeRuns", () => {
     expect(late.groups.flat().filter((event) => event.type === "run.created")).toEqual([]);
   });
 
+  it("completes a tool whose result came before its use", () => {
+    const records = [firstTurn[0], firstTurn[2], firstTurn[1], firstTurn[3]];
+    const tool = stored(plan(parse(records).events).groups.flat()).items.get(`x:${SESSION}:a1:0`);
+    expect(tool).toMatchObject({
+      type: "command_execution",
+      output: "passed",
+      status: "completed",
+    });
+  });
+
   it("caps tool output and says how much the transcript still holds", () => {
     const long = "x".repeat(NATIVE_TOOL_TEXT_MAX_CHARS + 10_000);
     const records = [
