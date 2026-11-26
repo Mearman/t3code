@@ -1899,7 +1899,7 @@ export const PRESENTED_RUN_RECORD_FIELDS = [
 ] as const satisfies ReadonlyArray<ProjectionRecordField>;
 export const PRESENTED_RUN_RECORD_FILTER = {
   messageRoles: ["user"],
-  turnItemTypes: ["compaction", "error"],
+  turnItemTypes: ["error"],
 } as const satisfies ProjectionRecordFilter;
 
 function shellProviderSession(
