@@ -382,6 +382,7 @@ const readClearFork = Effect.fn(function* (
   sourceRuns: ReadonlyArray<ReturnType<typeof clearRun>>,
   sourceItems: ReadonlyArray<OrchestrationV2TurnItem>,
   sourceIsSideChat = false,
+  sourceHandoffs: ReadonlyArray<unknown> = [],
 ) {
   const forkedSource = clearThread(clearSourceId, {
     type: "run",
@@ -417,7 +418,7 @@ const readClearFork = Effect.fn(function* (
               runs: sourceRuns,
               attempts: [],
               turnItems: sourceItems,
-              contextHandoffs: [],
+              contextHandoffs: sourceHandoffs,
             }) as never,
       ),
   };
@@ -448,12 +449,31 @@ it.effect("portable fork history stops at /clear (freshContext) and drops ancest
 it.effect("portable fork of a side chat carries the parent history it was opened from", () =>
   Effect.gen(function* () {
     const asked = RunId.make("run:side-chat-1");
+    const header = "Main thread activity since this side chat's starting point:";
+    const sideChatHandoff = (id: string, line: string, delivered: boolean) => ({
+      id,
+      transferId: `transfer:${id}`,
+      strategy: "manual_context",
+      targetRunId: asked,
+      createdAt: clearNow,
+      summaryText: ["framing", `${header}\n${line}`, "footer"].join("\n\n"),
+      ...(delivered ? { delivery: { status: "inline" } } : {}),
+    });
     const texts = yield* readClearFork(
       [clearRun(asked, clearSourceId, 1)],
       [clearUserItem("side", clearSourceId, asked, "side question", 1)],
       true,
+      // The side chat's session read the delivered block, not one still waiting.
+      [
+        sideChatHandoff("waiting", "- User: never sent", false),
+        sideChatHandoff("sent", "- User: parent work", true),
+      ],
     );
-    assert.deepEqual(texts, ["ancestor history", "side question"]);
+    assert.deepEqual(texts, [
+      "ancestor history",
+      `${header}\n- User: parent work`,
+      "side question",
+    ]);
   }),
 );
 

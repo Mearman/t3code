@@ -1707,6 +1707,8 @@ it.effect("forks below a side chat keep the main history it was opened with", ()
     for (const ordinal of [2, 3, 4]) {
       yield* endRun(mainId, RunId.make(`nested-main:run-${ordinal}`), "rolled_back");
     }
+    yield* TestClock.adjust("1 second");
+    yield* askSideChat(sideChatId, "nested-followup");
     const expected = [
       ...MAIN_MARKERS,
       "- User: MAIN_AFTER_OPENING",
