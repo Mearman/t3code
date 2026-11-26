@@ -339,6 +339,43 @@ describe("readClaudeTranscriptTurn", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  // Rewrite inspection 2 finding 3: a queued opener's prompt id changes while its bytes do not.
+  it.effect("returns a queued opener again when its turn's prompt id changes", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const f = claudeTranscriptFixture();
+      const filePath = yield* transcriptFile;
+      const t = (seconds: number) => ({ timestamp: f.iso(seconds) });
+      const lines = [
+        f.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+        f.text("a1", "m", "Done", "end_turn", t(3)),
+        f.queued("q", "a1", "Next", t(4)),
+        f.text("a2", "q", "Ok", "end_turn", t(5)),
+        f.meta("m", "p1", "B", "<task-notification>y</task-notification>", t(2)),
+      ];
+      const tracker = new ClaudeTranscriptTurnTracker();
+      const known = new Map<string, Map<string, number>>();
+      const prompts = new Map<string, string | undefined>();
+      let text = "";
+      for (const line of lines) {
+        text += jsonl([line]);
+        yield* fileSystem.writeFileString(filePath, text);
+        const synced = yield* syncClaudeTranscript({ filePath, tracker });
+        for (const id of synced.changedTurnIds) {
+          const held = known.get(id) ?? new Map<string, number>();
+          const content = yield* contentOf(filePath, tracker, id, held);
+          if (content.opener !== undefined) prompts.set(id, content.opener.prompt?.promptId);
+          for (const read of content.lines) held.set(read.lineUuid, read.hash);
+          for (const gone of content.removedLineUuids) held.delete(gone);
+          known.set(id, held);
+        }
+      }
+
+      expect(tracker.turn("q")?.promptId).toBe("B");
+      expect(prompts.get("q")).toBe("B");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("gives a queued or meta turn its prompt, and an orphan none", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
