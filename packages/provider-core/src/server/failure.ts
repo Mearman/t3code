@@ -16,6 +16,7 @@ import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 
+import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "../client.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import type { ProviderAdapterFailureReason } from "./ProviderAdapter.ts";
 import * as Schema from "effect/Schema";
@@ -108,6 +109,7 @@ const PROVIDER_FAILURE_REASONS: Record<ProviderAdapterFailureReason, string> = {
 function curatedCauseMessages(cause: unknown): {
   readonly known: string | undefined;
   readonly category: string | undefined;
+  readonly code?: string;
 } {
   const seen = new Set<unknown>();
   let category: (typeof PROVIDER_FAILURE_CATEGORIES)[string];
@@ -148,8 +150,13 @@ function curatedCauseMessages(cause: unknown): {
         case "CodexGoalObjectiveTooLongError":
         case "CodexAppServerUnresponsiveError":
         case "CodexAppServerRetiredError":
-        case "ProviderSetupError":
         case "ProviderAdapterThreadInUseError":
+          return {
+            known: stringField(cause, "message"),
+            category: categoryMessage(),
+            code: PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+          };
+        case "ProviderSetupError":
         case "ProviderCompactionUnsupportedError":
           return { known: stringField(cause, "message"), category: categoryMessage() };
         case "CodexAppServerRequestError": {
@@ -343,7 +350,7 @@ export function makeProviderFailure(input: {
     ? REQUEST_TOO_LARGE_MESSAGE
     : (input.message ?? curated.known ?? curated.category ?? DEFAULT_PROVIDER_FAILURE_MESSAGE);
   const message = boundedText(rawMessage, MAX_PROVIDER_FAILURE_MESSAGE_LENGTH);
-  const rawCode = input.code ?? stringField(input.cause, "code") ?? null;
+  const rawCode = input.code ?? stringField(input.cause, "code") ?? curated.code ?? null;
   const code =
     rawCode === null ? null : boundedText(rawCode, MAX_PROVIDER_FAILURE_CODE_LENGTH) || null;
   const verificationUrl = Option.getOrUndefined(decodeVerificationUrl(input.verificationUrl));
