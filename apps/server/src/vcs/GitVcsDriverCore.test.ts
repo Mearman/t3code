@@ -7854,19 +7854,22 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           const sleeping = yield* Deferred.make<void>();
           const locked = yield* Deferred.make<void>();
           const release = yield* Deferred.make<void>();
-          // Stamped in the clock's second, the index is racy; its swap then holds index.lock.
+          // Stamped in the layer clock's current second, the index is racy; its swap holds index.lock.
           const swappingFs = FileSystem.FileSystem.of({
             ...fs,
             stat: (file) =>
-              fs
-                .stat(file)
-                .pipe(
-                  Effect.map((info) =>
-                    file.startsWith(worktreesDir) && path.basename(file) === "index"
-                      ? { ...info, mtime: Option.some(DateTime.toDateUtc(DateTime.makeUnsafe(0))) }
-                      : info,
-                  ),
+              fs.stat(file).pipe(
+                Effect.map((info) =>
+                  file.startsWith(worktreesDir) && path.basename(file) === "index"
+                    ? {
+                        ...info,
+                        mtime: Option.some(
+                          DateTime.toDateUtc(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe())),
+                        ),
+                      }
+                    : info,
                 ),
+              ),
             link: (from, to) =>
               fs
                 .link(from, to)
