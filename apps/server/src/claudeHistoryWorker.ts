@@ -1,4 +1,8 @@
-import { forkSession, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+import {
+  forkSession,
+  getSessionMessages,
+  getSubagentMessages,
+} from "@anthropic-ai/claude-agent-sdk";
 import * as Schema from "effect/Schema";
 
 // Bundled import.meta.main is always true; imports must have no side effects.
@@ -8,6 +12,8 @@ const decodeHistoryOptions = Schema.decodeSync(
       dir: Schema.optionalKey(Schema.String),
       includeSystemMessages: Schema.optionalKey(Schema.Boolean),
       upToMessageId: Schema.optionalKey(Schema.String),
+      agentId: Schema.optionalKey(Schema.String),
+      limit: Schema.optionalKey(Schema.Number),
     }),
   ),
 );
@@ -17,12 +23,14 @@ export async function runClaudeHistoryWorker(
   sessionId: string | undefined,
   rawOptions: string | undefined,
 ): Promise<void> {
-  const options = decodeHistoryOptions(rawOptions ?? "{}");
+  const { agentId, ...options } = decodeHistoryOptions(rawOptions ?? "{}");
   if (!sessionId) throw new Error("Claude history session id is required.");
   const result =
     method === "getSessionMessages"
       ? await getSessionMessages(sessionId, options)
-      : method === "forkSession"
+      : method === "getSubagentMessages" && agentId !== undefined
+        ? await getSubagentMessages(sessionId, agentId, options)
+        : method === "forkSession"
         ? await forkSession(sessionId, options).then(async (forked) => {
             const headMessageId = await getSessionMessages(forked.sessionId, options)
               .then((messages) => messages.at(-1)?.uuid)
