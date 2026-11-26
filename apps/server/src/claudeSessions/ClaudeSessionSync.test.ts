@@ -34,7 +34,9 @@ import * as ThreadSettlementService from "../orchestration-v2/ThreadSettlementSe
 import * as ClaudeSessionSyncState from "../persistence/ClaudeSessionSyncState.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
+import * as ClaudeLiveSessions from "./ClaudeLiveSessions.ts";
 import * as ClaudeSessionProjects from "./ClaudeSessionProjects.ts";
 import * as ClaudeSessionSync from "./ClaudeSessionSync.ts";
 import * as ClaudeSyncCapacity from "./ClaudeSyncCapacity.ts";
@@ -86,9 +88,19 @@ const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer).pipe(
   Layer.provideMerge(SqlitePersistence.layerMemory),
 );
 const ROOMY = 1024 ** 4;
-const capacityFree = Layer.succeed(ClaudeSyncCapacity.ClaudeSyncCapacity, {
-  wait: Effect.void,
-  freeDiskBytes: Effect.succeed(ROOMY),
+const capacityOf = (overrides: Partial<ClaudeSyncCapacity.ClaudeSyncCapacity["Service"]> = {}) =>
+  Layer.succeed(ClaudeSyncCapacity.ClaudeSyncCapacity, {
+    subscribersReady: Effect.void,
+    hostIdle: Effect.void,
+    freeDiskBytes: Effect.succeed(ROOMY),
+    ...overrides,
+  });
+const capacityFree = capacityOf();
+
+// Sessions the fake registry reports as held by a live process; each test starts with none.
+const liveNow = new Set<string>();
+const liveSessionsFake = Layer.succeed(ClaudeLiveSessions.ClaudeLiveSessions, {
+  read: () => Effect.sync(() => new Set(liveNow)),
 });
 const persistence = Layer.mergeAll(
   stores,
@@ -110,6 +122,7 @@ const syncLayer = (
   ClaudeSessionSync.layer.pipe(
     Layer.provideMerge(persistence),
     Layer.provideMerge(capacity),
+    Layer.provideMerge(liveSessionsFake),
     Layer.provideMerge(ServerSettingsModule.layerTest(settings)),
   );
 
@@ -155,20 +168,8 @@ const append = Effect.fn(function* (
   return file;
 });
 
-/** Registers the session as held by a live process, as Claude Code does in `sessions/<pid>.json`. */
-const markLive = Effect.fn(function* (home: string) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  yield* fileSystem.writeFileString(
-    path.join(home, "sessions", "4242.json"),
-    JSON.stringify({
-      pid: 4242,
-      sessionId: SESSION,
-      cwd: CWD,
-      procStart: "Thu Nov 26 10:00:00 2026",
-    }),
-  );
-});
+/** Marks a session as held by a running terminal. */
+const markLive = (sessionId: string = SESSION) => Effect.sync(() => void liveNow.add(sessionId));
 
 const count = (table: string, threadId?: ThreadId) =>
   Effect.gen(function* () {
@@ -192,10 +193,26 @@ const nativeRuns = (threadId: ThreadId) =>
       .map((run) => [run.ordinal, run.status, run.nativeOrigin?.promptUuid ?? null] as const);
   });
 
-const sessionRow = (home: string) =>
+const sessionRow = (home: string, sessionId: string = SESSION) =>
   Effect.gen(function* () {
     const state = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
-    return (yield* state.listStore(yield* storeKeyOf(home)))[0];
+    return yield* state.get({ storeKey: yield* storeKeyOf(home), sessionId });
+  });
+
+/** Loses the read position, as a crash before it is saved would, so the next sweep reads every line again. */
+const forgetPosition = (home: string) =>
+  Effect.gen(function* () {
+    const state = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
+    const row = yield* sessionRow(home);
+    expect(row).toBeDefined();
+    if (row === undefined) return;
+    yield* state.upsert({
+      ...row,
+      byteOffset: 0,
+      guardHash: null,
+      parserState: null,
+      hydrationState: "hydrating",
+    });
   });
 
 const storeKeyOf = Effect.fn(function* (home: string) {
@@ -243,6 +260,7 @@ const deleteThread = (threadId: ThreadId) =>
 
 const withTempRoot = <A, E, R>(body: (root: string) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
+    liveNow.clear();
     const fileSystem = yield* FileSystem.FileSystem;
     return yield* body(yield* fileSystem.makeTempDirectoryScoped());
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
@@ -307,7 +325,7 @@ describe("ClaudeSessionSync", () => {
     withTempRoot((root) =>
       Effect.gen(function* () {
         const home = yield* makeHome(root, "home");
-        yield* markLive(home);
+        yield* markLive();
         yield* append(home, firstTurn);
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
@@ -330,21 +348,15 @@ describe("ClaudeSessionSync", () => {
     withTempRoot((root) =>
       Effect.gen(function* () {
         const home = yield* makeHome(root, "home");
-        const file = yield* append(home, [...firstTurn, ...secondTurn]);
+        yield* append(home, [...firstTurn, ...secondTurn]);
         yield* Effect.gen(function* () {
-          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
-          const state = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
 
-          // Losing the read position, as a crash before it is saved would, reads every line again.
-          const row = yield* sessionRow(home);
-          expect(row).toBeDefined();
-          if (row === undefined) return;
-          yield* state.upsert({ ...row, byteOffset: 0, guardHash: null, parserState: null });
+          yield* forgetPosition(home);
           const events = yield* count("orchestration_v2_events");
           const items = yield* count("orchestration_v2_projection_turn_items", claudeThreadId);
-          yield* sync.followFile(file);
+          yield* syncAll();
           expect(yield* count("orchestration_v2_events")).toBe(events);
           expect(yield* count("orchestration_v2_projection_turn_items", claudeThreadId)).toBe(
             items,
@@ -364,10 +376,12 @@ describe("ClaudeSessionSync", () => {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
           expect(yield* sync.sweep({ full: true })).toEqual([]);
           expect(yield* nativeRuns(claudeThreadId)).toEqual([]);
-          expect(yield* sync.fillOne).toBe(true);
+          expect(yield* sync.drain).toEqual([]);
           expect(yield* nativeRuns(claudeThreadId)).toEqual([[1, "completed", "p1"]]);
           // Nothing is left with only an entry, so the fill stops rather than picking it again.
-          expect(yield* sync.fillOne).toBe(false);
+          const events = yield* count("orchestration_v2_events");
+          expect(yield* sync.drain).toEqual([]);
+          expect(yield* count("orchestration_v2_events")).toBe(events);
         }).pipe(Effect.provide(syncLayer(settingsFor([home], { backgroundFill: true }))));
       }),
     ),
@@ -384,9 +398,9 @@ describe("ClaudeSessionSync", () => {
           expect(yield* sync.sweep({ full: true })).toEqual([]);
           yield* fileSystem.remove(file);
 
-          expect(yield* sync.fillOne).toBe(true);
+          // The drain returns rather than picking the same session again.
+          expect(yield* sync.drain).toEqual([]);
           expect((yield* sessionRow(home))?.hydrationState).toBe("failed");
-          expect(yield* sync.fillOne).toBe(false);
         }).pipe(Effect.provide(syncLayer(settingsFor([home], { backgroundFill: true }))));
       }),
     ),
@@ -479,14 +493,13 @@ describe("ClaudeSessionSync", () => {
         yield* fileSystem.makeDirectory(linked);
         yield* fileSystem.symlink(path.join(home, "projects"), path.join(linked, "projects"));
         yield* fileSystem.symlink(path.join(home, "sessions"), path.join(linked, "sessions"));
-        const file = yield* append(home, firstTurn);
+        yield* append(home, firstTurn);
+        yield* markLive();
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
           yield* syncAll({ full: true });
-          yield* sync.followFile(
-            path.join(linked, "projects", "-work-project", `${SESSION}.jsonl`),
-          );
-          yield* sync.followFile(file);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
 
           expect(yield* count("orchestration_v2_projection_threads")).toBe(1);
           expect(yield* nativeRuns(claudeThreadId)).toEqual([[1, "completed", "p1"]]);
@@ -620,20 +633,26 @@ describe("ClaudeSessionSync", () => {
     withTempRoot((root) =>
       Effect.gen(function* () {
         const home = yield* makeHome(root, "home");
-        const file = yield* append(home, firstTurn);
+        yield* append(home, firstTurn);
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          const settings = yield* ServerSettingsModule.ServerSettingsService;
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
           yield* deleteThread(claudeThreadId);
 
           yield* append(home, secondTurn);
-          yield* sync.followFile(file);
+          yield* markLive();
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
           yield* syncAll({ full: true });
           expect(yield* nativeRuns(claudeThreadId)).toEqual([[1, "completed", "p1"]]);
           expect((yield* sessionRow(home))?.hydrationState).toBe("deleted");
 
-          expect(yield* sync.restoreSession(claudeThreadId)).toBe(true);
+          // Restoring goes through the settings any client, or a hand edit of them, can write.
+          yield* settings.updateSettings({ claudeSessionSync: { restoreSessionIds: [SESSION] } });
+          yield* sync.applyRestores;
+          expect((yield* settings.getSettings).claudeSessionSync.restoreSessionIds).toEqual([]);
           expect(yield* sync.drain).toEqual([]);
           const restored = (yield* sessionRow(home))?.threadId;
           expect(restored).toBeDefined();
@@ -661,7 +680,8 @@ describe("ClaudeSessionSync", () => {
               ProjectionStore.ProjectionStoreV2 | EventSink.EventSinkV2 | IdAllocator.IdAllocatorV2
             >();
             return {
-              wait: Effect.gen(function* () {
+              hostIdle: Effect.void,
+              subscribersReady: Effect.gen(function* () {
                 const projections = yield* ProjectionStore.ProjectionStoreV2;
                 const thread = yield* projections.findThread(claudeThreadId);
                 if (
@@ -700,13 +720,14 @@ describe("ClaudeSessionSync", () => {
         yield* append(home, longTranscript);
         const reached = yield* Deferred.make<void>();
         let hold = false;
-        const holding = Layer.succeed(ClaudeSyncCapacity.ClaudeSyncCapacity, {
-          wait: Effect.suspend(() =>
-            hold
+        let steps = 0;
+        // Holds the second step, so the first has saved its position before the read stops.
+        const holding = capacityOf({
+          subscribersReady: Effect.suspend(() =>
+            hold && steps++ >= 1
               ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never))
               : Effect.void,
           ),
-          freeDiskBytes: Effect.succeed(ROOMY),
         });
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
@@ -736,6 +757,8 @@ describe("ClaudeSessionSync", () => {
         yield* Effect.gen(function* () {
           const projections = yield* ProjectionStore.ProjectionStoreV2;
           const settings = yield* ServerSettingsModule.ServerSettingsService;
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          expect(yield* sync.registerAdditionalHomes).toBe(true);
           yield* syncAll({ full: true });
           // A send resumes in the instance's home, so the extra home gets an instance of its own.
           const thread = yield* projections.findThread(claudeThreadId);
@@ -749,7 +772,7 @@ describe("ClaudeSessionSync", () => {
             thread?.providerInstanceId,
           );
           // Registering it again changes nothing.
-          yield* syncAll({ full: true });
+          expect(yield* sync.registerAdditionalHomes).toBe(false);
           expect(Object.keys((yield* settings.getSettings).providerInstances)).toHaveLength(2);
         }).pipe(Effect.provide(syncLayer(settingsFor([empty], { additionalHomes: [extra] }))));
         yield* Effect.gen(function* () {
@@ -768,19 +791,14 @@ describe("ClaudeSessionSync", () => {
     withTempRoot((root) =>
       Effect.gen(function* () {
         const home = yield* makeHome(root, "home");
-        const file = yield* append(home, longTranscript);
+        yield* append(home, longTranscript);
         yield* Effect.gen(function* () {
-          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
-          const state = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
           expect(yield* nativeRuns(claudeThreadId)).toHaveLength(3);
-          const row = yield* sessionRow(home);
-          expect(row).toBeDefined();
-          if (row === undefined) return;
-          yield* state.upsert({ ...row, byteOffset: 0, guardHash: null, parserState: null });
+          yield* forgetPosition(home);
           const events = yield* count("orchestration_v2_events");
-          yield* sync.followFile(file);
+          yield* syncAll();
           expect(yield* count("orchestration_v2_events")).toBe(events);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),
@@ -812,10 +830,7 @@ describe("ClaudeSessionSync", () => {
       Effect.gen(function* () {
         const home = yield* makeHome(root, "home");
         yield* append(home, firstTurn);
-        const nearlyFull = Layer.succeed(ClaudeSyncCapacity.ClaudeSyncCapacity, {
-          wait: Effect.void,
-          freeDiskBytes: Effect.succeed(5 * 1024 ** 3),
-        });
+        const nearlyFull = capacityOf({ freeDiskBytes: Effect.succeed(5 * 1024 ** 3) });
         yield* Effect.gen(function* () {
           const projections = yield* ProjectionStore.ProjectionStoreV2;
           yield* syncAll({ full: true });
@@ -826,7 +841,9 @@ describe("ClaudeSessionSync", () => {
             itemId: TurnItemId.make(`x:${SESSION}:history`),
           });
           expect(notice).toMatchObject({ type: "system_notice", status: "failed" });
-          expect(notice?.type === "system_notice" ? notice.message : "").toContain("5.0 GB free");
+          expect(notice?.type === "system_notice" ? notice.message : "").toContain(
+            "below the 10 GB",
+          );
           expect((yield* sessionRow(home))?.hydrationState).toBe("entry");
         }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), nearlyFull)));
       }),
@@ -838,7 +855,7 @@ describe("ClaudeSessionSync", () => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const home = yield* makeHome(root, "home");
-        yield* markLive(home);
+        yield* markLive();
         const file = yield* append(home, firstTurn);
         const old = DateTime.toDateUtc(DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"));
         yield* fileSystem.utimes(file, old, old);
@@ -858,9 +875,158 @@ describe("ClaudeSessionSync", () => {
       }),
     ),
   );
+
+  it.effect(
+    "follows many live sessions to the end through the poll, with the real capacity service",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* makeHome(root, "home");
+          const ids = Array.from(
+            { length: 12 },
+            (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+          );
+          for (const id of ids) {
+            yield* fileSystem.writeFileString(
+              path.join(home, "projects", "-work-project", `${id}.jsonl`),
+              `${[
+                prompt("p1", null, "prompt-1", "2026-11-26T10:00:00.000Z"),
+                reply("a1", "p1", "2026-11-26T10:00:05.000Z", "x".repeat(100_000)),
+                prompt("p2", "a1", "prompt-2", "2026-11-26T10:01:00.000Z"),
+                reply("a2", "p2", "2026-11-26T10:01:05.000Z", "y".repeat(100_000)),
+              ].join("\n")}\n`,
+            );
+            yield* markLive(id);
+          }
+          const realCapacity = ClaudeSyncCapacity.layer.pipe(
+            Layer.provide(ServerConfig.layerTest(root, root)),
+            Layer.provide(NodeServices.layer),
+          );
+          yield* Effect.gen(function* () {
+            const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+            // Live sessions need no sweep: the poll finds them and every one is read to its end.
+            yield* sync.pollLive;
+            expect(yield* sync.drain).toEqual([]);
+            for (const id of ids) {
+              expect(yield* nativeRuns(ThreadId.make(`claude:${id}`))).toHaveLength(2);
+            }
+            // Nothing changed, so a later poll asks for nothing and writes nothing.
+            const events = yield* count("orchestration_v2_events");
+            yield* sync.pollLive;
+            expect(yield* sync.drain).toEqual([]);
+            expect(yield* count("orchestration_v2_events")).toBe(events);
+          }).pipe(
+            Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 0 }), realCapacity)),
+          );
+        }),
+      ),
+  );
+
+  it.effect(
+    "archives a session's thread when its directory is excluded later, and brings it back",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const home = yield* makeHome(root, "home");
+          yield* append(home, firstTurn);
+          yield* Effect.gen(function* () {
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const settings = yield* ServerSettingsModule.ServerSettingsService;
+            yield* syncAll({ full: true });
+            expect((yield* projections.getThread(claudeThreadId)).archivedAt).toBeNull();
+
+            yield* settings.updateSettings({
+              claudeSessionSync: { excludedCwdGlobs: ["/work/**"] },
+            });
+            yield* syncAll({ full: true });
+            expect((yield* projections.getThread(claudeThreadId)).archivedAt).not.toBeNull();
+            expect((yield* sessionRow(home))?.hydrationState).toBe("excluded");
+
+            yield* settings.updateSettings({ claudeSessionSync: { excludedCwdGlobs: [] } });
+            yield* syncAll({ full: true });
+            expect((yield* projections.getThread(claudeThreadId)).archivedAt).toBeNull();
+            expect((yield* sessionRow(home))?.hydrationState).toBe("entry");
+          }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+        }),
+      ),
+  );
+
+  it.effect("keeps a title the user gave the thread when Claude retitles the session", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [...firstTurn, line({ type: "ai-title", aiTitle: "From Claude" })]);
+        yield* markLive();
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const sink = yield* EventSink.EventSinkV2;
+          const ids = yield* IdAllocator.IdAllocatorV2;
+          yield* syncAll({ full: true });
+          expect((yield* projections.getThread(claudeThreadId)).title).toBe("From Claude");
+
+          const thread = yield* projections.getThread(claudeThreadId);
+          yield* sink.write({
+            events: [
+              {
+                id: yield* ids.allocate.event({ threadId: claudeThreadId }),
+                type: "thread.metadata-updated",
+                threadId: claudeThreadId,
+                occurredAt: thread.updatedAt,
+                payload: { ...thread, title: "Mine" },
+              },
+            ],
+          });
+          yield* append(home, [line({ type: "ai-title", aiTitle: "Claude again" })]);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          expect((yield* projections.getThread(claudeThreadId)).title).toBe("Mine");
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect(
+    "shows a terminal turn whose text an older T3 Code turn, recognised by its reply, also sent",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const home = yield* makeHome(root, "home");
+          const repeat = (uuid: string, parentUuid: string | null, at: string) =>
+            line({
+              type: "user",
+              uuid,
+              parentUuid,
+              promptId: `prompt-${uuid}`,
+              timestamp: at,
+              origin: { kind: "human" },
+              message: { role: "user", content: "continue" },
+            });
+          yield* append(home, [
+            repeat("p1", null, "2026-11-26T10:00:00.000Z"),
+            reply("a1", "p1", "2026-11-26T10:00:05.000Z"),
+            repeat("p2", "a1", "2026-11-26T10:01:00.000Z"),
+            reply("a2", "p2", "2026-11-26T10:01:05.000Z"),
+          ]);
+          yield* Effect.gen(function* () {
+            // T3 Code ran p1 before it recorded prompt uuids; its turn is known by the reply a1.
+            const t3ThreadId = yield* seedT3Thread({
+              promptUuids: [],
+              reply: "a1",
+              promptText: "continue",
+            });
+            yield* syncAll({ full: true });
+            expect(yield* nativeRuns(t3ThreadId)).toEqual([[2, "completed", "p2"]]);
+          }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+        }),
+      ),
+  );
 });
 
 const t3RunId = RunId.make("t3-run");
+const t3AttemptId = RunAttemptId.make("t3-attempt");
 
 /** Writes the status of the T3 Code run `seedT3Thread` made. */
 const setT3RunStatus = Effect.fn(function* (threadId: ThreadId, status: "running" | "completed") {
@@ -902,6 +1068,9 @@ const seedT3Thread = Effect.fn(function* (input: {
   readonly promptUuids: ReadonlyArray<string>;
   readonly instance?: ProviderInstanceId;
   readonly forkOf?: ThreadId;
+  /** The reply uuid T3 Code saw in its turn, and the prompt text of that turn's run. */
+  readonly reply?: string;
+  readonly promptText?: string;
 }) {
   const sink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
@@ -997,8 +1166,11 @@ const seedT3Thread = Effect.fn(function* (input: {
           id: ProviderTurnId.make(`turn:t3-own:${instance}`),
           providerThreadId,
           nodeId: NodeId.make("node:t3-own"),
-          runAttemptId: null,
-          nativeTurnRef: null,
+          runAttemptId: input.promptText === undefined ? null : t3AttemptId,
+          nativeTurnRef:
+            input.reply === undefined
+              ? null
+              : { driver: CLAUDE, nativeId: input.reply, strength: "weak" },
           ordinal: 1,
           status: "completed",
           startedAt: now,
@@ -1008,5 +1180,78 @@ const seedT3Thread = Effect.fn(function* (input: {
       },
     ],
   });
+  if (input.promptText !== undefined) {
+    const messageId = MessageId.make("t3-message");
+    const nodeId = NodeId.make("node:t3-own");
+    yield* sink.write({
+      events: [
+        {
+          id: yield* ids.allocate.event({ threadId }),
+          type: "run.created",
+          threadId,
+          runId: t3RunId,
+          occurredAt: now,
+          payload: {
+            id: t3RunId,
+            threadId,
+            ordinal: 1,
+            providerInstanceId: instance,
+            modelSelection: { instanceId: instance, model: "claude-test" },
+            providerThreadId,
+            userMessageId: messageId,
+            rootNodeId: nodeId,
+            activeAttemptId: t3AttemptId,
+            status: "completed",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: now,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        },
+        {
+          id: yield* ids.allocate.event({ threadId }),
+          type: "run-attempt.created",
+          threadId,
+          runId: t3RunId,
+          occurredAt: now,
+          payload: {
+            id: t3AttemptId,
+            runId: t3RunId,
+            attemptOrdinal: 1,
+            rootNodeId: nodeId,
+            providerInstanceId: instance,
+            providerThreadId,
+            providerTurnId: ProviderTurnId.make(`turn:t3-own:${instance}`),
+            reason: "initial",
+            status: "completed",
+            startedAt: now,
+            completedAt: now,
+          },
+        },
+        {
+          id: yield* ids.allocate.event({ threadId }),
+          type: "message.updated",
+          threadId,
+          runId: t3RunId,
+          occurredAt: now,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: messageId,
+            threadId,
+            runId: t3RunId,
+            nodeId,
+            role: "user",
+            text: input.promptText,
+            attachments: [],
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+      ],
+    });
+  }
   return threadId;
 });
