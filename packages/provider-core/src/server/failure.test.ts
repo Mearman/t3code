@@ -293,7 +293,10 @@ it("explains a native thread another client is writing to", () => {
   // Clients offer a fork on this code, so only a holder that was seen gets it.
   assert.equal(failure.code, null);
   const observed = new ProviderAdapter.ProviderAdapterThreadInUseError({
-    ...inUse,
+    driver: inUse.driver,
+    providerThreadId: inUse.providerThreadId,
+    detail: inUse.detail,
+    cause: inUse.cause,
     holderObserved: true,
   });
   assert.equal(
