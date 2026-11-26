@@ -12,6 +12,7 @@ export type ClaudeTranscriptViolationKind =
   | "repeat-emitted"
   | "item-outside-its-chain"
   | "items-not-one-per-block"
+  | "filing-loop"
   | "command-filed-wrongly"
   | "prompt-not-opened"
   | "opened-without-cause"
@@ -395,25 +396,43 @@ export function checkClaudeTranscriptTurns(input: {
       return opener === undefined ? [] : [{ id: turn.id, opener }];
     })
     .toSorted((left, right) => byTimeThenId(left.opener, right.opener));
+  // A parser's filing can make a turn's prompt id depend on itself; that is reported, not followed.
   const promptIds = new Map<string, string | undefined>();
+  const resolving = new Set<string>();
   const turnPromptId = (turnId: string): string | undefined => {
     if (promptIds.has(turnId)) return promptIds.get(turnId);
+    if (resolving.has(turnId)) {
+      report("filing-loop", first.get(turnId));
+      return undefined;
+    }
+    resolving.add(turnId);
     const opener = first.get(turnId);
     let promptId: string | undefined;
     if (opener !== undefined && isQueued(opener.record)) {
-      const above = upOf(opener) === undefined ? hostOf(rootOf(opener)) : chainTurn(opener);
+      // A queued opener takes the prompt id of the turn above it, or of the turn it is filed with
+      // by time; at a true root or a loop's cut there is no turn above.
+      const above =
+        upOf(opener) !== undefined
+          ? chainTurn(opener)
+          : filedByTime(opener)
+            ? hostOf(opener)
+            : undefined;
       promptId = above === undefined ? undefined : turnPromptId(above);
     } else if (opener !== undefined && !isCommandInput(opener.record)) {
       promptId = text(field(opener.record, "promptId"));
     }
+    resolving.delete(turnId);
     promptIds.set(turnId, promptId);
     return promptId;
   };
+  // Only a summary the parser can read names a prompt id.
   const summaryPromptId = (root: RawLine) => {
     if (subtypeOf(root.record) !== "compact_boundary") return undefined;
     const summaries = (children.get(root.uuid) ?? [])
       .filter(
         (child) =>
+          typeOf(child.record) === "user" &&
+          isReadable(child.record) &&
           field(child.record, "isCompactSummary") === true &&
           isString(field(child.record, "promptId")),
       )
@@ -422,8 +441,14 @@ export function checkClaudeTranscriptTurns(input: {
     return summary === undefined ? undefined : text(field(summary.record, "promptId"));
   };
   const hosts = new Map<string, string | undefined>();
+  const hosting = new Set<string>();
   function hostOf(root: RawLine): string | undefined {
     if (hosts.has(root.uuid)) return hosts.get(root.uuid);
+    if (hosting.has(root.uuid)) {
+      report("filing-loop", root);
+      return undefined;
+    }
+    hosting.add(root.uuid);
     const time = timeOf(root);
     const eligible = turnsByStart.filter(({ opener }) => {
       if (timeOf(opener) > time) return false;
@@ -435,6 +460,7 @@ export function checkClaudeTranscriptTurns(input: {
       (named === undefined
         ? undefined
         : eligible.findLast((turn) => turnPromptId(turn.id) === named)) ?? eligible.at(-1);
+    hosting.delete(root.uuid);
     hosts.set(root.uuid, host?.id);
     return host?.id;
   }
