@@ -77,12 +77,12 @@ export function rendersServerTabNatively(
 ): boolean {
   return (
     isElectron &&
-    // Only a server this app spawned has the desktop's browser host to render into.
-    !isDesktopPrimaryAttached() &&
     snapshot?.runtime === "server" &&
     !snapshot.headless &&
     primaryEnvironmentId !== null &&
-    environmentId === primaryEnvironmentId
+    environmentId === primaryEnvironmentId &&
+    // Only a server this app spawned has the desktop's browser host to render into.
+    !isDesktopPrimaryAttached()
   );
 }
 
