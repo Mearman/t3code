@@ -290,8 +290,38 @@ it("explains a native thread another client is writing to", () => {
   });
   const failure = makeProviderFailure({ cause: Cause.fail(cause) });
   assert.equal(failure.message, inUse.message);
-  // Clients offer a fork on this code.
-  assert.equal(failure.code, PROVIDER_THREAD_IN_USE_FAILURE_CODE);
+  // Clients offer a fork on this code, so only a holder that was seen gets it.
+  assert.equal(failure.code, null);
+  const observed = new ProviderAdapter.ProviderAdapterThreadInUseError({
+    ...inUse,
+    holderObserved: true,
+  });
+  assert.equal(
+    makeProviderFailure({ cause: Cause.fail(observed) }).code,
+    PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+  );
+});
+
+it.each([
+  "AcpModelSelectionError",
+  "ClaudeBackgroundWorkBlocksQueryReplacementError",
+  "ClaudeAppendSystemPromptFileError",
+  "ClaudeAppendSystemPromptMissingValueError",
+  "ClaudeSettingsLaunchArgError",
+  "ClaudeMcpRegistrationTimeoutError",
+  "ClaudeCodeRootRefusalError",
+  "ClaudeCodeStartupExitError",
+  "ClaudeConversationNotFoundError",
+  "CursorModelUnavailableError",
+  "CodexGoalObjectiveTooLongError",
+  "CodexAppServerUnresponsiveError",
+  "CodexAppServerRetiredError",
+  "ProviderSetupError",
+  "ProviderCompactionUnsupportedError",
+])("keeps a curated %s message without a failure code", (tag) => {
+  const failure = makeProviderFailure({ cause: { _tag: tag, message: `${tag} text` } });
+  assert.equal(failure.message, `${tag} text`);
+  assert.equal(failure.code, null);
 });
 
 it("does not expose defect text nested inside a known error category", () => {
