@@ -342,7 +342,7 @@ describe("threadRepositorySections", () => {
 });
 
 describe("rewindFileRestore", () => {
-  const projection = { checkpointScopes: scopes, checkpoints };
+  const projection = { checkpointScopes: scopes, checkpoints, runs: [] };
   const missingRoot = (appRunOrdinal: number | null) =>
     ({ status: "missing", appRunOrdinal }) as const;
   const linkedProjectFolder = { projectIsWorktree: false };
@@ -395,12 +395,34 @@ describe("rewindFileRestore", () => {
     expect(rewindFileRestore({ projection, checkpoint: target, taskFolder })).toBe(restores);
   });
 
+  it("offers no file restore over a turn that ran outside T3", () => {
+    const transcriptRun = (ordinal: number, status: "completed" | "rolled_back") => ({
+      ordinal,
+      status,
+      nativeOrigin: { kind: "claude_transcript" as const, nativeSessionId: "s", promptUuid: "p" },
+    });
+    const ready = { status: "ready", appRunOrdinal: 1 } as const;
+    const withRuns = (runs: ReadonlyArray<ReturnType<typeof transcriptRun>>) =>
+      rewindFileRestore({
+        projection: { ...projection, runs },
+        checkpoint: ready,
+        taskFolder: null,
+      });
+    expect(withRuns([])).toBe("files");
+    expect(withRuns([transcriptRun(2, "completed")])).toBeNull();
+    // One already rewound away no longer stands after the target, nor does one before it.
+    expect(withRuns([transcriptRun(2, "rolled_back"), transcriptRun(1, "completed")])).toBe(
+      "files",
+    );
+  });
+
   it("ignores the thread's own scope when looking for repository snapshots", () => {
     expect(
       rewindFileRestore({
         projection: {
           checkpointScopes: [scope("scope-root", "/work/wrapper")],
           checkpoints: [checkpoint("root-1", "scope-root", 1, { appRunOrdinal: 1 })],
+          runs: [],
         },
         checkpoint: missingRoot(1),
         taskFolder: linkedProjectFolder,
