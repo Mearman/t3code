@@ -10,8 +10,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-import { hasPendingForkMigrations, runForkMigrations } from "./ForkMigrations.ts";
-import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
+import { hasPendingForkMigrations, runUpstreamThenForkMigrations } from "./ForkMigrations.ts";
+import { hasPendingMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
@@ -65,15 +65,16 @@ const damagedDatabaseError = (dbPath: string, cause: SqlError.SqlError) =>
     }),
   });
 
-// The fork's ledger runs after upstream's, which never reads it.
-const runAllMigrations = runMigrations().pipe(Effect.andThen(runForkMigrations()));
+// The fork's ledger runs after upstream's, which never reads it; either one pending means a start writes schema.
+const runAllMigrations = runUpstreamThenForkMigrations();
+const hasPendingSchemaChanges = Effect.gen(function* () {
+  return (yield* hasPendingMigrations()) || (yield* hasPendingForkMigrations());
+});
 
 // CLI commands open the server's database from another process; migrating behind its owner changes the schema it runs on.
 const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")(function* () {
-  // With nothing pending, runMigrations only validates the recorded history and writes nothing.
-  if (!(yield* hasPendingMigrations()) && !(yield* hasPendingForkMigrations())) {
-    return yield* runAllMigrations;
-  }
+  // With nothing pending, this only validates the recorded histories and writes nothing.
+  if (!(yield* hasPendingSchemaChanges)) return yield* runAllMigrations;
   const { serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
   yield* ServerOwnership.holdServerOwnershipLock(serverRuntimeStatePath).pipe(
     Effect.catchTags({
@@ -86,12 +87,12 @@ const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")
 
 // Never migrates, even with the home's lock free: a service restarting must find its own schema.
 const requireCurrentSchema = Effect.fn("SqlitePersistence.requireCurrentSchema")(function* () {
-  if (yield* hasPendingMigrations()) {
+  if (yield* hasPendingSchemaChanges) {
     const { dbPath } = yield* ServerConfig.ServerConfig;
     return yield* new DatabaseSchemaBehindError({ dbPath });
   }
-  // With nothing pending, runMigrations only validates the recorded history and writes nothing.
-  return yield* runMigrations();
+  // With nothing pending, this only validates the recorded histories and writes nothing.
+  return yield* runAllMigrations;
 });
 
 const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>

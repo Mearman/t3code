@@ -258,6 +258,29 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
   );
 
+  it.effect("never runs fork migrations for a client that requires the current schema", () =>
+    Effect.gen(function* () {
+      const { dbPath } = yield* ServerConfig.ServerConfig;
+      // Upstream's ledger is current; only the fork's is missing.
+      yield* runMigrations().pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+
+      const opened = yield* Effect.void.pipe(
+        Effect.provide(SqlitePersistence.layerCliConfigCurrentSchema),
+        Effect.result,
+      );
+
+      assert.equal(opened._tag, "Failure");
+      if (opened._tag === "Failure") {
+        assert.instanceOf(opened.failure, SqlitePersistence.DatabaseSchemaBehindError);
+      }
+      assert.isTrue(
+        yield* hasPendingForkMigrations().pipe(
+          Effect.provide(NodeSqliteClient.layer({ filename: dbPath })),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
   it.effect(
     "opens a database ahead of this build for a client that requires the current schema",
     () =>

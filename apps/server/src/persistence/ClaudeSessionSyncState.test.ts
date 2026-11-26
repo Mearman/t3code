@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Tracer from "effect/Tracer";
 
 import * as ClaudeSessionSyncState from "./ClaudeSessionSyncState.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
@@ -58,6 +59,8 @@ describe("ClaudeSessionSyncStateRepository", () => {
 
       const advanced: ClaudeSessionSyncState.ClaudeSessionSyncState = {
         ...state,
+        // A replaced file keeps the path but not the inode.
+        fileIdentity: "16777220:4343",
         byteOffset: 8192,
         guardHash: "sha256:abc",
         lastUuid: "line-9",
@@ -107,15 +110,34 @@ describe("ClaudeSessionSyncStateRepository", () => {
       });
       assert.isUndefined(yield* repository.findProviderThreadByNativeSessionId("s-2"));
 
-      const plan = yield* sql<{ readonly detail: string }>`
-        EXPLAIN QUERY PLAN
-        SELECT provider_thread_id FROM orchestration_v2_projection_provider_threads
-        WHERE json_extract(payload_json, '$.nativeThreadRef.driver') = 'claudeAgent'
-          AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${"s-1"}
-      `;
+      // Plan the statement the repository runs, so a change to its spelling is what is checked.
+      const statements: Array<string> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (endTime, exit) => {
+            end(endTime, exit);
+            const query = span.attributes.get("db.query.text");
+            if (typeof query === "string") statements.push(query);
+          };
+          return span;
+        },
+      });
+      yield* repository.findProviderThreadByNativeSessionId("s-1").pipe(Effect.withTracer(tracer));
+      const lookup = statements.find((query) => query.includes("nativeThreadRef"));
+      assert.isDefined(lookup, statements.join("\n"));
+      const plan = yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${lookup!.replaceAll("?", "'s-1'")}`,
+      );
+      const details = plan.map((row) => row.detail);
       assert.isTrue(
-        plan.some((row) => row.detail.includes("fork_provider_threads_claude_native_id_idx")),
-        JSON.stringify(plan),
+        details.some((detail) => detail.includes("fork_provider_threads_claude_native_id_idx")),
+        details.join("\n"),
+      );
+      assert.isFalse(
+        details.some((detail) => detail.includes("TEMP B-TREE")),
+        details.join("\n"),
       );
     }).pipe(Effect.provide(layer)),
   );
