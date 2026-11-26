@@ -1742,7 +1742,7 @@ const make = Effect.gen(function* () {
     const [latest] = yield* sql<{ readonly runId: RunId; readonly rootNodeId: NodeId | null }>`
       SELECT run_id AS "runId", json_extract(payload_json, '$.rootNodeId') AS "rootNodeId"
       FROM orchestration_v2_projection_runs
-      WHERE thread_id = ${target.threadId} AND run_id <> ${hidden}
+      WHERE thread_id = ${target.threadId} AND status <> 'rolled_back'
         ${runOriginSql(sql, null, "any")}
       ORDER BY ordinal DESC LIMIT 1
     `;
@@ -2021,8 +2021,8 @@ const make = Effect.gen(function* () {
           diskNoticeShown.add(threadId);
         }
       }
-      // Following goes on, so the note leaves the thread with the next write.
-      const hide = diskNoticeShown.delete(threadId) ? [diskNoticeId] : [];
+      // Following goes on, so the note leaves the thread with the next pass that writes.
+      const hide = diskNoticeShown.has(threadId) ? [diskNoticeId] : [];
       if (linked.hydrationState !== "hydrating" && linked.hydrationState !== "full") {
         if (notice) {
           yield* threadNotice(thread, target, "history", {
@@ -2047,8 +2047,8 @@ const make = Effect.gen(function* () {
           fallbackAt: DateTime.makeUnsafe(transcript.mtimeMs),
         }),
       );
-      // A pass that wrote nothing still owes the note's hiding.
-      if (read._tag !== "Read" && hide.length > 0) diskNoticeShown.add(threadId);
+      // Forgotten only once a pass has written the hiding; a failed or interrupted one never gets here.
+      if (read._tag === "Read" && hide.length > 0) diskNoticeShown.delete(threadId);
       if (read._tag === "Deleted") return "deleted" satisfies StepOutcome;
       if (read._tag === "Changed") return "more" satisfies StepOutcome;
       if (read._tag === "Deferred") {

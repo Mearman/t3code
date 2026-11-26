@@ -233,6 +233,7 @@ import {
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
+import { MAX_NATIVE_RUN_ORDINAL } from "./TurnItemPositionStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -593,8 +594,12 @@ export function nextRunOrdinal(
   now: DateTime.Utc,
 ): number {
   const next = projection.runs.reduce((max, run) => Math.max(max, run.ordinal), 0) + 1;
+  // The clock's second is clamped as the sync clamps a turn's, so a wrong clock cannot spend the headroom above it.
   return projection.thread.historyOrigin === "native"
-    ? Math.max(next, Math.floor(DateTime.toEpochMillis(now) / 1000))
+    ? Math.max(
+        next,
+        Math.min(Math.floor(DateTime.toEpochMillis(now) / 1000), MAX_NATIVE_RUN_ORDINAL),
+      )
     : next;
 }
 

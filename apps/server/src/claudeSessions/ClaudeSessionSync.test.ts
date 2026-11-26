@@ -2019,6 +2019,118 @@ describe("ClaudeSessionSync", () => {
     ),
   );
 
+  it.effect("leaves a subagent child alone though its id is an ordinal thread's", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [...firstTurn, ...secondTurn]);
+        yield* Effect.gen(function* () {
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const child = yield* seedT3Thread({
+            promptUuids: ["prompt-1"],
+            threadId: ThreadId.make("t3-thread:subagent-child"),
+            relationshipToParent: "subagent",
+          });
+          yield* syncAll({ full: true });
+          expect((yield* projections.getThread(child)).historyOrigin).toBeUndefined();
+          expect(yield* nativeRuns(child)).toEqual([]);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect(
+    "puts the disk note after the latest shown run, past a rolled-back one, and again after hiding it",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const home = yield* makeHome(root, "home");
+          const file = yield* append(home, [...firstTurn, ...secondTurn]);
+          yield* markLive();
+          let free = ROOMY;
+          const floor = capacityOf({ freeDiskBytes: Effect.sync(() => free) });
+          yield* Effect.gen(function* () {
+            const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const note = () =>
+              projections.getTurnItem({
+                threadId: claudeThreadId,
+                itemId: TurnItemId.make(`x:${SESSION}:disk`),
+              });
+            const step = Effect.gen(function* () {
+              yield* sync.pollLive;
+              expect(yield* sync.drain).toEqual([]);
+            });
+            yield* syncAll({ full: true });
+            // A rewind drops `p2`, so its run is rolled back and `p1`'s is the latest shown.
+            yield* fileSystem.writeFileString(file, `${firstTurn.join("\n")}\n`);
+            yield* step;
+            free = 1024 ** 3;
+            yield* append(home, [prompt("p3", "a1", "prompt-3", "2026-11-26T10:02:00.000Z")]);
+            yield* step;
+            expect((yield* note())?.runId).toBe(RunId.make(`claude-run:${SESSION}:p1`));
+            // Following again, which the sweep asks for, hides it; a second pause brings it back where the history shows it.
+            free = ROOMY;
+            expect(yield* sync.sweep()).toEqual([]);
+            expect(yield* sync.drain).toEqual([]);
+            expect((yield* note())?.runId).toBe(RunId.make(`claude-run:${SESSION}:removed`));
+            free = 1024 ** 3;
+            yield* append(home, [reply("a3", "p3", "2026-11-26T10:02:05.000Z")]);
+            yield* step;
+            expect((yield* note())?.runId).toBe(RunId.make(`claude-run:${SESSION}:p3`));
+            expect(
+              (yield* visibleHistory(claudeThreadId)).items.some((item) =>
+                item.id.endsWith(":disk"),
+              ),
+            ).toBe(true);
+          }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), floor)));
+        }),
+      ),
+  );
+
+  it.effect("still hides the disk note when the step that goes on again fails", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, firstTurn);
+        yield* markLive();
+        let free = ROOMY;
+        const floor = capacityOf({ freeDiskBytes: Effect.sync(() => free) });
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* syncAll({ full: true });
+          free = 1024 ** 3;
+          yield* append(home, secondTurn);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          free = ROOMY;
+          // The sweep asks for it again; the write of `p2`'s reply fails once, so that pass ends in an error.
+          expect(yield* sync.sweep()).toEqual([]);
+          expect(yield* sync.drain).toHaveLength(1);
+          yield* append(home, [reply("a2b", "a2", "2026-11-26T10:01:09.000Z")]);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          expect(
+            (yield* projections.getTurnItem({
+              threadId: claudeThreadId,
+              itemId: TurnItemId.make(`x:${SESSION}:disk`),
+            }))?.runId,
+          ).toBe(RunId.make(`claude-run:${SESSION}:removed`));
+        }).pipe(
+          Effect.provide(
+            syncLayer(
+              settingsFor([home], { minFreeDiskGiB: 10 }),
+              floor,
+              sinkFailingOnceAt(`x:${SESSION}:a2:0`),
+            ),
+          ),
+        );
+      }),
+    ),
+  );
+
   it.effect("loads a turn stamped centuries ahead with every item position a safe integer", () =>
     withTempRoot((root) =>
       Effect.gen(function* () {
@@ -2593,6 +2705,7 @@ const setT3RunStatus = Effect.fn(function* (threadId: ThreadId, status: "running
 const seedT3Thread = Effect.fn(function* (input: {
   readonly promptUuids: ReadonlyArray<string>;
   readonly threadId?: ThreadId;
+  readonly relationshipToParent?: "subagent";
   readonly instance?: ProviderInstanceId;
   readonly forkOf?: ThreadId;
   /** The reply uuid T3 Code saw in its turn, and the prompt text of that turn's run. */
@@ -2625,13 +2738,19 @@ const seedT3Thread = Effect.fn(function* (input: {
     branchPullRequest: null,
     activeProviderThreadId: providerThreadId,
     lineage:
-      input.forkOf === undefined
-        ? { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId }
-        : {
-            parentThreadId: input.forkOf,
-            relationshipToParent: "fork",
-            rootThreadId: input.forkOf,
-          },
+      input.relationshipToParent === "subagent"
+        ? {
+            parentThreadId: ThreadId.make("t3-thread:parent"),
+            relationshipToParent: "subagent",
+            rootThreadId: ThreadId.make("t3-thread:parent"),
+          }
+        : input.forkOf === undefined
+          ? { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId }
+          : {
+              parentThreadId: input.forkOf,
+              relationshipToParent: "fork",
+              rootThreadId: input.forkOf,
+            },
     forkedFrom: null,
     createdAt: now,
     updatedAt: now,
