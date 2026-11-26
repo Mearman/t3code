@@ -330,10 +330,10 @@ const make = Effect.gen(function* () {
             if (input.fromTop) {
               yield* sql`DELETE FROM fork_claude_session_consumed_uuids WHERE session_key = ${scope}`;
             }
-            for (const chunk of chunks(input.consumedUuids)) {
+            for (const uuid of input.consumedUuids) {
               yield* sql`
-                INSERT INTO fork_claude_session_consumed_uuids
-                ${sql.insert(chunk.map((uuid) => ({ session_key: scope, uuid })))}
+                INSERT INTO fork_claude_session_consumed_uuids (session_key, uuid)
+                VALUES (${scope}, ${uuid})
                 ON CONFLICT DO NOTHING
               `;
             }
