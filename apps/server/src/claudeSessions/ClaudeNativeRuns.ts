@@ -236,6 +236,8 @@ interface OpenSegment {
   readonly baseline: StoredNativeRun | undefined;
   readonly items: Array<OrchestrationV2DomainEvent>;
   readonly toolItems: Map<string, OrchestrationV2TurnItem>;
+  /** Results that came before their tool use in this read, by `tool_use_id`. */
+  readonly earlyResults: Map<string, ClaudeTranscriptItem>;
   readonly promptParts: Array<string>;
   promptText: string | undefined;
   createdBy: "user" | "system";
@@ -391,6 +393,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     baseline,
     items: [],
     toolItems: new Map(),
+    earlyResults: new Map(),
     promptParts: [],
     promptText: undefined,
     createdBy: "system",
@@ -596,7 +599,11 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     const tool =
       current.toolItems.get(toolUseId) ??
       (pendingId === undefined ? undefined : input.storedToolItems.get(pendingId));
-    if (tool === undefined) return;
+    if (tool === undefined) {
+      // Claude Code can write a result before its tool use; it waits for the use in this read.
+      current.earlyResults.set(toolUseId, item);
+      return;
+    }
     current.record.pendingTools = Object.fromEntries(
       Object.entries(current.record.pendingTools).filter(([id]) => id !== toolUseId),
     );
@@ -651,6 +658,11 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     current.toolItems.set(block.id, tool);
     current.record.pendingTools = { ...current.record.pendingTools, [block.id]: item.id };
     advance(current, item.timestamp);
+    const early = current.earlyResults.get(block.id);
+    if (early !== undefined) {
+      current.earlyResults.delete(block.id);
+      onToolResult(current, early, block.id);
+    }
   };
 
   const onItem = (current: OpenSegment, item: ClaudeTranscriptItem) => {

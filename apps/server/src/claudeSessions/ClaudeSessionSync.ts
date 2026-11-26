@@ -1209,7 +1209,12 @@ const make = Effect.gen(function* () {
         yield* markState({ ...base, threadId }, "deleted");
         return "deleted" satisfies StepOutcome;
       }
-      const linked = { ...base, threadId, providerThreadId, cwd };
+      let linked: ClaudeSessionSyncState.ClaudeSessionSyncState = {
+        ...base,
+        threadId,
+        providerThreadId,
+        cwd,
+      };
       // A directory excluded after its entry was made has its sync thread archived, and restored when the exclusion goes.
       const excluded = isSyncThread(thread) && isExcluded(options.excludedCwdGlobs, cwd);
       if (excluded || linked.hydrationState === "excluded") {
@@ -1234,7 +1239,7 @@ const make = Effect.gen(function* () {
           yield* syncState.upsert({ ...linked, ...caughtUp, hydrationState: "excluded" });
           return "excluded" satisfies StepOutcome;
         }
-        linked.hydrationState = "entry";
+        linked = { ...linked, hydrationState: "entry" };
       }
       // Old imports hold run-less history; migrating them is separate work, so they are left as they are.
       if (thread.historyOrigin === "v1_import" || providerThreadId === null) {
