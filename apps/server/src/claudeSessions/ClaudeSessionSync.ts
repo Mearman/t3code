@@ -121,6 +121,13 @@ const decodePromptUuids = Schema.decodeUnknownOption(
 const decodeJsonLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 
+// A replaced file keeps its path but not its inode; Windows reports no inode, so the path stands in.
+const fileIdentityOf = (info: FileSystem.File.Info, filePath: string) =>
+  Option.match(info.ino, {
+    onNone: () => `${info.dev}:${filePath}`,
+    onSome: (ino) => `${info.dev}:${ino}`,
+  });
+
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "starting", "running", "waiting"] as const;
 
 export class ClaudeSessionSync extends Context.Service<
@@ -216,7 +223,13 @@ export const make = Effect.gen(function* () {
     const directories = yield* fileSystem
       .readDirectory(store.projectsDir)
       .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])));
-    const found: Array<{ sessionId: string; filePath: string; size: number; mtimeMs: number }> = [];
+    const found: Array<{
+      sessionId: string;
+      filePath: string;
+      fileIdentity: string;
+      size: number;
+      mtimeMs: number;
+    }> = [];
     for (const directory of directories) {
       const directoryPath = path.join(store.projectsDir, directory);
       const names = yield* fileSystem
@@ -231,6 +244,7 @@ export const make = Effect.gen(function* () {
         found.push({
           sessionId,
           filePath,
+          fileIdentity: fileIdentityOf(info.value, filePath),
           size: Number(info.value.size),
           mtimeMs: Math.floor(Option.getOrElse(info.value.mtime, () => new Date(0)).getTime()),
         });
@@ -662,6 +676,7 @@ export const make = Effect.gen(function* () {
       readonly store: SyncStore;
       readonly sessionId: string;
       readonly filePath: string;
+      readonly fileIdentity: string;
       readonly size: number;
       readonly mtimeMs: number;
       readonly mode: "entry" | "full";
@@ -680,7 +695,7 @@ export const make = Effect.gen(function* () {
         row?.providerThreadId ?? owner?.providerThreadId ?? null;
       const base: ClaudeSessionSyncState.ClaudeSessionSyncState = row ?? {
         ...key,
-        fileIdentity: input.filePath,
+        fileIdentity: input.fileIdentity,
         byteOffset: 0,
         guardHash: null,
         lastUuid: null,
@@ -721,7 +736,13 @@ export const make = Effect.gen(function* () {
         threadId = created.threadId;
         providerThreadId = created.providerThreadId;
       }
-      row = { ...base, threadId, providerThreadId, filePath: input.filePath };
+      row = {
+        ...base,
+        threadId,
+        providerThreadId,
+        filePath: input.filePath,
+        fileIdentity: input.fileIdentity,
+      };
       // A session T3 Code already drives is followed in full, so its terminal turns show at once.
       const full = input.mode === "full" || row.hydrationState === "full" || owner !== undefined;
       if (!full || providerThreadId === null) {
@@ -838,6 +859,7 @@ export const make = Effect.gen(function* () {
       store,
       sessionId,
       filePath,
+      fileIdentity: fileIdentityOf(info.value, filePath),
       size: Number(info.value.size),
       mtimeMs: Math.floor(Option.getOrElse(info.value.mtime, () => new Date(0)).getTime()),
       mode: "full",
@@ -855,6 +877,7 @@ export const make = Effect.gen(function* () {
               store,
               sessionId: row.sessionId,
               filePath: row.filePath,
+              fileIdentity: fileIdentityOf(info.value, row.filePath),
               size: Number(info.value.size),
               mtimeMs: Math.floor(Option.getOrElse(info.value.mtime, () => new Date(0)).getTime()),
               mode: "full",
