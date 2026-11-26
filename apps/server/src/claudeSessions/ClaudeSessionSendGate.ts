@@ -146,7 +146,8 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
         ...(holderObserved ? { holderObserved: true } : {}),
       }),
     );
-  // A failed probe also refuses, unmarked, so the caller retries rather than offering a fork.
+  // A failed probe or an unreadable entry also refuses, unmarked, so the caller retries instead
+  // of offering a fork for a holder nobody saw.
   const refuseHeld = (
     providerThread: OrchestrationV2ProviderThread,
   ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
@@ -160,7 +161,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
         const hold = probed.success;
         return hold === undefined
           ? Effect.void
-          : refuse(providerThread, holdDetail(hold), hold, true);
+          : refuse(providerThread, holdDetail(hold), hold, hold._tag === "held");
       }),
     );
   };
