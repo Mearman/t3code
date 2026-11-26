@@ -154,74 +154,75 @@ export const makeAttachConfig = Effect.fn("DesktopAttachedServer.makeAttachConfi
       Effect.orElseSucceed(() => false),
     );
 
-  const revokePrevious = (server: AttachedServer, current: IssuedSession) =>
-    Effect.gen(function* () {
-      const persisted = yield* readPersistedSessions;
-      const confirmed = new Set<string>();
-      for (const sessionId of persisted) {
-        if (sessionId === current.sessionId) continue;
-        if (yield* revokeOverHttp(server, current.token, sessionId)) confirmed.add(sessionId);
-      }
-      if (confirmed.size === 0) return;
-      yield* writePersistedSessions(persisted.filter((id) => !confirmed.has(id))).pipe(
-        Effect.catch((error) =>
-          logAttachedWarning("could not record revoked desktop sessions", {
-            error: error.message,
-          }),
-        ),
-      );
-    });
+  const revokePrevious = Effect.fn("DesktopAttachedServer.revokePrevious")(function* (
+    server: AttachedServer,
+    current: IssuedSession,
+  ) {
+    const persisted = yield* readPersistedSessions;
+    const confirmed = new Set<string>();
+    for (const sessionId of persisted) {
+      if (sessionId === current.sessionId) continue;
+      if (yield* revokeOverHttp(server, current.token, sessionId)) confirmed.add(sessionId);
+    }
+    if (confirmed.size === 0) return;
+    yield* writePersistedSessions(persisted.filter((id) => !confirmed.has(id))).pipe(
+      Effect.catch((error) =>
+        logAttachedWarning("could not record revoked desktop sessions", {
+          error: error.message,
+        }),
+      ),
+    );
+  });
 
-  const issue = (server: AttachedServer) =>
-    Effect.gen(function* () {
-      const { stdout, exitCode } = yield* runCli([
-        "auth",
-        "session",
-        "issue",
-        "--base-dir",
-        environment.baseDir,
-        ...ATTACHED_SESSION_SCOPES.flatMap((scope) => ["--scope", scope]),
-        "--ttl",
-        ATTACHED_SESSION_TTL,
-        "--label",
-        ATTACHED_SESSION_LABEL,
-        // A restarting service must find its own schema, so this CLI never migrates.
-        "--require-current-schema",
-        "--json",
-      ]).pipe(
-        Effect.mapError((cause) => new AttachedSessionError({ reason: "issue-failed", cause })),
-      );
-      if (exitCode === SERVER_EXIT_CODE_SCHEMA_BEHIND) {
-        return yield* new AttachedSessionError({ reason: "schema-behind" });
-      }
-      if (exitCode !== 0) {
-        return yield* new AttachedSessionError({
-          reason: "issue-failed",
-          cause: `exit ${exitCode}`,
-        });
-      }
-      // The parse error would echo stdout, which holds the token.
-      const issued = yield* decodeIssuedSession(stdout).pipe(
-        Effect.mapError(() => new AttachedSessionError({ reason: "issue-failed" })),
-      );
-      // Recorded before use, so a session is never live without a record that leads to its revocation.
-      yield* readPersistedSessions.pipe(
-        Effect.flatMap((persisted) => writePersistedSessions([...persisted, issued.sessionId])),
-        Effect.catch((cause) =>
-          revokeOverHttp(server, issued.token, issued.sessionId).pipe(
-            Effect.flatMap(() =>
-              Effect.fail(new AttachedSessionError({ reason: "issue-failed", cause })),
-            ),
+  const issue = Effect.fn("DesktopAttachedServer.issue")(function* (server: AttachedServer) {
+    const { stdout, exitCode } = yield* runCli([
+      "auth",
+      "session",
+      "issue",
+      "--base-dir",
+      environment.baseDir,
+      ...ATTACHED_SESSION_SCOPES.flatMap((scope) => ["--scope", scope]),
+      "--ttl",
+      ATTACHED_SESSION_TTL,
+      "--label",
+      ATTACHED_SESSION_LABEL,
+      // A restarting service must find its own schema, so this CLI never migrates.
+      "--require-current-schema",
+      "--json",
+    ]).pipe(
+      Effect.mapError((cause) => new AttachedSessionError({ reason: "issue-failed", cause })),
+    );
+    if (exitCode === SERVER_EXIT_CODE_SCHEMA_BEHIND) {
+      return yield* new AttachedSessionError({ reason: "schema-behind" });
+    }
+    if (exitCode !== 0) {
+      return yield* new AttachedSessionError({
+        reason: "issue-failed",
+        cause: `exit ${exitCode}`,
+      });
+    }
+    // The parse error would echo stdout, which holds the token.
+    const issued = yield* decodeIssuedSession(stdout).pipe(
+      Effect.mapError(() => new AttachedSessionError({ reason: "issue-failed" })),
+    );
+    // Recorded before use, so a session is never live without a record that leads to its revocation.
+    yield* readPersistedSessions.pipe(
+      Effect.flatMap((persisted) => writePersistedSessions([...persisted, issued.sessionId])),
+      Effect.catch((cause) =>
+        revokeOverHttp(server, issued.token, issued.sessionId).pipe(
+          Effect.flatMap(() =>
+            Effect.fail(new AttachedSessionError({ reason: "issue-failed", cause })),
           ),
         ),
-      );
-      if (Option.isNone(yield* currentOwner(server))) {
-        return yield* new AttachedSessionError({ reason: "owner-unavailable" });
-      }
-      yield* Ref.set(sessionRef, Option.some(issued));
-      yield* revokePrevious(server, issued);
-      return issued;
-    });
+      ),
+    );
+    if (Option.isNone(yield* currentOwner(server))) {
+      return yield* new AttachedSessionError({ reason: "owner-unavailable" });
+    }
+    yield* Ref.set(sessionRef, Option.some(issued));
+    yield* revokePrevious(server, issued);
+    return issued;
+  });
 
   // Answers whether the server still accepts `token`; an unanswered check counts as accepted.
   const isAccepted = (server: AttachedServer, token: string) =>
@@ -257,26 +258,27 @@ export const makeAttachConfig = Effect.fn("DesktopAttachedServer.makeAttachConfi
     );
 
   // One refusal ends the attempt: it is shown once, instead of a CLI started on every retry.
-  const sessionFor = (server: AttachedServer) =>
-    Effect.gen(function* () {
-      if (Option.isSome(yield* Ref.get(refusalRef))) return "refused" as const;
-      const cached = yield* Ref.get(sessionRef);
-      if (Option.isSome(cached) && (yield* isAccepted(server, cached.value.token))) {
-        return { state: "ready" as const, token: cached.value.token };
-      }
-      return yield* issue(server).pipe(
-        Effect.map((issued) => ({
-          state: Option.isSome(cached) ? ("renewed" as const) : ("ready" as const),
-          token: issued.token,
-        })),
-        Effect.catchTags({
-          AttachedSessionError: (error) =>
-            error.reason === "owner-unavailable"
-              ? Effect.succeed("pending" as const)
-              : refuse(server, error).pipe(Effect.as("refused" as const)),
-        }),
-      );
-    });
+  const sessionFor = Effect.fn("DesktopAttachedServer.sessionFor")(function* (
+    server: AttachedServer,
+  ) {
+    if (Option.isSome(yield* Ref.get(refusalRef))) return "refused" as const;
+    const cached = yield* Ref.get(sessionRef);
+    if (Option.isSome(cached) && (yield* isAccepted(server, cached.value.token))) {
+      return { state: "ready" as const, token: cached.value.token };
+    }
+    return yield* issue(server).pipe(
+      Effect.map((issued) => ({
+        state: Option.isSome(cached) ? ("renewed" as const) : ("ready" as const),
+        token: issued.token,
+      })),
+      Effect.catchTags({
+        AttachedSessionError: (error) =>
+          error.reason === "owner-unavailable"
+            ? Effect.succeed("pending" as const)
+            : refuse(server, error).pipe(Effect.as("refused" as const)),
+      }),
+    );
+  });
 
   const ensureSession = (server: AttachedServer): Effect.Effect<AttachedSessionState> =>
     mutex.withPermits(1)(
