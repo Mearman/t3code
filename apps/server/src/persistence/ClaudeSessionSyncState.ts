@@ -142,14 +142,15 @@ const make = Effect.gen(function* () {
     `,
   });
 
-  // The expressions match fork_provider_threads_claude_native_id_idx, so this reads one index entry.
+  // Spelled as fork_provider_threads_claude_native_id_idx is, with the driver a literal, so SQLite can use that partial index; its second column serves the ORDER BY.
   const findProviderThreadRow = SqlSchema.findOneOption({
     Request: NativeSessionLookup,
     Result: ClaudeSessionProviderThread,
     execute: ({ nativeSessionId }) => sql`
       SELECT provider_thread_id AS "providerThreadId", thread_id AS "threadId"
       FROM orchestration_v2_projection_provider_threads
-      WHERE json_extract(payload_json, '$.nativeThreadRef.driver') = 'claudeAgent'
+      WHERE json_valid(payload_json)
+        AND json_extract(payload_json, '$.nativeThreadRef.driver') = 'claudeAgent'
         AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${nativeSessionId}
       ORDER BY updated_at DESC
       LIMIT 1
