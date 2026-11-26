@@ -116,6 +116,7 @@ import {
   JAVASCRIPT_TRIM_WHITESPACE,
 } from "./deferredCommandMessage.ts";
 import { readableSearchText } from "./messageSearchIndex.ts";
+import { runOriginSql as runOriginSqlFor } from "./runOriginSql.ts";
 import {
   isFoldableWorkItem,
   isThreadHistoryUserTurn,
@@ -2444,13 +2445,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
 
-    // Says which runs a subquery that picks one run by order reads, as runsByOrigin does in code; it
-    // appends to the subquery's conditions. `alias` is null for a subquery that names no alias.
-    const runOriginSql = (alias: string | null, origin: RunOrigin) => {
-      if (origin === "any") return sql``;
-      const payload = sql.literal(alias === null ? "payload_json" : `${alias}.payload_json`);
-      return sql`AND json_extract(${payload}, '$.nativeOrigin') IS NULL`;
-    };
+    const runOriginSql = (alias: string | null, origin: RunOrigin) =>
+      runOriginSqlFor(sql, alias, origin);
 
     // SQLite uses the partial conversation index of migration 082 only for this exact predicate.
     const CONVERSATION_INDEX_EXCLUDED_TYPES = sql.literal(
