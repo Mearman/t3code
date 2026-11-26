@@ -3,7 +3,25 @@ import {
   type ThreadSnoozeShell,
 } from "@t3tools/client-runtime/state/thread-settled";
 
+import type { SidebarThreadStatus } from "./Sidebar.logic";
+
 export type ThreadNotificationKind = "input" | "completion";
+
+/**
+ * Whether a thread's status asks for the user. A failure or limit of a run read back from a
+ * provider transcript happened outside T3, so only a pending request still does.
+ */
+export function needsNotificationAttention(
+  status: SidebarThreadStatus,
+  external: boolean,
+): boolean {
+  return (
+    status === "input" ||
+    status === "request" ||
+    status === "approval" ||
+    (!external && (status === "failed" || status === "limited"))
+  );
+}
 
 export interface ThreadNotificationObservation {
   /** Status and request key, or status and run without a request, while the thread needs attention. */
@@ -16,6 +34,8 @@ export interface ThreadNotificationObservation {
   readonly completedAt: number | null;
   /** The latest run answers a background-work progress wake, like a Monitor line. */
   readonly backgroundWake: boolean;
+  /** The latest run was read back from a provider transcript, so its ending happened outside T3. */
+  readonly external: boolean;
 }
 
 /** Matches the push relay's completion confirmation: a final wake can start right after a progress wake. */
@@ -89,6 +109,14 @@ export function createThreadNotificationGate<Key>(
       // The grace survives updates that keep the wake's completion; anything else cancels it.
       const pending = releases.get(key);
       const silenced = options.archived || options.quiet || options.snoozed;
+      // A transcript run's ending never notifies, and never cancels a T3 completion's grace.
+      if (next.external) {
+        if (pending?.timer === undefined && pending !== undefined && !silenced) {
+          release(key, pending.at);
+        }
+        if (attend(key, prior, next) && prior && !options.archived) notify(key, "input");
+        return;
+      }
       if (pending?.at === next.completedAt && !silenced) {
         if (pending.timer === undefined) release(key, pending.at);
         return;

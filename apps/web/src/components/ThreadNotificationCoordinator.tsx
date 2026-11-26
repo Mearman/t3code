@@ -37,6 +37,7 @@ import { resolveBackgroundThreadRequest } from "./backgroundThreadAnnouncement";
 import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "./Sidebar.logic";
 import {
   createThreadNotificationGate,
+  needsNotificationAttention,
   isSnoozedForNotification,
   type ThreadNotificationKind,
   type ThreadNotificationObservation,
@@ -268,12 +269,8 @@ export function startThreadNotifications(
       const thread = presentThreadShell(environmentId, rawThread, subagentRequest);
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
-      const needsAttention =
-        status === "input" ||
-        status === "request" ||
-        status === "approval" ||
-        status === "failed" ||
-        status === "limited";
+      const external = rawThread.latestRunNativeOrigin === true;
+      const needsAttention = needsNotificationAttention(status, external);
       const requestId = needsAttention ? resolveBackgroundThreadRequest(thread).requestId : null;
       // Queued messages become the latest run while a request stays pending, so a request
       // with an id is keyed by that id alone and announces once.
@@ -296,6 +293,7 @@ export function startThreadNotifications(
         settled,
         completedAt: settled ? completedAt : null,
         backgroundWake: rawThread.latestRunBackgroundWake === true,
+        external,
       };
       next.set(thread.id, state);
       changed.push([prior, state]);

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   createThreadNotificationGate,
   isSnoozedForNotification,
+  needsNotificationAttention,
   RELEASED_COMPLETION_GRACE_MS,
   type ThreadNotificationObservation,
 } from "./ThreadNotificationCoordinator.logic";
@@ -13,6 +14,7 @@ const working: ThreadNotificationObservation = {
   settled: false,
   completedAt: null,
   backgroundWake: false,
+  external: false,
 };
 const completed = (at: number): ThreadNotificationObservation => ({
   attention: null,
@@ -20,6 +22,7 @@ const completed = (at: number): ThreadNotificationObservation => ({
   settled: true,
   completedAt: at,
   backgroundWake: false,
+  external: false,
 });
 const waking: ThreadNotificationObservation = { ...working, backgroundWake: true };
 const woke = (at: number): ThreadNotificationObservation => ({
@@ -46,6 +49,31 @@ function harness() {
 }
 
 describe("createThreadNotificationGate", () => {
+  it("never notifies the ending of a run read back from a transcript", () => {
+    const { notify, observe } = harness();
+    observe(working);
+    observe({ ...completed(1), external: true });
+    observe({ ...working, external: true });
+    expect(notify).not.toHaveBeenCalled();
+    expect(needsNotificationAttention("failed", true)).toBe(false);
+    expect(needsNotificationAttention("limited", true)).toBe(false);
+    expect(needsNotificationAttention("approval", true)).toBe(true);
+    expect(needsNotificationAttention("failed", false)).toBe(true);
+    observe(working);
+    observe(completed(3));
+    expect(notify.mock.calls).toEqual([["thread", "completion"]]);
+  });
+
+  it("keeps a wake completion's grace when a transcript run lands during it", () => {
+    using _timers = fakeTimers();
+    const { notify, observe } = harness();
+    observe(waking);
+    observe(woke(1));
+    observe({ ...completed(2), external: true });
+    vi.advanceTimersByTime(RELEASED_COMPLETION_GRACE_MS);
+    expect(notify.mock.calls).toEqual([["thread", "completion"]]);
+  });
+
   it("skips a completion seen while snoozed, but still notifies attention", () => {
     const { notify, observe } = harness();
     observe(working);
