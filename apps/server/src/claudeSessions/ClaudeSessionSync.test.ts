@@ -25,6 +25,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
@@ -779,7 +780,7 @@ describe("ClaudeSessionSync", () => {
           const projections = yield* ProjectionStore.ProjectionStoreV2;
           yield* syncAll({ full: true });
           expect(yield* projections.findThread(claudeThreadId)).toBeNull();
-          expect((yield* sessionRow(extra))?.hydrationState).toBe("pending");
+          expect((yield* sessionRow(extra))?.hydrationState).toBe("excluded");
         }).pipe(
           Effect.provide(syncLayer(settingsFor([extra], { excludedCwdGlobs: ["/work/**"] }))),
         );
@@ -861,6 +862,8 @@ describe("ClaudeSessionSync", () => {
         yield* fileSystem.utimes(file, old, old);
         yield* Effect.gen(function* () {
           const projections = yield* ProjectionStore.ProjectionStoreV2;
+          // The test clock starts at 1970; the session is old only against a clock after it.
+          yield* TestClock.setTime(Date.parse("2026-11-26T12:00:00.000Z"));
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
           expect(yield* nativeRuns(claudeThreadId)).toHaveLength(1);
@@ -903,6 +906,7 @@ describe("ClaudeSessionSync", () => {
           const realCapacity = ClaudeSyncCapacity.layer.pipe(
             Layer.provide(ServerConfig.layerTest(root, root)),
             Layer.provide(NodeServices.layer),
+            Layer.orDie,
           );
           yield* Effect.gen(function* () {
             const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
