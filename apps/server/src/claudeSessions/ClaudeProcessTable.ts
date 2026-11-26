@@ -48,26 +48,63 @@ export class ClaudeProcessTableError extends Schema.TaggedError<ClaudeProcessTab
 }
 
 /**
- * Builds a reader that runs `ps` in the C locale and UTC, the form a registry entry's `procStart`
- * is written in, and fails with the reason when it cannot.
+ * Parses `pid ppid creationEpochSeconds` lines from `WINDOWS_PROCESS_TABLE_SCRIPT`. Windows has
+ * no process groups, so each row is its own.
  */
-export const makeClaudeProcessTableReader = Effect.map(ProcessRunner.make(), (runner) =>
-  runner
-    .run({
-      command: "ps",
-      args: ["-A", "-o", "pid=,ppid=,pgid=,lstart="],
-      env: { LC_ALL: "C", TZ: "UTC0" },
-      timeout: "5 seconds",
-    })
-    .pipe(
-      Effect.mapError((cause) => new ClaudeProcessTableError({ reason: "ps did not run", cause })),
+export function parseWindowsClaudeProcessTable(table: string): ReadonlyArray<ClaudeProcessRow> {
+  return table.split("\n").flatMap((line) => {
+    const [pid, ppid, started] = line.trim().split(/\s+/);
+    const row = {
+      pid: Number(pid),
+      ppid: Number(ppid),
+      pgid: Number(pid),
+      startTimeSeconds: Number(started),
+    };
+    return isClaudeProcessRow(row) ? [row] : [];
+  });
+}
+
+const WINDOWS_PROCESS_TABLE_SCRIPT =
+  "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, [DateTimeOffset]::new($_.CreationDate).ToUnixTimeSeconds() }";
+
+/** The command that lists every process, with the parser for its output. */
+export function claudeProcessTableCommand(platform: NodeJS.Platform) {
+  return platform === "win32"
+    ? {
+        command: "powershell.exe",
+        args: ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_TABLE_SCRIPT],
+        env: {},
+        parse: parseWindowsClaudeProcessTable,
+      }
+    : {
+        // The C locale and UTC are the form a registry entry's `procStart` is written in.
+        command: "ps",
+        args: ["-A", "-o", "pid=,ppid=,pgid=,lstart="],
+        env: { LC_ALL: "C", TZ: "UTC0" },
+        parse: parseClaudeProcessTable,
+      };
+}
+
+/** Builds a reader of every process on `platform` that fails with the reason when it cannot. */
+export const makeClaudeProcessTableReader = (platform: NodeJS.Platform) => {
+  const { parse, ...command } = claudeProcessTableCommand(platform);
+  return Effect.map(ProcessRunner.make(), (runner) =>
+    runner.run({ ...command, timeout: "10 seconds" }).pipe(
+      Effect.mapError(
+        (cause) => new ClaudeProcessTableError({ reason: `${command.command} did not run`, cause }),
+      ),
       Effect.flatMap((result) =>
         result.code === 0
-          ? Effect.succeed(parseClaudeProcessTable(result.stdout))
-          : Effect.fail(new ClaudeProcessTableError({ reason: `ps exited with ${result.code}` })),
+          ? Effect.succeed(parse(result.stdout))
+          : Effect.fail(
+              new ClaudeProcessTableError({
+                reason: `${command.command} exited with ${result.code}`,
+              }),
+            ),
       ),
     ),
-);
+  );
+};
 
 export function indexClaudeProcessTable(rows: ReadonlyArray<ClaudeProcessRow>) {
   return {

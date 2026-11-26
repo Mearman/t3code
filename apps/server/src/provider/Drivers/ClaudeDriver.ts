@@ -14,10 +14,8 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
-import {
-  ClaudeProcessTableError,
-  makeClaudeProcessTableReader,
-} from "../../claudeSessions/ClaudeProcessTable.ts";
+import { makeClaudeProcessTableReader } from "../../claudeSessions/ClaudeProcessTable.ts";
+import { ClaudeSpawnedProcesses } from "../../claudeSessions/ClaudeSpawnedProcesses.ts";
 import {
   gateHeldClaudeSessions,
   probeClaudeSessionHold,
@@ -88,6 +86,7 @@ const withoutUsage = (capabilities: ClaudeCapabilitiesProbe): ClaudeCapabilities
 
 export type ClaudeDriverEnv =
   | ClaudeAdapterV2DriverEnv
+  | ClaudeSpawnedProcesses
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
   | ResetCreditCoordinator.ResetCreditCoordinator
@@ -215,23 +214,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           }),
       ),
     );
-    // A registry entry's `procStart` can only be matched against `ps`, which Windows lacks; there a
-    // session any entry names is refused rather than let through unchecked.
-    const readProcesses =
-      (yield* HostProcess.Platform) === "win32"
-        ? Effect.fail(
-            new ClaudeProcessTableError({ reason: "Windows has no ps to match it against" }),
-          )
-        : yield* makeClaudeProcessTableReader.pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          );
+    const spawnedProcesses = yield* ClaudeSpawnedProcesses;
+    const platform = yield* HostProcess.Platform;
+    const readProcesses = yield* makeClaudeProcessTableReader(platform).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
     const sendGatedAdapter = gateHeldClaudeSessions(orchestrationAdapter, (sessionId) =>
-      probeClaudeSessionHold({
-        sessionsDir: path.join(configDir, "sessions"),
-        sessionId,
-        ownRootPids: [process.pid],
-        readProcesses,
-      }).pipe(
+      spawnedProcesses.pids.pipe(
+        Effect.flatMap((ownRootPids) =>
+          probeClaudeSessionHold({
+            sessionsDir: path.join(configDir, "sessions"),
+            sessionId,
+            ownRootPids,
+            readProcesses,
+            // Windows has no `ps lstart` to match `procStart` against, so liveness decides.
+            matchStartTime: platform !== "win32",
+          }),
+        ),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
       ),

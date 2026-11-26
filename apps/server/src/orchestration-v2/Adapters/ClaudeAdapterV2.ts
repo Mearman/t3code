@@ -202,6 +202,10 @@ import {
   type ClaudeProcessRow,
   type ClaudeProcessTable,
 } from "../../claudeSessions/ClaudeProcessTable.ts";
+import {
+  ClaudeSpawnedProcesses,
+  makeClaudeSpawnedProcesses,
+} from "../../claudeSessions/ClaudeSpawnedProcesses.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
@@ -1607,16 +1611,16 @@ export function withoutClaudeCanUseToolShadowedWarning<A>(run: () => A): A {
 }
 
 export const layerQueryRunner: Layer.Layer<
-  ClaudeAgentSdkQueryRunner,
+  ClaudeAgentSdkQueryRunner | ClaudeSpawnedProcesses,
   never,
   | ChildProcessSpawner.ChildProcessSpawner
   | SecureRandom.SecureRandom
   | Path.Path
   | PortScanner.PortDiscovery
   | ProviderEventLoggers.ProviderEventLoggers
-> = Layer.effect(
-  ClaudeAgentSdkQueryRunner,
+> = Layer.effectContext(
   Effect.gen(function* () {
+    const spawnedProcesses = makeClaudeSpawnedProcesses();
     const random = yield* SecureRandom.SecureRandom;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const path = yield* Path.Path;
@@ -1627,7 +1631,7 @@ export const layerQueryRunner: Layer.Layer<
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
-    const psProcessTable = (yield* makeClaudeProcessTableReader).pipe(
+    const psProcessTable = (yield* makeClaudeProcessTableReader(platform)).pipe(
       Effect.orElseSucceed(() => []),
     );
     const monitor = Option.getOrUndefined(yield* Effect.serviceOption(NativeTelemetryClient));
@@ -1816,6 +1820,7 @@ export const layerQueryRunner: Layer.Layer<
       const spawnClaudeCodeProcess = (spawnOptions: ClaudeSpawnOptions) => {
         const child = spawnProcess(spawnOptions);
         spawnedProcess = child;
+        if (child.pid !== undefined) child.once("exit", spawnedProcesses.register(child.pid));
         // A spawn that fails emits only "error".
         const releaseAgent = portDiscovery.trackAgent();
         child.once("exit", releaseAgent);
@@ -2237,91 +2242,30 @@ export const layerQueryRunner: Layer.Layer<
         Effect.provideService(Path.Path, path),
       );
 
-    return ClaudeAgentSdkQueryRunner.of({
-      allocateSessionId: random.uuidV4(),
-      open: Effect.fn("ClaudeAgentSdkQueryRunner.open")(function* (
-        input: ClaudeAgentSdkQueryOpenInput,
-      ) {
-        // A fresh ID may already have a transcript, so a fresh session retries under a new ID;
-        // the adapter adopts it from the init message, as it does after /clear.
-        return yield* openQuery(input).pipe(
-          Effect.catchIf(
-            (error) => isClaudeMcpRegistrationTimeoutError(error.cause),
-            Effect.fnUntraced(function* () {
-              const { resume, ...options } = input.options;
-              if (resume !== undefined) return yield* openQuery(input);
-              const sessionId = yield* random.uuidV4();
-              return yield* openQuery({ ...input, options: { ...options, sessionId } });
-            }),
-          ),
-        );
-      }),
-      forkSession: Effect.fn("ClaudeAgentSdkQueryRunner.forkSession")(function* (
-        input: ClaudeAgentSdkSessionForkInput,
-      ) {
-        const protocolLogger = makeClaudeAgentSdkProtocolLogger({
-          nativeEventLogger,
-          threadId: input.threadId,
-          providerSessionId: input.providerSessionId,
-        });
-        const logProtocolEvent = (event: ClaudeAgentSdkProtocolLogEvent) =>
-          protocolLogger === undefined ? Effect.void : protocolLogger(event);
-        yield* logProtocolEvent({
-          direction: "outgoing",
-          stage: "decoded",
-          payload: {
-            type: "session.fork",
-            sessionId: input.sessionId,
-            options: input.options,
-          },
-        });
-        const hostEnvironment = yield* HostProcess.Environment;
-        const homeDirectory = yield* HostProcess.HomeDirectory;
-        const usesHostConfig =
-          claudeConfigDirOf(path, input.environment, homeDirectory) ===
-          claudeConfigDirOf(path, hostEnvironment, homeDirectory);
-        const fork: Effect.Effect<
-          ForkSessionResult & { readonly headMessageId?: string },
-          unknown
-        > = usesHostConfig
-          ? Effect.tryPromise({
-              try: () => forkClaudeSession(input.sessionId, input.options),
-              catch: (cause) => queryRunnerError(cause, "forkSession"),
-            })
-          : forkClaudeSessionInWorker(input).pipe(
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-              Effect.provideService(Path.Path, path),
-            );
-        const result = yield* fork.pipe(
-          Effect.mapError((cause) => queryRunnerError(cause, "forkSession")),
-        );
-        yield* logProtocolEvent({
-          direction: "incoming",
-          stage: "decoded",
-          payload: {
-            type: "session.forked",
-            sessionId: result.sessionId,
-          },
-        });
-        // The SDK remaps copied UUIDs. Capture the inherited head before the
-        // fork's first run appends messages.
-        const headMessageId = usesHostConfig
-          ? yield* Effect.tryPromise({
-              try: () =>
-                getSessionMessages(
-                  result.sessionId,
-                  input.options.dir === undefined ? {} : { dir: input.options.dir },
-                ),
-              catch: (cause) => queryRunnerError(cause, "getSessionMessages"),
-            }).pipe(
-              Effect.map((messages) => messages.at(-1)?.uuid),
-              Effect.orElseSucceed(() => undefined),
-            )
-          : result.headMessageId;
-        return headMessageId === undefined ? result : { ...result, headMessageId };
-      }),
-      subagentLaunchToolUseId: Effect.fn("ClaudeAgentSdkQueryRunner.subagentLaunchToolUseId")(
-        function* (input: ClaudeAgentSdkSubagentLookupInput) {
+    return Context.make(
+      ClaudeAgentSdkQueryRunner,
+      ClaudeAgentSdkQueryRunner.of({
+        allocateSessionId: random.uuidV4(),
+        open: Effect.fn("ClaudeAgentSdkQueryRunner.open")(function* (
+          input: ClaudeAgentSdkQueryOpenInput,
+        ) {
+          // A fresh ID may already have a transcript, so a fresh session retries under a new ID;
+          // the adapter adopts it from the init message, as it does after /clear.
+          return yield* openQuery(input).pipe(
+            Effect.catchIf(
+              (error) => isClaudeMcpRegistrationTimeoutError(error.cause),
+              Effect.fnUntraced(function* () {
+                const { resume, ...options } = input.options;
+                if (resume !== undefined) return yield* openQuery(input);
+                const sessionId = yield* random.uuidV4();
+                return yield* openQuery({ ...input, options: { ...options, sessionId } });
+              }),
+            ),
+          );
+        }),
+        forkSession: Effect.fn("ClaudeAgentSdkQueryRunner.forkSession")(function* (
+          input: ClaudeAgentSdkSessionForkInput,
+        ) {
           const protocolLogger = makeClaudeAgentSdkProtocolLogger({
             nativeEventLogger,
             threadId: input.threadId,
@@ -2333,36 +2277,100 @@ export const layerQueryRunner: Layer.Layer<
             direction: "outgoing",
             stage: "decoded",
             payload: {
-              type: "subagent.lookup",
+              type: "session.fork",
               sessionId: input.sessionId,
-              agentId: input.agentId,
+              options: input.options,
             },
           });
-          const messages = yield* readSubagentMessages(input, { limit: 1 });
-          const toolUseId = messages[0]?.parent_tool_use_id ?? null;
+          const hostEnvironment = yield* HostProcess.Environment;
+          const homeDirectory = yield* HostProcess.HomeDirectory;
+          const usesHostConfig =
+            claudeConfigDirOf(path, input.environment, homeDirectory) ===
+            claudeConfigDirOf(path, hostEnvironment, homeDirectory);
+          const fork: Effect.Effect<
+            ForkSessionResult & { readonly headMessageId?: string },
+            unknown
+          > = usesHostConfig
+            ? Effect.tryPromise({
+                try: () => forkClaudeSession(input.sessionId, input.options),
+                catch: (cause) => queryRunnerError(cause, "forkSession"),
+              })
+            : forkClaudeSessionInWorker(input).pipe(
+                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                Effect.provideService(Path.Path, path),
+              );
+          const result = yield* fork.pipe(
+            Effect.mapError((cause) => queryRunnerError(cause, "forkSession")),
+          );
           yield* logProtocolEvent({
             direction: "incoming",
             stage: "decoded",
-            payload: { type: "subagent.found", toolUseId },
+            payload: {
+              type: "session.forked",
+              sessionId: result.sessionId,
+            },
           });
-          return toolUseId;
-        },
-      ),
-      subagentModel: Effect.fn("ClaudeAgentSdkQueryRunner.subagentModel")(function* (
-        input: ClaudeAgentSdkSubagentLookupInput,
-      ) {
-        const messages = yield* readSubagentMessages(input, {});
-        return (
-          messages
-            .toReversed()
-            .flatMap((message) =>
-              message.type === "assistant" ? [text(field(message.message, "model"))] : [],
-            )
-            .find((model) => model !== undefined) ?? null
-        );
+          // The SDK remaps copied UUIDs. Capture the inherited head before the
+          // fork's first run appends messages.
+          const headMessageId = usesHostConfig
+            ? yield* Effect.tryPromise({
+                try: () =>
+                  getSessionMessages(
+                    result.sessionId,
+                    input.options.dir === undefined ? {} : { dir: input.options.dir },
+                  ),
+                catch: (cause) => queryRunnerError(cause, "getSessionMessages"),
+              }).pipe(
+                Effect.map((messages) => messages.at(-1)?.uuid),
+                Effect.orElseSucceed(() => undefined),
+              )
+            : result.headMessageId;
+          return headMessageId === undefined ? result : { ...result, headMessageId };
+        }),
+        subagentLaunchToolUseId: Effect.fn("ClaudeAgentSdkQueryRunner.subagentLaunchToolUseId")(
+          function* (input: ClaudeAgentSdkSubagentLookupInput) {
+            const protocolLogger = makeClaudeAgentSdkProtocolLogger({
+              nativeEventLogger,
+              threadId: input.threadId,
+              providerSessionId: input.providerSessionId,
+            });
+            const logProtocolEvent = (event: ClaudeAgentSdkProtocolLogEvent) =>
+              protocolLogger === undefined ? Effect.void : protocolLogger(event);
+            yield* logProtocolEvent({
+              direction: "outgoing",
+              stage: "decoded",
+              payload: {
+                type: "subagent.lookup",
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+              },
+            });
+            const messages = yield* readSubagentMessages(input, { limit: 1 });
+            const toolUseId = messages[0]?.parent_tool_use_id ?? null;
+            yield* logProtocolEvent({
+              direction: "incoming",
+              stage: "decoded",
+              payload: { type: "subagent.found", toolUseId },
+            });
+            return toolUseId;
+          },
+        ),
+        subagentModel: Effect.fn("ClaudeAgentSdkQueryRunner.subagentModel")(function* (
+          input: ClaudeAgentSdkSubagentLookupInput,
+        ) {
+          const messages = yield* readSubagentMessages(input, {});
+          return (
+            messages
+              .toReversed()
+              .flatMap((message) =>
+                message.type === "assistant" ? [text(field(message.message, "model"))] : [],
+              )
+              .find((model) => model !== undefined) ?? null
+          );
+        }),
+        assertComplete: Effect.void,
       }),
-      assertComplete: Effect.void,
-    });
+    ).pipe(Context.add(ClaudeSpawnedProcesses, spawnedProcesses));
   }),
 );
 
