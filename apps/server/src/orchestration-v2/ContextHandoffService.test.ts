@@ -381,12 +381,16 @@ function clearThread(
 const readClearFork = Effect.fn(function* (
   sourceRuns: ReadonlyArray<ReturnType<typeof clearRun>>,
   sourceItems: ReadonlyArray<OrchestrationV2TurnItem>,
+  sourceIsSideChat = false,
 ) {
-  const sourceThread = clearThread(clearSourceId, {
+  const forkedSource = clearThread(clearSourceId, {
     type: "run",
     threadId: clearAncestorId,
     runId: clearAncestorRunId,
   });
+  const sourceThread = sourceIsSideChat
+    ? { ...forkedSource, lineage: { ...forkedSource.lineage, sideChat: true } }
+    : forkedSource;
   const fork = clearThread(ThreadId.make("thread:clear-fork"), {
     type: "run",
     threadId: clearSourceId,
@@ -437,6 +441,18 @@ it.effect("portable fork history stops at /clear (freshContext) and drops ancest
       ],
     );
     assert.deepEqual(texts, ["after clear"]);
+  }),
+);
+
+it.effect("portable fork of a side chat carries the parent history it was opened from", () =>
+  Effect.gen(function* () {
+    const asked = RunId.make("run:side-chat-1");
+    const texts = yield* readClearFork(
+      [clearRun(asked, clearSourceId, 1)],
+      [clearUserItem("side", clearSourceId, asked, "side question", 1)],
+      true,
+    );
+    assert.deepEqual(texts, ["ancestor history", "side question"]);
   }),
 );
 
