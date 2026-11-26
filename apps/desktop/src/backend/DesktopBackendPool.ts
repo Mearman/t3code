@@ -268,62 +268,64 @@ export const layer = Layer.effect(
       },
     );
 
-    const primary = yield* DesktopBackendManager.makeBackendInstance({
-      id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
-      // Resolve lazily: startup loads persisted settings after pool initialization.
-      label: configuration.resolvePrimaryLabel,
-      configResolve: resolvePrimaryConfig,
-      ...(recovery === undefined
-        ? {}
-        : {
-            trackProcess: (pid) =>
-              Effect.promise(() => recovery.track(pid)).pipe(
-                Effect.map((forget) =>
-                  forget === undefined ? Effect.void : Effect.promise(forget),
+    // Annotated: onStateDirOwned starts this instance again, which TypeScript cannot infer.
+    const primary: DesktopBackendManager.DesktopBackendInstance =
+      yield* DesktopBackendManager.makeBackendInstance({
+        id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
+        // Resolve lazily: startup loads persisted settings after pool initialization.
+        label: configuration.resolvePrimaryLabel,
+        configResolve: resolvePrimaryConfig,
+        ...(recovery === undefined
+          ? {}
+          : {
+              trackProcess: (pid) =>
+                Effect.promise(() => recovery.track(pid)).pipe(
+                  Effect.map((forget) =>
+                    forget === undefined ? Effect.void : Effect.promise(forget),
+                  ),
                 ),
-              ),
-          }),
-      // Absorb window errors so readiness can reset restartAttempt.
-      onReady: (httpBaseUrl, pid) =>
-        FiberHandle.run(updateMarkerWait, releaseUpdateMarker(httpBaseUrl, pid)).pipe(
-          Effect.andThen(reloadStaleMain(httpBaseUrl)),
-          Effect.andThen(desktopWindow.handleBackendReady(httpBaseUrl)),
-          // Only once the main window exists, so the recovery window never closes into nothing.
-          Effect.andThen(SubscriptionRef.set(primaryBackendStartup, { _tag: "Ready" })),
-          Effect.catch((error) =>
-            logBackendPoolWarning("failed to open main window after backend readiness", {
-              error: error.message,
             }),
+        // Absorb window errors so readiness can reset restartAttempt.
+        onReady: (httpBaseUrl, pid) =>
+          FiberHandle.run(updateMarkerWait, releaseUpdateMarker(httpBaseUrl, pid)).pipe(
+            Effect.andThen(reloadStaleMain(httpBaseUrl)),
+            Effect.andThen(desktopWindow.handleBackendReady(httpBaseUrl)),
+            // Only once the main window exists, so the recovery window never closes into nothing.
+            Effect.andThen(SubscriptionRef.set(primaryBackendStartup, { _tag: "Ready" })),
+            Effect.catch((error) =>
+              logBackendPoolWarning("failed to open main window after backend readiness", {
+                error: error.message,
+              }),
+            ),
           ),
-        ),
-      onStartupFailure: (failure) =>
-        SubscriptionRef.set(primaryBackendStartup, { _tag: "Failing", ...failure }),
-      onMigrationProgress: (progress) => Ref.set(databaseMigrationProgress, progress),
-      onShutdown: () =>
-        FiberHandle.clear(updateMarkerWait).pipe(
-          Effect.andThen(desktopWindow.handleBackendNotReady),
-        ),
-      onPreflightFailed: handlePrimaryPreflightFailure,
-      // Runs outside the instance's lock: waiting on the owner must not hold up a quit.
-      onStateDirOwned: () =>
-        DesktopHomeOwner.explainHomeRefusal().pipe(
-          Effect.provideContext(homeOwnerContext),
-          Effect.flatMap((state) =>
-            state._tag === "Unavailable"
-              ? electronDialog
-                  .showErrorBox(
-                    DesktopHomeOwner.homeUnavailableTitle(),
-                    DesktopHomeOwner.homeUnavailableMessage(state.unavailable),
-                  )
-                  .pipe(Effect.andThen(electronApp.quit))
-              : logBackendPoolInfo("attaching to the server that owns the T3 home").pipe(
-                  Effect.andThen(Effect.suspend(() => primary.start)),
-                ),
+        onStartupFailure: (failure) =>
+          SubscriptionRef.set(primaryBackendStartup, { _tag: "Failing", ...failure }),
+        onMigrationProgress: (progress) => Ref.set(databaseMigrationProgress, progress),
+        onShutdown: () =>
+          FiberHandle.clear(updateMarkerWait).pipe(
+            Effect.andThen(desktopWindow.handleBackendNotReady),
           ),
-          Effect.forkIn(layerScope),
-          Effect.asVoid,
-        ),
-    });
+        onPreflightFailed: handlePrimaryPreflightFailure,
+        // Runs outside the instance's lock: waiting on the owner must not hold up a quit.
+        onStateDirOwned: () =>
+          DesktopHomeOwner.explainHomeRefusal().pipe(
+            Effect.provideContext(homeOwnerContext),
+            Effect.flatMap((state) =>
+              state._tag === "Unavailable"
+                ? electronDialog
+                    .showErrorBox(
+                      DesktopHomeOwner.homeUnavailableTitle(),
+                      DesktopHomeOwner.homeUnavailableMessage(state.unavailable),
+                    )
+                    .pipe(Effect.andThen(electronApp.quit))
+                : logBackendPoolInfo("attaching to the server that owns the T3 home").pipe(
+                    Effect.andThen(Effect.suspend(() => primary.start)),
+                  ),
+            ),
+            Effect.forkIn(layerScope),
+            Effect.asVoid,
+          ),
+      });
 
     // A server may reject the attached session (expiry, or revoked elsewhere); the renderer holds
     // the old token until it reloads.

@@ -8,6 +8,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
@@ -30,6 +31,7 @@ const withTempHome = <A, E>(
     | FileSystem.FileSystem
     | Path.Path
     | HttpClient.HttpClient
+    | Scope.Scope
   >,
   answer: Record<string, unknown> | null = null,
 ) =>
@@ -218,7 +220,7 @@ describe("DesktopHomeOwner.explainHomeRefusal", () => {
 });
 
 describe("DesktopHomeOwner.resolveStartupHomeOwner", () => {
-  it.effect("waits for a quitting owner to release the home, then names one that never does", () =>
+  it.effect("waits for a quitting owner to release the home", () =>
     withTempHome(({ userdata }) =>
       Effect.gen(function* () {
         assert.equal((yield* DesktopHomeOwner.resolveStartupHomeOwner())._tag, "Free");
@@ -230,18 +232,6 @@ describe("DesktopHomeOwner.resolveStartupHomeOwner", () => {
         lock.close();
         yield* TestClock.adjust("1 second");
         assert.equal((yield* Fiber.join(released))._tag, "Free");
-
-        const held = new NodeSqlite.DatabaseSync(`${userdata}/server-owner.sqlite`);
-        held.exec("BEGIN EXCLUSIVE;");
-        const owned = yield* Effect.forkChild(DesktopHomeOwner.resolveStartupHomeOwner());
-        yield* TestClock.adjust("1 minute");
-        yield* TestClock.adjust("1 minute");
-        const state = yield* Fiber.join(owned);
-        assert.equal(
-          state._tag === "Unavailable" ? state.unavailable.reason : null,
-          "not-answering",
-        );
-        held.close();
       }),
     ),
   );

@@ -171,11 +171,13 @@ export const getLocalEnvironmentBootstraps = DesktopIpc.makeSyncIpcMethod({
     const bootstraps: DesktopEnvironmentBootstrap[] = [];
     for (const instance of instances) {
       const isPrimary = instance.id === PRIMARY_LOCAL_ENVIRONMENT_ID;
-      const config = yield* instance.currentConfig;
+      const runConfig = yield* instance.currentConfig;
       const snapshot = yield* instance.snapshot;
-      if (Option.isSome(config) && config.value._tag === "Attach") {
+      if (Option.isSome(runConfig) && runConfig.value._tag === "Attach") {
         // The renderer authenticates with the attached server's bearer session, never a launch token.
-        const httpBaseUrl = Option.getOrNull(Option.map(config.value.server, (s) => s.httpBaseUrl));
+        const httpBaseUrl = Option.getOrNull(
+          Option.map(runConfig.value.server, (server) => server.httpBaseUrl),
+        );
         bootstraps.push({
           id: instance.id,
           label: yield* instance.label,
@@ -186,6 +188,10 @@ export const getLocalEnvironmentBootstraps = DesktopIpc.makeSyncIpcMethod({
         });
         continue;
       }
+      const config = Option.filter(
+        runConfig,
+        (value): value is DesktopBackendManager.DesktopBackendStartConfig => value._tag === "Spawn",
+      );
       if (Option.isNone(config) || Option.isSome(config.value.preflightFailure)) {
         const fatalPreflight =
           Option.isSome(config) &&
