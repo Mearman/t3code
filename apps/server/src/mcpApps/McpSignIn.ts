@@ -14,6 +14,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
+import { heldSessionRequestDetail } from "./McpAppRequests.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 
 /**
@@ -66,15 +67,26 @@ const make = Effect.gen(function* () {
       ? Effect.fail(cause)
       : Predicate.isTagged(cause, "ProviderAdapterSessionStoppedError")
         ? Effect.fail(stopped(input.server))
-        : Predicate.isTagged(cause, "ProviderAdapterThreadInUseError") &&
-            Predicate.hasProperty(cause, "message") &&
-            typeof cause.message === "string"
-          ? Effect.fail(fail(input.server, cause.message))
-          : Effect.logWarning("mcp-sign-in.failed", {
-              threadId: input.threadId,
-              server: input.server,
-              cause: Predicate.hasProperty(cause, "_tag") ? cause._tag : "unknown",
-            }).pipe(Effect.andThen(Effect.fail(fail(input.server, detail))));
+        : Effect.logWarning("mcp-sign-in.failed", {
+            threadId: input.threadId,
+            server: input.server,
+            cause: Predicate.hasProperty(cause, "_tag") ? cause._tag : "unknown",
+          }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                fail(
+                  input.server,
+                  Predicate.isTagged(cause, "ProviderAdapterThreadInUseError")
+                    ? heldSessionRequestDetail(
+                        Predicate.hasProperty(cause, "holderObserved") &&
+                          cause.holderObserved === true,
+                        `the sign-in to ${input.server}`,
+                      )
+                    : detail,
+                ),
+              ),
+            ),
+          );
 
   const start = Effect.fn("McpSignIn.start")(
     function* (input: ProviderMcpSignInStartInput) {

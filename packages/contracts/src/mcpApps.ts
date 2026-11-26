@@ -61,7 +61,6 @@ export const McpAppRequestErrorReason = Schema.Literals([
   "not-an-app",
   "provider-unsupported",
   "session-stopped",
-  "session-held",
   "tool-not-callable",
   "unsupported-content",
   "request-failed",
@@ -73,10 +72,13 @@ export class McpAppRequestError extends Schema.TaggedError<McpAppRequestError>()
   {
     threadId: ThreadId,
     reason: McpAppRequestErrorReason,
+    /** Fixed server text in place of the reason's own; older clients ignore it. */
+    detail: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
+    if (this.detail !== undefined) return this.detail;
     switch (this.reason) {
       case "not-an-app":
         return "This tool call has no MCP app.";
@@ -84,8 +86,6 @@ export class McpAppRequestError extends Schema.TaggedError<McpAppRequestError>()
         return "This thread's provider cannot run MCP app requests.";
       case "session-stopped":
         return "The app's thread is not running. Send a message in the thread that created it to use the app again.";
-      case "session-held":
-        return "Another Claude Code process has this thread's session open, so the app's request was not sent. Close that process and try again.";
       case "tool-not-callable":
         return "This app cannot call that tool.";
       case "unsupported-content":
