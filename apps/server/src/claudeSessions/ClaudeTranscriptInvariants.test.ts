@@ -348,6 +348,49 @@ describe("checkClaudeTranscriptTurns", () => {
     }),
   );
 
+  // Rewrite inspection 2 finding 2: filing a later compaction among true roots' turns only is wrong.
+  it.effect("reports a compaction filed with a turn older than the one running then", () =>
+    Effect.gen(function* () {
+      const g = claudeTranscriptFixture();
+      const parsed = yield* parse([
+        g.prompt("p0", null, "Go"),
+        g.text("a0", "p0", "Working", null),
+        g.boundary("cb1", "gone-1"),
+        g.summary("s1", "cb1", { promptId: "pid-p0" }),
+        g.text("a1", "s1", "Continuing"),
+        g.prompt("p2", "a1", "Next"),
+        g.text("a2", "p2", "Working", null),
+        g.boundary("cb2", "gone-2"),
+        g.summary("s2", "cb2", { promptId: "pid-p2" }),
+        g.text("a3", "s2", "Continuing"),
+      ]);
+      const backward = (current: Parsed) =>
+        refile({ ...current, ...refile(current, "cb2", "p0") }, "a3", "p0");
+
+      expect(kinds(parsed)).toEqual([]);
+      expect(kinds(parsed, backward)).toContain("item-outside-its-chain");
+    }),
+  );
+
+  it.effect("reports a compaction filed by time over the turn its summary's prompt id names", () =>
+    Effect.gen(function* () {
+      const g = claudeTranscriptFixture();
+      const parsed = yield* parse([
+        g.prompt("p1", null, "Long job"),
+        g.toolUse("a1", "p1", "t1", null),
+        g.prompt("p2", "a1", "Meanwhile"),
+        g.boundary("cb", "gone"),
+        g.summary("s1", "cb", { promptId: "pid-p1" }),
+        g.text("a2", "s1", "Back on the job"),
+      ]);
+      const byTime = (current: Parsed) =>
+        refile({ ...current, ...refile(current, "cb", "p2") }, "a2", "p2");
+
+      expect(kinds(parsed)).toEqual([]);
+      expect(kinds(parsed, byTime)).toContain("item-outside-its-chain");
+    }),
+  );
+
   // Rewrite inspection finding 10: a reader that keeps only a line's first block.
   it.effect("reports a line that lost blocks", () =>
     Effect.gen(function* () {
