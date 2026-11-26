@@ -1,13 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
-import { heldSessionForkSourceRunId } from "@t3tools/client-runtime/state/thread-workflows";
-import {
-  ThreadId,
-  type EnvironmentId,
-  type OrchestrationV2ProviderFailure,
-  type RunId,
-} from "@t3tools/contracts";
+import { heldSessionForkSources } from "@t3tools/client-runtime/state/thread-workflows";
+import { ThreadId, type EnvironmentId, type RunId } from "@t3tools/contracts";
 import * as Haptics from "expo-haptics";
 import { useGT } from "gt-react-native";
 import { useState } from "react";
@@ -21,22 +16,17 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { waitForThreadShell } from "./threadForkNavigation";
 
-/** Offered on a run refused because another process holds the session; renders nothing otherwise. */
+/** Offered on this thread's own run refused because another process holds its session. */
 export function HeldSessionForkButton(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly refusedRunId: RunId;
-  readonly failure: OrchestrationV2ProviderFailure;
 }) {
   const fork = useAtomValue(
     environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, props.threadId)),
     (thread) => {
       if (thread === null || thread === undefined) return undefined;
-      const runId = heldSessionForkSourceRunId({
-        runs: thread.projection.runs,
-        refusedRunId: props.refusedRunId,
-        failure: props.failure,
-      });
+      const runId = heldSessionForkSources(thread.projection).get(props.refusedRunId);
       return runId === undefined ? undefined : { runId, title: thread.projection.thread.title };
     },
   );

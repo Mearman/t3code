@@ -58,6 +58,7 @@ import * as DateTime from "effect/DateTime";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { isHeldSessionFailure } from "@t3tools/client-runtime/state/thread-workflows";
 import { HeldSessionForkButton } from "./HeldSessionForkButton";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
@@ -991,12 +992,13 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               {failureItem.failure.message}
             </Text>
           ) : null}
-          {failureItem.runId !== null ? (
+          {isHeldSessionFailure(failureItem.failure) &&
+          failureItem.runId !== null &&
+          row.projectedItem.visibility === "local" ? (
             <HeldSessionForkButton
               environmentId={props.environmentId}
               threadId={failureItem.threadId}
               refusedRunId={failureItem.runId}
-              failure={failureItem.failure}
             />
           ) : null}
           {failureItem.failure.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE &&
