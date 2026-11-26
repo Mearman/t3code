@@ -466,6 +466,44 @@ const worldOf = (settings: DeepPartial<ServerSettings>) =>
     Layer.provideMerge(ServerSettingsModule.layerTest(settings)),
   );
 
+/** An event sink that lets writes through until one has written a run of this turn, then blocks the next for good, as a server killed between two transactions. */
+const sinkStoppingAfterRunOf = (turnId: string, reached: Deferred.Deferred<void>) =>
+  Layer.effect(
+    EventSink.EventSinkV2,
+    Effect.gen(function* () {
+      const real = yield* EventSink.EventSinkV2;
+      let armed = false;
+      return EventSink.EventSinkV2.of({
+        ...real,
+        write: (input) =>
+          armed
+            ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never))
+            : real.write(input).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    armed ||= input.events.some(
+                      (event) =>
+                        event.type === "run.updated" &&
+                        event.payload.id === RunId.make(`claude-run:${SESSION}:${turnId}`),
+                    );
+                  }),
+                ),
+              ),
+      });
+    }),
+  );
+
+/** Each item of a run, with the run's ordinal its position's range says it is in. */
+const itemRanges = (threadId: ThreadId, runId: RunId) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{ readonly id: string; readonly range: number }>`
+      SELECT turn_item_id AS "id", ordinal / 1000000 AS "range"
+      FROM orchestration_v2_projection_turn_items
+      WHERE thread_id = ${threadId} AND run_id = ${runId}
+    `;
+  });
+
 const withTempRoot = <A, E, R>(body: (root: string) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     liveNow.clear();
@@ -1830,6 +1868,180 @@ describe("ClaudeSessionSync", () => {
       ),
   );
 
+  it.effect("places the hidden run where no turn is about to be written", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const home = yield* makeHome(root, "home");
+        const untimed = "not a time";
+        const b = [
+          prompt("pb", null, "prompt-b", untimed),
+          reply("b1", "pb", untimed, "x".repeat(600_000)),
+        ];
+        const file = yield* append(home, [...b, reply("b2", "b1", untimed)]);
+        yield* markLive();
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          yield* syncAll({ full: true });
+          // Rewritten: a turn `pa` is filed before `pb`, and `pb` loses its last reply. Every turn
+          // is untimed, so `pa` takes ordinal 1 and `pb` moves to 2; `pb`, written first, fills a
+          // read on its own and sheds `b2` into the hidden run before `pa` is written.
+          yield* fileSystem.writeFileString(
+            file,
+            `${[prompt("pa", null, "prompt-a", untimed), reply("a1", "pa", untimed), ...b].join("\n")}\n`,
+          );
+          for (let poll = 0; poll < 3; poll++) {
+            yield* sync.pollLive;
+            expect(yield* sync.drain).toEqual([]);
+          }
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([
+            [1, "completed", "pa"],
+            [2, "completed", "pb"],
+            [3, "rolled_back", "removed"],
+          ]);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("finishes moving a run whose rewrite a restart cut short", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        const settings = settingsFor([home]);
+        // `p2` has more items than one transaction holds, so its move is written in several.
+        const replies = Array.from({ length: 150 }, (_, index) =>
+          reply(`r${index}`, index === 0 ? "p2" : `r${index - 1}`, "2026-11-26T10:00:01.500Z"),
+        );
+        yield* append(home, [
+          prompt("p1", null, "prompt-1", "2026-11-26T10:00:00.000Z"),
+          reply("a1", "p1", "2026-11-26T10:00:00.100Z"),
+          prompt("p2", "a1", "prompt-2", "2026-11-26T10:00:01.000Z"),
+          ...replies,
+        ]);
+        yield* markLive();
+        const life = <A, E, R>(body: Effect.Effect<A, E, R>) =>
+          body.pipe(Effect.provide(ClaudeSessionSync.layer));
+        yield* Effect.gen(function* () {
+          yield* life(syncAll({ full: true }));
+          // A late root filed between `p1` and `p2` pushes `p2` one ordinal on.
+          yield* append(home, [
+            prompt("px", null, "prompt-x", "2026-11-26T10:00:00.500Z"),
+            reply("ax", "px", "2026-11-26T10:00:00.600Z"),
+          ]);
+          const reached = yield* Deferred.make<void>();
+          yield* Effect.gen(function* () {
+            const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+            yield* sync.pollLive;
+            const reading = yield* Effect.forkChild(sync.drain);
+            yield* Deferred.await(reached);
+            yield* Fiber.interrupt(reading);
+          }).pipe(
+            Effect.provide(
+              ClaudeSessionSync.layer.pipe(Layer.provide(sinkStoppingAfterRunOf("p2", reached))),
+            ),
+          );
+          yield* life(
+            Effect.gen(function* () {
+              const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+              expect(yield* sync.sweep()).toEqual([]);
+              yield* sync.pollLive;
+              expect(yield* sync.drain).toEqual([]);
+            }),
+          );
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const p2 = yield* projections.getRun(
+            claudeThreadId,
+            RunId.make(`claude-run:${SESSION}:p2`),
+          );
+          const ranges = yield* itemRanges(claudeThreadId, RunId.make(`claude-run:${SESSION}:p2`));
+          expect(ranges.length).toBeGreaterThan(150);
+          expect(ranges.filter((item) => Math.floor(item.range) !== p2?.ordinal)).toEqual([]);
+        }).pipe(Effect.provide(worldOf(settings)));
+      }),
+    ),
+  );
+
+  it.effect("shows no disk note on a T3 Code thread whose run settles with no terminal on it", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, firstTurn);
+        const nearlyFull = capacityOf({ freeDiskBytes: Effect.succeed(1024 ** 3) });
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          const t3ThreadId = yield* seedT3Thread({ promptUuids: ["prompt-1"] });
+          yield* syncAll({ full: true });
+          yield* sync.runSettled(t3ThreadId);
+          expect(yield* sync.drain).toEqual([]);
+          const sql = yield* SqlClient.SqlClient;
+          const notes = yield* sql<{ readonly id: string }>`
+            SELECT turn_item_id AS "id" FROM orchestration_v2_projection_turn_items
+            WHERE thread_id = ${t3ThreadId} AND turn_item_id LIKE '%:disk'
+          `;
+          expect(notes).toEqual([]);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), nearlyFull)));
+      }),
+    ),
+  );
+
+  it.effect("marks a T3 Code thread driving a session before the sweep reaches the session", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        // No transcript yet: only marking every followed thread first reaches this one.
+        yield* Effect.gen(function* () {
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const t3ThreadId = yield* seedT3Thread({ promptUuids: ["prompt-1"] });
+          yield* syncAll({ full: true });
+          expect((yield* projections.getThread(t3ThreadId)).historyOrigin).toBe("native");
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("leaves a delegated child's session to its task: not followed, not marked", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [...firstTurn, ...secondTurn]);
+        yield* Effect.gen(function* () {
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const child = yield* seedT3Thread({
+            promptUuids: ["prompt-1"],
+            threadId: ThreadId.make("thread:delegated-task:child"),
+          });
+          yield* syncAll({ full: true });
+          expect((yield* projections.getThread(child)).historyOrigin).toBeUndefined();
+          expect(yield* nativeRuns(child)).toEqual([]);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("loads a turn stamped centuries ahead with every item position a safe integer", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [
+          ...firstTurn,
+          prompt("p2", "a1", "prompt-2", "2300-01-01T00:00:00.000Z"),
+          reply("a2", "p2", "2300-01-01T00:00:05.000Z"),
+        ]);
+        yield* Effect.gen(function* () {
+          yield* syncAll({ full: true });
+          yield* openThread(claudeThreadId);
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([
+            [1, "completed", "p1"],
+            [2, "completed", "p2"],
+          ]);
+          const ranges = yield* itemRanges(claudeThreadId, RunId.make(`claude-run:${SESSION}:p2`));
+          expect(ranges.length).toBeGreaterThan(0);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
   it.effect("loads the newest turns first and orders every run by when its turn started", () =>
     withTempRoot((root) =>
       Effect.gen(function* () {
@@ -2266,7 +2478,7 @@ describe("ClaudeSessionSync", () => {
   );
 
   it.effect(
-    "says why a loaded session stops being followed below the disk floor, and when it goes on",
+    "says why a followed session stops below the disk floor, after its latest run, and hides the note when it goes on",
     () =>
       withTempRoot((root) =>
         Effect.gen(function* () {
@@ -2289,13 +2501,28 @@ describe("ClaudeSessionSync", () => {
             yield* append(home, secondTurn);
             yield* sync.pollLive;
             expect(yield* sync.drain).toEqual([]);
-            expect(yield* notice()).toMatchObject({ type: "system_notice", status: "failed" });
+            // After the latest run, where the held-back turns would show, not at the thread's top.
+            expect(yield* notice()).toMatchObject({
+              type: "system_notice",
+              status: "failed",
+              runId: RunId.make(`claude-run:${SESSION}:p1`),
+            });
             expect(yield* nativeRuns(claudeThreadId)).toHaveLength(1);
             free = ROOMY;
             expect(yield* sync.sweep()).toEqual([]);
             expect(yield* sync.drain).toEqual([]);
-            expect(yield* notice()).toMatchObject({ status: "completed" });
-            expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
+            // Following again, the note leaves the thread: it is moved into the hidden run.
+            expect((yield* notice())?.runId).toBe(RunId.make(`claude-run:${SESSION}:removed`));
+            expect(
+              (yield* visibleHistory(claudeThreadId)).items.some((item) =>
+                item.id.endsWith(":disk"),
+              ),
+            ).toBe(false);
+            expect(yield* nativeRuns(claudeThreadId)).toEqual([
+              [1, "rolled_back", "removed"],
+              [2, "completed", "p1"],
+              [3, "completed", "p2"],
+            ]);
           }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), floor)));
         }),
       ),
@@ -2365,6 +2592,7 @@ const setT3RunStatus = Effect.fn(function* (threadId: ThreadId, status: "running
 /** A thread T3 Code created that drives the session, with one finished turn of its own. */
 const seedT3Thread = Effect.fn(function* (input: {
   readonly promptUuids: ReadonlyArray<string>;
+  readonly threadId?: ThreadId;
   readonly instance?: ProviderInstanceId;
   readonly forkOf?: ThreadId;
   /** The reply uuid T3 Code saw in its turn, and the prompt text of that turn's run. */
@@ -2374,7 +2602,7 @@ const seedT3Thread = Effect.fn(function* (input: {
   const sink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const instance = input.instance ?? INSTANCE;
-  const threadId = ThreadId.make(`t3-thread:${instance}`);
+  const threadId = input.threadId ?? ThreadId.make(`t3-thread:${instance}`);
   const now = DateTime.makeUnsafe("2026-11-26T09:00:00.000Z");
   const providerThreadId = ids.derive.providerThread({
     driver: CLAUDE,

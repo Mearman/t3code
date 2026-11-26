@@ -33,6 +33,10 @@ import {
   type StoredNativeItem,
 } from "./ClaudeNativeRuns.ts";
 import {
+  MAX_RUN_ORDINAL,
+  TURN_ITEM_POSITIONS_PER_RUN,
+} from "../orchestration-v2/TurnItemPositionStore.ts";
+import {
   readClaudeTranscriptTurn,
   type ClaudeTranscriptTurnContent,
 } from "./ClaudeTranscriptContent.ts";
@@ -106,14 +110,12 @@ const planOf = (
     readonly storedItems?: ReadonlyMap<string, StoredNativeItem>;
     readonly ordinal?: number;
     readonly cache?: ClaudeNativeTurnCache;
-    readonly rewrite?: boolean;
   } = {},
 ) =>
   planClaudeNativeTurn({
     target,
     content,
     cache: overrides.cache ?? newClaudeNativeTurnCache(),
-    rewrite: overrides.rewrite ?? false,
     ordinal: overrides.ordinal ?? 1,
     providerTurnOrdinal: overrides.ordinal ?? 1,
     stored: overrides.stored ?? false,
@@ -132,9 +134,17 @@ const itemsOf = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
   events.flatMap((event) => (event.type === "turn-item.updated" ? [event.payload] : []));
 
 /** What the projection holds of these items, as the next plan reads it. */
-const storedFrom = (items: ReadonlyArray<OrchestrationV2TurnItem>) =>
+/** What the projection holds of these items, positioned as the position store places them in run `runOrdinal`'s range. */
+const storedFrom = (items: ReadonlyArray<OrchestrationV2TurnItem>, runOrdinal = 1) =>
   new Map<string, StoredNativeItem>(
-    items.map((item) => [item.id, { runId: item.runId, status: item.status }]),
+    items.map((item) => [
+      item.id,
+      {
+        runId: item.runId,
+        ordinal: runOrdinal * TURN_ITEM_POSITIONS_PER_RUN + item.ordinal,
+        status: item.status,
+      },
+    ]),
   );
 
 const run = <A, E>(body: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Scope.Scope>) =>
@@ -220,6 +230,36 @@ describe("planClaudeNativeTurn", () => {
     ),
   );
 
+  it.effect("writes an item again when its run's ordinal moved, so it follows the run", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "Hello"),
+          f.thinking("a1", "p1"),
+          f.text("a2", "a1", "Hi"),
+        ]);
+        const content = yield* contentOf("p1");
+        const first = planOf(content);
+        // Stored in this run at ordinal 1's positions; the run now takes ordinal 2.
+        const moved = planOf(content, {
+          stored: true,
+          ordinal: 2,
+          storedItems: storedFrom(itemsOf(first.events), 1),
+        });
+        expect(
+          itemsOf(moved.events)
+            .map((item) => item.id)
+            .toSorted(),
+        ).toEqual(
+          itemsOf(first.events)
+            .map((item) => item.id)
+            .toSorted(),
+        );
+      }),
+    ),
+  );
+
   it.effect("moves an item stored in another run to the run its line now belongs to", () =>
     run(
       Effect.gen(function* () {
@@ -232,7 +272,12 @@ describe("planClaudeNativeTurn", () => {
         const elsewhere = claudeNativeRunIds(SESSION, "p0").runId;
         const plan = planOf(content, {
           stored: true,
-          storedItems: new Map([[`x:${SESSION}:a1:0`, { runId: elsewhere, status: "completed" }]]),
+          storedItems: new Map([
+            [
+              `x:${SESSION}:a1:0`,
+              { runId: elsewhere, ordinal: TURN_ITEM_POSITIONS_PER_RUN + 1, status: "completed" },
+            ],
+          ]),
         });
         expect(itemsOf(plan.events).map((item) => [item.id, item.runId])).toContainEqual([
           `x:${SESSION}:a1:0`,
@@ -546,6 +591,30 @@ describe("claudeNativeOrdinals", () => {
     expect(filed.get("x")).toBe(s + 1);
     expect(filed.get("b")).toBe(s + 2);
     expect(filed.get("c")).toBe(before.get("c"));
+  });
+});
+
+describe("claudeNativeOrdinals at the far end of time", () => {
+  it("keeps every item position of a far-future turn a safe integer, and the order", () => {
+    const year2300 = DateTime.toEpochMillis(DateTime.makeUnsafe("2300-01-01T00:00:00.000Z"));
+    const ordinals = claudeNativeOrdinals(
+      [
+        { id: "a", startMs: year2300 },
+        { id: "b", startMs: year2300 + 1000 },
+        { id: "c", startMs: year2300 },
+      ],
+      new Set([MAX_RUN_ORDINAL]),
+    );
+    const values = [...ordinals.values()];
+    expect(values).toEqual(values.toSorted((left, right) => left - right));
+    for (const ordinal of values) {
+      expect(ordinal).toBeLessThanOrEqual(MAX_RUN_ORDINAL);
+      expect(
+        Number.isSafeInteger(
+          ordinal * TURN_ITEM_POSITIONS_PER_RUN + TURN_ITEM_POSITIONS_PER_RUN - 1,
+        ),
+      ).toBe(true);
+    }
   });
 });
 
