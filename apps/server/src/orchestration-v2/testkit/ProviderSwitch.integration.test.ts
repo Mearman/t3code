@@ -2160,6 +2160,78 @@ describe("orchestration v2 provider switching", () => {
     ),
   ];
 
+  it.live("refuses the budget replacement of a session another process holds", () =>
+    Effect.gen(function* () {
+      const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+      const heldNativeThreads = yield* Ref.make<ReadonlySet<string>>(new Set());
+      const runtimeStarts = yield* Ref.make<ReadonlyArray<string>>([]);
+      yield* unverifiedReplacementHarness(
+        "budget-replacement-held",
+        [
+          makeTestAdapter({
+            instanceId: CODEX_MODEL_SELECTION.instanceId,
+            driver: CODEX_DRIVER,
+            capabilities: CodexProviderCapabilitiesV2,
+            modelSelection: CODEX_MODEL_SELECTION,
+            responseByRunOrdinal: { 2: `Source work ${"s".repeat(12_000)}` },
+            capturedTurns,
+          }),
+          makeTestAdapter({
+            instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+            driver: CLAUDE_DRIVER,
+            capabilities: ClaudeProviderCapabilitiesV2,
+            modelSelection: CLAUDE_MODEL_SELECTION,
+            responseByRunOrdinal: {},
+            capturedTurns,
+            getModelContextWindow: () => 32_000,
+            heldNativeThreads,
+            runtimeStarts,
+          }),
+        ],
+        ({ orchestrator, dispatchRequest, awaitSettled }) =>
+          Effect.gen(function* () {
+            yield* dispatchRequest(1, CLAUDE_MODEL_SELECTION);
+            yield* awaitSettled(1);
+            const target = (yield* orchestrator.getThreadProjection(threadId)).providerThreads[0]!;
+            // The native session has no room left for the returning handoff.
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                {
+                  id: EventId.make("budget-replacement-held-usage"),
+                  type: "provider-thread.updated",
+                  threadId,
+                  occurredAt: yield* DateTime.now,
+                  payload: { ...target, contextUsage: { usedTokens: 31_000, maxTokens: 32_000 } },
+                },
+              ],
+            });
+            yield* dispatchRequest(2, CODEX_MODEL_SELECTION);
+            yield* awaitSettled(2);
+            yield* Ref.set(heldNativeThreads, new Set([target.nativeThreadRef!.nativeId!]));
+            yield* dispatchRequest(3, CLAUDE_MODEL_SELECTION);
+            yield* awaitSettled(3);
+
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            const run3 = projection.runs.at(-1)!;
+            assert.equal(run3.status, "failed");
+            assert.notInclude(yield* Ref.get(runtimeStarts), "replacement");
+            assert.isTrue(
+              projection.turnItems.some(
+                (item) =>
+                  item.type === "error" &&
+                  item.runId === run3.id &&
+                  item.failure.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+              ),
+            );
+            assert.deepEqual(
+              (yield* Ref.get(capturedTurns)).map((turn) => turn.driver),
+              [CLAUDE_DRIVER, CODEX_DRIVER],
+            );
+          }),
+      );
+    }),
+  );
+
   it.live("fails honestly when the provider reuses its session for a context handoff", () =>
     Effect.gen(function* () {
       const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);

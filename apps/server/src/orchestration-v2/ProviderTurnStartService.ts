@@ -2095,6 +2095,15 @@ export const layer: Layer.Layer<
         return replacement;
       });
       if (loadedProviderThread === undefined) return;
+      // A loaded thread skips the resume and its check; another process may hold it since. A failed
+      // check fails here, before the run starts, so the effect worker retries it.
+      const writable = yield* loadFromProvider(
+        Effect.as(
+          session.checkNativeThreadFree?.(loadedProviderThread) ?? Effect.void,
+          loadedProviderThread,
+        ),
+      );
+      if (writable === undefined) return;
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
       }
