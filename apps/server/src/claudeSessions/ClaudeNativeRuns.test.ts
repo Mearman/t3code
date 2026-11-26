@@ -10,6 +10,7 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import {
+  claudePromptTextDigest,
   initialClaudeNativeRunState,
   NATIVE_PROVIDER_TURN_PREFIX,
   NATIVE_TOOL_TEXT_MAX_CHARS,
@@ -25,6 +26,7 @@ import {
 const SESSION = "00000000-0000-4000-8000-000000000001";
 const AT = "2026-01-01T00:00:00.000Z";
 const LATER = "2026-01-01T00:00:05.000Z";
+const FALLBACK = DateTime.makeUnsafe("2025-12-31T00:00:00.000Z");
 
 const user = (
   uuid: string,
@@ -42,7 +44,13 @@ const user = (
   ...extra,
 });
 
-const assistant = (uuid: string, parentUuid: string, block: unknown, stopReason: string) => ({
+const assistant = (
+  uuid: string,
+  parentUuid: string,
+  block: unknown,
+  stopReason: string | null,
+  extra: Record<string, unknown> = {},
+) => ({
   type: "assistant",
   uuid,
   parentUuid,
@@ -56,6 +64,7 @@ const assistant = (uuid: string, parentUuid: string, block: unknown, stopReason:
     content: [block],
     stop_reason: stopReason,
   },
+  ...extra,
 });
 
 const text = (value: string) => ({ type: "text", text: value });
@@ -94,7 +103,14 @@ const target = {
   threadId: ThreadId.make(`claude:${SESSION}`),
   providerThreadId: ProviderThreadId.make("provider-thread:claude"),
   providerInstanceId: ProviderInstanceId.make("claudeAgent"),
-  modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-test" },
+  modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "default-model" },
+  skipCopied: false,
+};
+
+const noOwnTurns = {
+  promptUuids: new Set<string>(),
+  assistantUuids: new Set<string>(),
+  promptTexts: new Map<string, number>(),
 };
 
 let nextId = 0;
@@ -106,13 +122,15 @@ function plan(
     target,
     state: initialClaudeNativeRunState,
     events,
-    own: { promptUuids: new Set(), assistantUuids: new Set() },
+    own: noOwnTurns,
     storedRuns: new Map(),
     storedItems: new Map(),
     storedToolItems: new Map(),
     nextRunOrdinal: 1,
     nextProviderTurnOrdinal: 1,
     eventId: () => EventId.make(`event-${nextId++}`),
+    modelSlug: (reported) => `slug:${reported}`,
+    fallbackAt: FALLBACK,
     ...overrides,
   });
 }
@@ -166,6 +184,9 @@ const types = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
     event.type === "turn-item.updated" ? `${event.type}:${event.payload.type}` : event.type,
   );
 
+const runsOf = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
+  events.flatMap((event) => (event.type === "run.created" ? [event.payload] : []));
+
 describe("planClaudeNativeRuns", () => {
   it("writes each terminal prompt as a finished run marked as read from the transcript", () => {
     const result = plan(parse(firstTurn).events);
@@ -184,8 +205,8 @@ describe("planClaudeNativeRuns", () => {
       "turn-item.updated:assistant_message",
       "message.updated",
     ]);
-    const run = group.find((event) => event.type === "run.created");
-    expect(run?.type === "run.created" && run.payload).toMatchObject({
+    const [run] = runsOf(group);
+    expect(run).toMatchObject({
       ordinal: 1,
       status: "completed",
       providerThreadId: target.providerThreadId,
@@ -201,14 +222,22 @@ describe("planClaudeNativeRuns", () => {
       nativeId: "a2",
       strength: "weak",
     });
-    const tool = stored(group).items.get(`x:${SESSION}:a1:0`);
-    expect(tool).toMatchObject({
+    expect(stored(group).items.get(`x:${SESSION}:a1:0`)).toMatchObject({
       type: "command_execution",
       input: "vp test",
       output: "passed",
       status: "completed",
     });
     expect(result.lastRunOrdinal).toBe(1);
+    expect(result.lastActivityAt).toEqual(DateTime.makeUnsafe(LATER));
+  });
+
+  it("runs on the model the transcript records, not the thread's", () => {
+    const [run] = runsOf(plan(parse(firstTurn).events).groups.flat());
+    expect(run?.modelSelection).toEqual({
+      instanceId: target.providerInstanceId,
+      model: "slug:claude-test",
+    });
   });
 
   it("writes nothing when lines already written are read again", () => {
@@ -229,19 +258,46 @@ describe("planClaudeNativeRuns", () => {
   it("leaves turns T3 Code ran to its own runs, matched by prompt id, line uuid or reply", () => {
     const events = parse([...firstTurn, ...secondTurn]).events;
     for (const own of [
-      { promptUuids: new Set(["prompt-1"]), assistantUuids: new Set<string>() },
-      { promptUuids: new Set(["p1"]), assistantUuids: new Set<string>() },
-      { promptUuids: new Set<string>(), assistantUuids: new Set(["a2"]) },
+      { ...noOwnTurns, promptUuids: new Set(["prompt-1"]) },
+      { ...noOwnTurns, promptUuids: new Set(["p1"]) },
+      { ...noOwnTurns, assistantUuids: new Set(["a2"]) },
     ]) {
-      const result = plan(events, { own });
-      const runs = result.groups
-        .flat()
-        .flatMap((event) => (event.type === "run.created" ? [event.payload] : []));
+      const runs = runsOf(plan(events, { own }).groups.flat());
       expect(runs.map((run) => [run.ordinal, run.nativeOrigin?.promptUuid])).toEqual([[1, "p2"]]);
     }
   });
 
-  it("completes a tool item when a later read finds its result, without recreating the run", () => {
+  it("matches a T3 Code turn that recorded no uuid by its prompt text, once per such turn", () => {
+    const repeated = [
+      ...firstTurn,
+      user("p2", "a2", "Run the tests", { promptId: "prompt-2", origin: { kind: "human" } }),
+      assistant("a3", "p2", text("Passed again."), "end_turn"),
+    ];
+    const own = {
+      ...noOwnTurns,
+      promptTexts: new Map([[claudePromptTextDigest("Run the tests"), 1]]),
+    };
+    const first = plan(parse(repeated).events, { own });
+
+    // The first prompt with that text is T3 Code's; the terminal sent the second.
+    expect(runsOf(first.groups.flat()).map((run) => run.nativeOrigin?.promptUuid)).toEqual(["p2"]);
+    expect(first.state.ownTextsMatched).toEqual({ [claudePromptTextDigest("Run the tests")]: 1 });
+
+    // A later read that starts after the matched turn does not match the text again.
+    const later = parse([
+      user("p3", "a3", "Run the tests", { promptId: "prompt-3" }),
+      assistant("a4", "p3", text("Yes."), "end_turn"),
+    ]);
+    const next = plan(later.events, {
+      own,
+      state: first.state,
+      nextRunOrdinal: 2,
+      nextProviderTurnOrdinal: 2,
+    });
+    expect(runsOf(next.groups.flat()).map((run) => run.nativeOrigin?.promptUuid)).toEqual(["p3"]);
+  });
+
+  it("completes a tool item when a later read finds its result, without rewriting the open run", () => {
     const head = parse(firstTurn.slice(0, 2));
     const first = plan(head.events);
     const written = stored(first.groups.flat());
@@ -257,6 +313,7 @@ describe("planClaudeNativeRuns", () => {
     });
 
     const events = second.groups.flat();
+    // The read ends the turn, so its run is written once with its final state.
     expect(types(events)).toEqual([
       "run.updated",
       "run-attempt.updated",
@@ -273,31 +330,75 @@ describe("planClaudeNativeRuns", () => {
     expect(second.state.current?.pendingTools).toEqual({});
   });
 
-  it("extends the open run of an earlier read and keeps its last reply", () => {
-    const head = parse(firstTurn);
+  it("adds only items while a turn stays open, and writes its run again when it ends", () => {
+    const opening = [firstTurn[0], assistant("a1", "p1", text("Working"), null)];
+    const head = parse(opening);
     const first = plan(head.events);
     const written = stored(first.groups.flat());
-    const appended = [
-      assistant("a4", "a2", { type: "thinking", thinking: "More", signature: "s" }, "tool_use"),
-    ];
-    const tail = parse(appended, head.state);
+    const more = parse(
+      [assistant("a5", "a1", { type: "thinking", thinking: "More", signature: "s" }, null)],
+      head.state,
+    );
 
-    const second = plan(tail.events, {
+    const open = plan(more.events, {
       state: first.state,
       storedRuns: written.storedRuns,
       storedItems: written.storedItems,
       nextRunOrdinal: 2,
       nextProviderTurnOrdinal: 2,
     });
+    expect(types(open.groups.flat())).toEqual(["turn-item.updated:reasoning"]);
+    expect(open.lastRunOrdinal).toBeUndefined();
 
-    const events = second.groups.flat();
+    const end = parse([assistant("a6", "a5", text("Done"), "end_turn")], more.state);
+    const ended = plan(end.events, {
+      state: open.state,
+      storedRuns: written.storedRuns,
+      storedItems: new Map([...written.storedItems, ...stored(open.groups.flat()).storedItems]),
+      nextRunOrdinal: 2,
+      nextProviderTurnOrdinal: 2,
+    });
+    const events = ended.groups.flat();
     expect(types(events)[0]).toBe("run.updated");
     const turn = events.find((event) => event.type === "provider-turn.updated");
     expect(turn?.type === "provider-turn.updated" && turn.payload).toMatchObject({
       ordinal: 1,
-      model: "claude-test",
-      nativeTurnRef: { nativeId: "a4" },
+      model: "slug:claude-test",
+      nativeTurnRef: { nativeId: "a6" },
     });
+  });
+
+  it("stands in the previous time for a line whose timestamp is not one", () => {
+    const records = [
+      firstTurn[0],
+      { ...assistant("a1", "p1", text("Odd time"), "end_turn"), timestamp: "not a time" },
+    ];
+    const result = plan(parse(records).events);
+    const reply = stored(result.groups.flat()).items.get(`x:${SESSION}:a1:0`);
+    expect(reply?.updatedAt).toEqual(DateTime.makeUnsafe(AT));
+
+    const noValidTime = plan(parse([{ ...firstTurn[0], timestamp: "" }]).events);
+    expect(runsOf(noValidTime.groups.flat())[0]?.requestedAt).toEqual(FALLBACK);
+  });
+
+  it("does not write again what a T3 Code fork copied from its parent, and reports the source", () => {
+    const copied = { forkedFrom: { sessionId: "parent-session", messageUuid: "m1" } };
+    const records = [
+      user("p1", null, "Copied prompt", { promptId: "prompt-1", ...copied }),
+      assistant("a1", "p1", text("Copied reply"), "end_turn", copied),
+      ...secondTurn,
+    ];
+
+    const fork = plan(parse(records).events, { target: { ...target, skipCopied: true } });
+    expect(runsOf(fork.groups.flat()).map((run) => run.nativeOrigin?.promptUuid)).toEqual(["p2"]);
+    expect(fork.forkedFromSessionId).toBe("parent-session");
+
+    // A session shown in its own thread keeps its copied history.
+    const own = plan(parse(records).events);
+    expect(runsOf(own.groups.flat()).map((run) => run.nativeOrigin?.promptUuid)).toEqual([
+      "p1",
+      "p2",
+    ]);
   });
 
   it("adds a prompt delivered into a running turn to that turn's run as a steer", () => {
@@ -322,8 +423,7 @@ describe("planClaudeNativeRuns", () => {
     const events = plan(parse(records).events).groups.flat();
 
     expect(events.filter((event) => event.type === "run.created")).toHaveLength(1);
-    const steer = stored(events).items.get(`x:${SESSION}:q1`);
-    expect(steer).toMatchObject({
+    expect(stored(events).items.get(`x:${SESSION}:q1`)).toMatchObject({
       type: "user_message",
       inputIntent: "steer",
       text: "Also check lint",
