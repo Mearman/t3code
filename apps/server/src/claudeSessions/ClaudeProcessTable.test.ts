@@ -1,9 +1,13 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Effect from "effect/Effect";
 
 import {
   claudeDescendants,
   claudeProcessTableCommand,
   indexClaudeProcessTable,
+  makeClaudeProcessTableReader,
   parseClaudeProcessTable,
   parseWindowsClaudeProcessTable,
 } from "./ClaudeProcessTable.ts";
@@ -47,3 +51,44 @@ describe("claudeDescendants", () => {
     expect(claudeDescendants(table, [10]).map((row) => row.pid)).toEqual([11]);
   });
 });
+
+describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "makeClaudeProcessTableReader",
+  () => {
+    // A pid no real process has, so a row with it can only have come from the native table.
+    const nativeRow = { pid: 2_000_000_001, ppid: 1, pgid: 2_000_000_001, startTimeMicros: 5e15 };
+    const read = (native: Parameters<typeof makeClaudeProcessTableReader>[1]) =>
+      Effect.flatten(makeClaudeProcessTableReader("linux", native)).pipe(
+        Effect.provide(NodeServices.layer),
+      );
+
+    it.effect("prefers the native table where it reports groups and start times", () =>
+      Effect.gen(function* () {
+        expect(yield* read(Effect.succeed([nativeRow]))).toEqual([
+          {
+            pid: nativeRow.pid,
+            ppid: 1,
+            pgid: nativeRow.pid,
+            startTimeSeconds: 5e9,
+            startTimeMicros: 5e15,
+          },
+        ]);
+      }),
+    );
+
+    it.effect("lists processes instead when the native table is empty, partial or failing", () =>
+      Effect.gen(function* () {
+        const { pgid: _pgid, ...partial } = nativeRow;
+        for (const native of [
+          Effect.succeed([]),
+          Effect.succeed([partial]),
+          Effect.fail({ _tag: "NativeTelemetryUnavailable" }),
+        ]) {
+          const rows = yield* read(native);
+          expect(rows.some((row) => row.pid === process.pid)).toBe(true);
+          expect(rows.some((row) => row.pid === nativeRow.pid)).toBe(false);
+        }
+      }),
+    );
+  },
+);
