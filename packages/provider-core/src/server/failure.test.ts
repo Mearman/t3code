@@ -305,24 +305,34 @@ it("explains a native thread another client is writing to", () => {
   );
 });
 
-it.each([
-  "AcpModelSelectionError",
-  "ClaudeBackgroundWorkBlocksQueryReplacementError",
-  "ClaudeAppendSystemPromptFileError",
-  "ClaudeAppendSystemPromptMissingValueError",
-  "ClaudeSettingsLaunchArgError",
-  "ClaudeMcpRegistrationTimeoutError",
-  "ClaudeCodeRootRefusalError",
-  "ClaudeCodeStartupExitError",
-  "ClaudeConversationNotFoundError",
-  "CursorModelUnavailableError",
-  "CodexGoalObjectiveTooLongError",
-  "CodexAppServerUnresponsiveError",
-  "CodexAppServerRetiredError",
-  "ProviderSetupError",
-  "ProviderCompactionUnsupportedError",
-])("keeps a curated %s message without a failure code", (tag) => {
-  const failure = makeProviderFailure({ cause: { _tag: tag, message: `${tag} text` } });
+it("keeps every curated message without a failure code", () => {
+  const curated = [
+    "AcpModelSelectionError",
+    "ClaudeBackgroundWorkBlocksQueryReplacementError",
+    "ClaudeAppendSystemPromptFileError",
+    "ClaudeAppendSystemPromptMissingValueError",
+    "ClaudeSettingsLaunchArgError",
+    "ClaudeMcpRegistrationTimeoutError",
+    "ClaudeCodeRootRefusalError",
+    "ClaudeCodeStartupExitError",
+    "ClaudeConversationNotFoundError",
+    "CursorModelUnavailableError",
+    "CodexGoalObjectiveTooLongError",
+    "CodexAppServerUnresponsiveError",
+    "CodexAppServerRetiredError",
+    "ProviderSetupError",
+    "ProviderCompactionUnsupportedError",
+  ];
+  assert.deepEqual(
+    curated.map((tag) => makeProviderFailure({ cause: { _tag: tag, message: `${tag} text` } })),
+    curated.map((tag) => ({
+      class: "unknown",
+      message: `${tag} text`,
+      code: null,
+      retryable: null,
+    })),
+  );
+});
   assert.equal(failure.message, `${tag} text`);
   assert.equal(failure.code, null);
 });
