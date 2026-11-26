@@ -216,6 +216,23 @@ describe("checkClaudeTranscriptTurns", () => {
         ];
       },
     ],
+    // Final inspection finding 2: a queued opener filed by time takes its host turn's prompt id.
+    [
+      "a queued opener filed by time before a compaction naming its host's prompt id",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+          g.prompt("p2", "p1", "Next", { ...t(2), promptId: "B" }),
+          g.queued("q", "gone", "Q", t(3)),
+          g.text("a", "q", "Ok", "end_turn", t(3)),
+          g.boundary("cb", "gone2", t(4)),
+          g.summary("s", "cb", { ...t(5), promptId: "B" }),
+          g.text("a2", "s", "More", "end_turn", t(6)),
+        ];
+      },
+    ],
     [
       "a queued opener at a true root beside a prompt at the same time",
       () => {
@@ -532,7 +549,33 @@ describe("checkClaudeTranscriptTurns", () => {
       ]);
 
       expect(kinds(parsed)).toEqual([]);
-      expect(kinds(parsed, (current) => refile(current, "a1", "q"))).not.toEqual([]);
+      expect(kinds(parsed, (current) => refile(current, "a1", "q"))).toContain("filing-loop");
+    }),
+  );
+
+  // Final inspection finding 3: a compaction's filing can lead back to itself through the parser's
+  // filing of lines above a queued opener; that is reported, never followed.
+  it.effect("reports a filing that leads a compaction's host back to the compaction", () =>
+    Effect.gen(function* () {
+      const g = claudeTranscriptFixture();
+      const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+      const parsed = yield* parse([
+        g.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+        g.text("a1", "p1", "Done", "end_turn", t(2)),
+        g.queued("q1", "a1", "Next", t(3)),
+        g.text("a2", "q1", "Ok", "end_turn", t(4)),
+        g.boundary("cb", "gone", t(5)),
+        g.summary("s", "cb", { ...t(6), promptId: "Z" }),
+        g.queued("q9", "s", "Later", t(7)),
+        g.text("a9", "q9", "Ok", "end_turn", t(8)),
+      ]);
+      const looped = (current: Parsed) =>
+        editItems(refile(current, "a1", "q9") as Parsed, (items) =>
+          items.filter((item) => item._tag !== "Compaction"),
+        );
+
+      expect(kinds(parsed)).toEqual([]);
+      expect(kinds(parsed, looped)).toContain("filing-loop");
     }),
   );
 
