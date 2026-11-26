@@ -197,6 +197,18 @@ describe("isAutoSettlementCandidate", () => {
         NOW_MS,
       ),
     ).toBe(false);
+    // A failure of a run read back from a provider transcript happened outside T3.
+    expect(
+      ThreadSettlementService.isSnoozed(
+        shell({
+          ...snoozed,
+          status: "failed",
+          latestRunCompletedAt: at(-30 * 60 * 1_000),
+          latestRunNativeOrigin: true,
+        }),
+        NOW_MS,
+      ),
+    ).toBe(true);
     expect(
       ThreadSettlementService.isAutoSettlementCandidate(
         shell({ ...snoozed, status: "failed", latestRunCompletedAt: snoozed.snoozedAt }),

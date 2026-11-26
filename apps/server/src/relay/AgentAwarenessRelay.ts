@@ -446,6 +446,8 @@ export const make = Effect.gen(function* () {
   const startedAt = (yield* DateTime.now).epochMilliseconds;
   const catchUpRequests = yield* Queue.dropping<void>(1);
   const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  // The phase of each thread's live card, null for a tombstone; read when a transcript run ends.
+  const publishedPhaseByThread = new Map<ThreadId, RelayAgentActivityState["phase"] | null>();
   // Android keys alerts by phase and time, so a child's unchanged request keeps
   // its first alert time through parent renames, relinks and the parent's own requests.
   const childAlertByThread = new Map<ThreadId, SubagentAlert>();
@@ -513,6 +515,7 @@ export const make = Effect.gen(function* () {
     publishConfirmDeadlines.clear();
     heldCompletions.clear();
     yield* Ref.set(publishedStateByThreadRef, new Map());
+    publishedPhaseByThread.clear();
   });
 
   const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (threadId: ThreadId) {
@@ -616,17 +619,16 @@ export const make = Effect.gen(function* () {
       pendingSubagentRequest: yield* currentSubagentRequestFor(threadId),
     });
     // A run read back from a provider transcript ended outside T3, so its ending is never news. A
-    // completion T3 holds for confirmation keeps its alert; otherwise the card stays as it was.
+    // completion T3 holds keeps its alert; a card T3's work held live is cleared without alerting.
     const externalEnd =
       Option.isSome(thread) &&
       thread.value.latestRunNativeOrigin === true &&
       (projected.state?.phase === "completed" || projected.state?.phase === "failed");
     const heldCompletion = heldCompletions.get(threadId);
-    if (externalEnd && heldCompletion === undefined) return;
-    const snapshot =
-      externalEnd && heldCompletion !== undefined
-        ? { ...projected, state: heldCompletion }
-        : projected;
+    const livePhase = publishedPhaseByThread.get(threadId);
+    const liveWorkCard = livePhase != null && livePhase !== "completed" && livePhase !== "failed";
+    if (externalEnd && heldCompletion === undefined && !liveWorkCard) return;
+    const snapshot = !externalEnd ? projected : { ...projected, state: heldCompletion ?? null };
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state, snapshot.subagentWait);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
@@ -718,6 +720,7 @@ export const make = Effect.gen(function* () {
         yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
           new Map(publishedStates).set(threadId, agentAwarenessPublishIdentity(completion)),
         );
+        publishedPhaseByThread.set(threadId, completion.phase);
         yield* schedulePublishConfirm(threadId);
         return;
       }
@@ -760,6 +763,7 @@ export const make = Effect.gen(function* () {
     yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
       new Map(publishedStates).set(threadId, publishIdentity),
     );
+    publishedPhaseByThread.set(threadId, state?.phase ?? null);
   });
 
   const readAwarenessThread = (threadId: ThreadId) =>

@@ -242,6 +242,7 @@ export type ProjectionSettlementCandidate = Pick<
   | "latestRunRequestedAt"
   | "latestRunStartedAt"
   | "latestRunCompletedAt"
+  | "latestRunNativeOrigin"
   | "latestUserMessageAt"
   | "status"
   | "activityRunStartedAt"
@@ -1325,6 +1326,7 @@ type SettlementThreadRow = Pick<
   | "latest_run_requested_at"
   | "latest_run_started_at"
   | "latest_run_completed_at"
+  | "latest_run_native_origin"
   | "latest_user_message_at"
 > & {
   readonly latest_resuming_message_at: string | null;
@@ -8965,6 +8967,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               r.requested_at AS latest_run_requested_at,
               json_extract(r.payload_json, '$.startedAt') AS latest_run_started_at,
               r.completed_at AS latest_run_completed_at,
+              json_extract(r.payload_json, '$.nativeOrigin') IS NOT NULL AS latest_run_native_origin,
               (
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
@@ -9072,6 +9075,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     row.latest_run_completed_at === null
                       ? null
                       : DateTime.makeUnsafe(row.latest_run_completed_at),
+                  ...(row.latest_run_native_origin === 1
+                    ? { latestRunNativeOrigin: true as const }
+                    : {}),
                   latestUserMessageAt:
                     row.latest_user_message_at === null
                       ? null

@@ -73,6 +73,26 @@ it("keeps the note for the provider thread that lost the work across a provider 
   assert.deepEqual(pending(later, [root, onCodex, backOnClaude, later]), []);
 });
 
+it("still tells T3's next turn about lost work after the session went on outside T3", () => {
+  const root = run(1, claudeThread, { restartCancelledBackgroundWork: lost });
+  const transcriptTurn = run(2, claudeThread, { nativeOrigin });
+  const next = run(3, claudeThread);
+  const runs = [root, transcriptTurn, next];
+  assert.deepEqual(
+    pendingRestartCancelledBackgroundWork({
+      runs,
+      providerTurns: [root, transcriptTurn].map(turnFor),
+      compactionMessageIds: () => new Set(),
+      run: next,
+      attempts: [
+        { id: transcriptTurn.activeAttemptId!, runId: transcriptTurn.id },
+        { id: next.activeAttemptId!, runId: next.id },
+      ],
+    }),
+    lost,
+  );
+});
+
 it("delivers a resumed queued run's note even after a higher-ordinal run", () => {
   const ranFirst = run(3, claudeThread, {
     completedAt: DateTime.makeUnsafe("2026-10-03T10:00:00.000Z"),

@@ -229,6 +229,7 @@ function summarizeThreadRun(
           : providerStarting(run, session, phase, providers)
         : { turnEnded: true }),
     ...(run.sourcePlanRef === undefined ? {} : { sourcePlanRef: run.sourcePlanRef }),
+    ...(run.nativeOrigin === undefined ? {} : { external: true as const }),
   };
 }
 

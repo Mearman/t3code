@@ -9,6 +9,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderThreadId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -87,6 +88,48 @@ it("never starts the run-end reaction for a run read back from a transcript", ()
       }),
     ),
   );
+});
+
+it("stops T3's run with pending background work, not a transcript run after it", () => {
+  const now = DateTime.makeUnsafe("2026-11-26T12:00:00.000Z");
+  const threadId = ThreadId.make("thread:native-origin-stop");
+  const providerThreadId = ProviderThreadId.make("provider-thread:native-origin-stop");
+  const base: OrchestrationV2Run = {
+    id: RunId.make("run:native-origin-stop:t3"),
+    threadId,
+    ordinal: 1,
+    providerInstanceId: instanceId,
+    modelSelection,
+    providerThreadId,
+    userMessageId: MessageId.make("message:native-origin-stop:t3"),
+    rootNodeId: null,
+    activeAttemptId: null,
+    status: "completed",
+    requestedAt: now,
+    startedAt: now,
+    completedAt: now,
+    checkpointId: null,
+    contextHandoffId: null,
+  };
+  const transcriptRun: OrchestrationV2Run = {
+    ...base,
+    id: RunId.make("run:native-origin-stop:transcript"),
+    ordinal: 2,
+    userMessageId: MessageId.make("message:native-origin-stop:transcript"),
+    nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+  };
+  const target = Orchestrator.stopTargetRun({
+    thread: { activeProviderThreadId: providerThreadId },
+    runs: [base, transcriptRun],
+    providerThreads: [
+      {
+        id: providerThreadId,
+        pendingBackgroundTasks: [{ kind: "command", taskId: "shell:1", description: "sleep 60" }],
+      },
+    ],
+    turnItems: [],
+  });
+  assert.equal(target?.id, base.id);
 });
 
 it.effect("releases an unattended hold when T3's run ends before a transcript run", () =>

@@ -1052,6 +1052,73 @@ const queuedFollowUp = {
   queueHeld: true,
 };
 
+// A turn the session ran outside T3, read back from its transcript after T3's run.
+const transcriptTurn = {
+  id: RunId.make("run:transcript-turn"),
+  ordinal: 9,
+  providerInstanceId: instanceId,
+  providerThreadId,
+  status: "completed",
+  requestedAt: DateTime.makeUnsafe("2026-10-03T11:58:00.000Z"),
+  startedAt: DateTime.makeUnsafe("2026-10-03T11:58:00.000Z"),
+  completedAt: DateTime.makeUnsafe("2026-10-03T11:59:00.000Z"),
+  nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+};
+
+it("continues T3's settled run, not a transcript turn read back after it", () => {
+  const base = makeProjection();
+  const settled = (runs: ReadonlyArray<object>) =>
+    ({
+      ...base,
+      runs,
+      providerThreads: [
+        {
+          ...base.providerThreads[0]!,
+          status: "idle",
+          pendingBackgroundTasks: [
+            {
+              kind: "command",
+              taskId: "shell:1",
+              description: "sleep 150",
+              parentTaskId: "agent:1",
+            },
+          ],
+        },
+      ],
+      providerTurns: [{ ...base.providerTurns[0]!, status: "completed" }],
+    }) as unknown as OrchestrationV2ThreadProjection;
+  const t3Run = {
+    ...base.runs[0]!,
+    status: "completed",
+    startedAt: DateTime.makeUnsafe("2026-10-03T11:40:00.000Z"),
+    completedAt: DateTime.makeUnsafe("2026-10-03T11:50:00.000Z"),
+  };
+  assert.equal(restartContinuationRun(settled([t3Run]), now)?.id, runId);
+  assert.equal(restartContinuationRun(settled([t3Run, transcriptTurn]), now)?.id, runId);
+});
+
+it.effect("still continues a run whose session went on outside T3 after it", () =>
+  Effect.gen(function* () {
+    const base = makeProjection();
+    const source = {
+      ...base.runs[0]!,
+      status: "completed",
+      completedAt: DateTime.makeUnsafe("2026-10-03T11:50:00.000Z"),
+      restartCancelledBackgroundWork: [
+        { kind: "monitor" as const, label: "Watch CI run 42", awaited: true as const },
+      ],
+    };
+    const dispatched = (runs: ReadonlyArray<object>) =>
+      continuationTexts({
+        ...base,
+        runs,
+        providerTurns: [{ ...base.providerTurns[0]!, status: "completed" }],
+      } as unknown as OrchestrationV2ThreadProjection);
+    assert.lengthOf(yield* dispatched([source]), 1);
+    assert.lengthOf(yield* dispatched([source, transcriptTurn]), 1);
+  }),
+);
+
 it.effect("continues a cut run past queued follow-ups, which stay held", () =>
   Effect.gen(function* () {
     const live = makeProjection();

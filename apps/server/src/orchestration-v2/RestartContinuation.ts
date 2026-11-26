@@ -1,4 +1,4 @@
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { runRanAfter, runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -180,7 +180,8 @@ export function restartContinuationRun(
   >,
   now: DateTime.Utc,
 ): OrchestrationV2Run | undefined {
-  const run = projection.runs.reduce<OrchestrationV2Run | undefined>(
+  // A transcript turn carries no lost work; T3 continues its own run.
+  const run = runsByOrigin(projection.runs, "t3").reduce<OrchestrationV2Run | undefined>(
     (latest, candidate) =>
       candidate.status !== "queued" &&
       !neverStarted(candidate) &&
@@ -276,8 +277,9 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       )
     )
       return;
+    // Only T3's own later work supersedes the continuation; a transcript turn does not.
     if (
-      projection.runs.some(
+      runsByOrigin(projection.runs, "t3").some(
         (run) =>
           run.id !== source.id &&
           run.status !== "queued" &&

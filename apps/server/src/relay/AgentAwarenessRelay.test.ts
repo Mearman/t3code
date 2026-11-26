@@ -821,6 +821,32 @@ describe("AgentAwarenessRelay", () => {
     }),
   );
 
+  it.effect("clears a working card once T3's hold ends behind a transcript run", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      // T3's background work held the card; it ends with a transcript run as the latest.
+      yield* Ref.set(
+        currentShell,
+        shell({
+          status: "completed",
+          latestRunId: RunId.make("run:transcript-after-hold"),
+          latestRunNativeOrigin: true,
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }),
+  );
+
   it.effect("publishes a cleared thread's tombstone once while it stays cleared", () =>
     Effect.gen(function* () {
       const { relay, currentShell, publications } = yield* makeTestRelay();

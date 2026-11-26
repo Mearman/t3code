@@ -199,10 +199,14 @@ describe("resolveBackgroundThreadRunStatus", () => {
     }>;
     readonly latestRunBackgroundWake?: boolean;
     readonly latestRunStopRequested?: boolean;
+    readonly external?: true;
   }) => {
     const pendingBackgroundTasks = overrides?.pendingBackgroundTasks ?? [];
     return resolveBackgroundThreadRunStatus({
-      latestRun: { status: overrides?.status ?? "completed" },
+      latestRun: {
+        status: overrides?.status ?? "completed",
+        ...(overrides?.external === undefined ? {} : { external: overrides.external }),
+      },
       pendingBackgroundTasks,
       source: {
         pendingBackgroundTasks,
@@ -229,6 +233,20 @@ describe("resolveBackgroundThreadRunStatus", () => {
     for (const input of heldCases) {
       expect(threadStatus(input)).toBeNull();
     }
+  });
+
+  it("announces no ending of a run read back from a provider transcript", () => {
+    for (const status of ["completed", "failed", "interrupted"] as const) {
+      expect(threadStatus({ status, external: true })).toBeNull();
+    }
+    // With no status, a backfilled transcript run never counts as an ending to announce.
+    expect(
+      speak([
+        { threads: [login({ runStatus: "completed" })] },
+        { threads: [login({ runId: secondRun, runStatus: null })] },
+        { threads: [login({ runId: RunId.make("run-3"), runStatus: null })] },
+      ]),
+    ).toEqual([]);
   });
 
   it("keeps Done for unawaited background work and keeps non-completed outcomes", () => {
