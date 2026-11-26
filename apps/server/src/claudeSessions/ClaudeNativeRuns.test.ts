@@ -174,7 +174,10 @@ function stored(events: ReadonlyArray<OrchestrationV2DomainEvent>) {
     storedItems: new Map(
       [...items].map(([id, item]) => [
         id,
-        { settled: ["completed", "failed", "interrupted", "cancelled"].includes(item.status) },
+        {
+          settled: ["completed", "failed", "interrupted", "cancelled"].includes(item.status),
+          runId: item.runId,
+        },
       ]),
     ),
     items,
@@ -496,6 +499,26 @@ describe("planClaudeNativeRuns", () => {
       output: "passed",
       status: "completed",
     });
+  });
+
+  it("moves an item to another run when its line is filed under a different turn", () => {
+    const parsed = parse([...firstTurn, ...secondTurn]);
+    const written = stored(plan(parsed.events).groups.flat());
+    const replyId = `x:${SESSION}:a3:0`;
+    expect(written.items.get(replyId)?.runId).toBe(`claude-run:${SESSION}:p2`);
+    // The same reply, now filed under the first turn, as a parser does once its parent arrives.
+    const moved = parsed.events.map((event) =>
+      event._tag === "Item" && event.item.id === replyId ? { ...event, segmentId: "p1" } : event,
+    );
+    const again = plan(moved, {
+      storedRuns: written.storedRuns,
+      storedItems: written.storedItems,
+      nextRunOrdinal: 3,
+      nextProviderTurnOrdinal: 3,
+    });
+    const items = stored(again.groups.flat()).items;
+    expect([...items.keys()]).toEqual([replyId]);
+    expect(items.get(replyId)?.runId).toBe(`claude-run:${SESSION}:p1`);
   });
 
   it("caps tool output and says how much the transcript still holds", () => {

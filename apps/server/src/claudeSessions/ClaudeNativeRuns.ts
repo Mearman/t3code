@@ -171,8 +171,13 @@ export interface ClaudeNativeRunPlanInput {
   readonly own: ClaudeOwnTurns;
   /** Runs already written for these segments, by segment id. */
   readonly storedRuns: ReadonlyMap<string, StoredNativeRun>;
-  /** Stored items and whether each has finished; a finished one is never written again. */
-  readonly storedItems: ReadonlyMap<string, { readonly settled: boolean }>;
+  /**
+   * Stored items, the run each is in, and whether it has finished. A finished item is written again only to move it to another run, as when its line is filed under a different turn.
+   */
+  readonly storedItems: ReadonlyMap<
+    string,
+    { readonly settled: boolean; readonly runId: string | null }
+  >;
   /** Tool items a result in this read completes, written by an earlier read. */
   readonly storedToolItems: ReadonlyMap<string, OrchestrationV2TurnItem>;
   readonly nextRunOrdinal: number;
@@ -375,7 +380,13 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
   /** Queues an item unless the stored one is already as complete; returns whether it was queued. */
   const pushItem = (segment: OpenSegment, item: OrchestrationV2TurnItem, timestamp: string) => {
     const stored = input.storedItems.get(item.id);
-    if (stored !== undefined && (stored.settled || !isSettledItemStatus(item.status))) return false;
+    if (
+      stored !== undefined &&
+      stored.runId === item.runId &&
+      (stored.settled || !isSettledItemStatus(item.status))
+    ) {
+      return false;
+    }
     const ids = claudeNativeRunIds(target.idScope, segment.record.segmentId);
     segment.items.push(
       event({
