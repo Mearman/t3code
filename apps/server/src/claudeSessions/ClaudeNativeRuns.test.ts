@@ -8,7 +8,6 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import * as Result from "effect/Result";
 
 import {
   initialClaudeNativeRunState,
@@ -86,8 +85,8 @@ function parse(records: ReadonlyArray<unknown>, state = initialClaudeTranscriptP
     state,
     lines: records.map((record, index) => ({ text: JSON.stringify(record), offset: index })),
   });
-  if (Result.isFailure(result)) throw result.failure;
-  return result.success;
+  expect(result.malformed).toEqual([]);
+  return result;
 }
 
 const target = {
@@ -298,6 +297,38 @@ describe("planClaudeNativeRuns", () => {
       ordinal: 1,
       model: "claude-test",
       nativeTurnRef: { nativeId: "a4" },
+    });
+  });
+
+  it("adds a prompt delivered into a running turn to that turn's run as a steer", () => {
+    const records = [
+      firstTurn[0],
+      firstTurn[1],
+      {
+        type: "attachment",
+        uuid: "q1",
+        parentUuid: "a1",
+        timestamp: LATER,
+        isSidechain: false,
+        attachment: {
+          type: "queued_command",
+          prompt: "Also check lint",
+          commandMode: "prompt",
+          origin: { kind: "human" },
+        },
+      },
+      ...firstTurn.slice(2),
+    ];
+    const events = plan(parse(records).events).groups.flat();
+
+    expect(events.filter((event) => event.type === "run.created")).toHaveLength(1);
+    const steer = stored(events).items.get(`x:${SESSION}:q1`);
+    expect(steer).toMatchObject({
+      type: "user_message",
+      inputIntent: "steer",
+      text: "Also check lint",
+      createdBy: "user",
+      runId: `claude-run:${SESSION}:p1`,
     });
   });
 
