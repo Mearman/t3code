@@ -14,6 +14,8 @@ import {
   resolveProviderInstanceEnabled,
   ThreadId,
   TurnItemId,
+  type NodeId,
+  type RunId,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -44,6 +46,7 @@ import * as Stream from "effect/Stream";
 
 import { CLAUDE_PROVIDER } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import { runOriginSql } from "../orchestration-v2/runOriginSql.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { field } from "../orchestration-v2/unknownField.ts";
@@ -877,9 +880,10 @@ const make = Effect.gen(function* () {
       (chunk) => sql<{
         readonly id: string;
         readonly runId: string | null;
+        readonly ordinal: number;
         readonly status: string;
       }>`
-        SELECT turn_item_id AS "id", run_id AS "runId", status
+        SELECT turn_item_id AS "id", run_id AS "runId", ordinal, status
         FROM orchestration_v2_projection_turn_items
         WHERE turn_item_id IN ${sql.in(chunk)}
       `,
@@ -910,6 +914,53 @@ const make = Effect.gen(function* () {
 
   const isSyncThread = (thread: OrchestrationV2AppThread) =>
     thread.createdBy === "system" && thread.id.startsWith("claude:");
+
+  const isDelegatedChild = (thread: Pick<OrchestrationV2AppThread, "id" | "lineage">) =>
+    IdAllocator.isDelegatedTaskThread(thread.id) ||
+    thread.lineage.relationshipToParent === "subagent";
+
+  /** Marks a thread the sync follows as reading its history back from the transcript, so T3 Code's next run sorts after every turn before it. */
+  const markFollowed = Effect.fn("ClaudeSessionSync.markFollowed")(function* (
+    thread: OrchestrationV2AppThread,
+  ) {
+    if (thread.historyOrigin === "native") return;
+    yield* eventSink.write({
+      events: [
+        {
+          id: yield* idAllocator.allocate.event({ threadId: thread.id }),
+          type: "thread.metadata-updated",
+          threadId: thread.id,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: thread.updatedAt,
+          payload: { ...thread, historyOrigin: "native" },
+        },
+      ],
+    });
+  });
+
+  /**
+   * Marks every T3 Code thread driving a Claude session in these stores before the sweep reaches its session, so a send made first still sorts after the terminal turns the sweep then reads. One indexed query; old imports and delegated children are passed over.
+   */
+  const markFollowedThreads = Effect.fn("ClaudeSessionSync.markFollowedThreads")(function* (
+    stores: ReadonlyArray<SyncStore>,
+  ) {
+    const instanceIds = [...new Set(stores.flatMap((store) => store.instanceIds))];
+    if (instanceIds.length === 0) return;
+    const rows = yield* sql<{ readonly threadId: ThreadId }>`
+      SELECT DISTINCT thread.thread_id AS "threadId"
+      FROM orchestration_v2_projection_provider_threads AS provider
+      JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = provider.thread_id
+      WHERE provider.driver = ${CLAUDE_PROVIDER}
+        AND provider.provider_instance_id IN ${sql.in(instanceIds)}
+        AND json_extract(provider.payload_json, '$.nativeThreadRef.nativeId') IS NOT NULL
+        AND json_extract(thread.payload_json, '$.historyOrigin') IS NULL
+    `;
+    for (const { threadId } of rows) {
+      const thread = yield* projections.findThread(threadId);
+      if (thread === null || thread.deletedAt !== null || isDelegatedChild(thread)) continue;
+      yield* markFollowed(thread);
+    }
+  });
 
   const updateThreadAfterRead = Effect.fn("ClaudeSessionSync.updateThreadAfterRead")(function* (
     target: ClaudeNativeRunTarget,
@@ -1030,7 +1081,7 @@ const make = Effect.gen(function* () {
   const threadNotice = Effect.fn("ClaudeSessionSync.threadNotice")(function* (
     thread: OrchestrationV2AppThread,
     target: ClaudeNativeRunTarget,
-    kind: "history" | "disk",
+    kind: "history",
     state: { readonly status: "running" | "completed" | "failed"; readonly message: string },
   ) {
     const id = TurnItemId.make(`x:${target.idScope}:${kind}`);
@@ -1318,6 +1369,8 @@ const make = Effect.gen(function* () {
     readonly row: ClaudeSessionSyncState.ClaudeSessionSyncState;
     readonly target: ClaudeNativeRunTarget;
     readonly held: HeldSession;
+    /** Notes to move into the hidden run with this pass's other removed items. */
+    readonly hide: ReadonlyArray<TurnItemId>;
     readonly fallbackAt: DateTime.Utc;
   }) {
     const { row, target, held } = input;
@@ -1519,13 +1572,17 @@ const make = Effect.gen(function* () {
           offsets: unreadable,
         });
       }
+      if (moved) {
+        // Forgotten first, so a move a restart cuts short is read whole and written again.
+        yield* syncState.deleteTurnDigests({ threadId: target.threadId, turnIds: [turnId] });
+        digests.delete(turnId);
+      }
       const plan = planClaudeNativeTurn({
         target,
         content: content.value,
         cache,
         ordinal,
         providerTurnOrdinal: ordinal,
-        rewrite: moved,
         stored: stored !== undefined,
         storedItems: yield* storedItemsById(claudeNativeTurnItemIds(target, content.value)),
         eventId,
@@ -1598,11 +1655,19 @@ const make = Effect.gen(function* () {
     }
     const atEnd = held.pending.size === 0;
 
+    for (const itemId of input.hide) {
+      const item = yield* projections.getTurnItem({ threadId: target.threadId, itemId });
+      if (item !== null) gone.push(item);
+    }
     if (gone.length > 0) {
       const removedRun = yield* storedRunFor(target, REMOVED_TURN_ID);
-      // The hidden run takes the lowest free value, below every turn's start second.
+      // The hidden run takes the lowest value no run holds or is about to be written at, so the shown turns' ordinals stand.
       let free = 1;
-      const used = new Set([...ordinals.taken, ...ordinals.stored.values()]);
+      const used = new Set([
+        ...ordinals.taken,
+        ...ordinals.stored.values(),
+        ...(ordinals.desired?.byTurn.values() ?? []),
+      ]);
       while (used.has(free)) free += 1;
       const placed = removedRun ?? { ordinal: free, providerTurnOrdinal: free };
       if (removedRun === undefined) ordinals.taken.add(free);
@@ -1655,7 +1720,71 @@ const make = Effect.gen(function* () {
     return { _tag: "Read", row: updated, atEnd } satisfies IngestStep;
   });
 
-  // Threads showing the free-disk note, so the step that goes on again says so.
+  /**
+   * The note a thread a terminal is running shows while the free-disk floor holds its turns back. It is placed after the thread's latest run, where its newest turns would be, and dated when the pause began; the pass that follows again moves it into the hidden run.
+   */
+  const diskNotice = Effect.fn("ClaudeSessionSync.diskNotice")(function* (
+    thread: OrchestrationV2AppThread,
+    target: ClaudeNativeRunTarget,
+    id: TurnItemId,
+    minFreeDiskGiB: number,
+  ) {
+    const message = `Not following this Claude Code session: the disk holding T3 Code's data is below the ${minFreeDiskGiB} GB the Claude session sync keeps free.`;
+    const existing = yield* projections.getTurnItem({ threadId: target.threadId, itemId: id });
+    const hidden = claudeNativeRunIds(target.idScope, REMOVED_TURN_ID).runId;
+    if (
+      existing?.type === "system_notice" &&
+      existing.runId !== hidden &&
+      existing.message === message
+    ) {
+      return;
+    }
+    const [latest] = yield* sql<{ readonly runId: RunId; readonly rootNodeId: NodeId | null }>`
+      SELECT run_id AS "runId", json_extract(payload_json, '$.rootNodeId') AS "rootNodeId"
+      FROM orchestration_v2_projection_runs
+      WHERE thread_id = ${target.threadId} AND run_id <> ${hidden}
+        ${runOriginSql(sql, null, "any")}
+      ORDER BY ordinal DESC LIMIT 1
+    `;
+    const at = yield* DateTime.now;
+    yield* eventSink.write({
+      events: [
+        {
+          id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
+          type: "turn-item.updated",
+          threadId: target.threadId,
+          ...(latest === undefined
+            ? {}
+            : {
+                runId: latest.runId,
+                ...(latest.rootNodeId === null ? {} : { nodeId: latest.rootNodeId }),
+              }),
+          occurredAt: at,
+          payload: {
+            id,
+            threadId: target.threadId,
+            runId: latest?.runId ?? null,
+            nodeId: latest?.rootNodeId ?? null,
+            providerThreadId: target.providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 0,
+            status: "failed",
+            title: message,
+            startedAt: at,
+            completedAt: at,
+            updatedAt: at,
+            type: "system_notice",
+            message,
+            level: "warning",
+          },
+        },
+      ],
+    });
+  });
+
+  // Threads showing the free-disk note, so the step that goes on again hides it.
   const diskNoticeShown = new Set<ThreadId>();
   const diskNoticeChecked = new Set<ThreadId>();
 
@@ -1811,26 +1940,16 @@ const make = Effect.gen(function* () {
         }
         linked = { ...linked, hydrationState: "entry" };
       }
-      // Old imports hold run-less history; migrating them is separate work, so they are left as they are.
-      if (thread.historyOrigin === "v1_import" || providerThreadId === null) {
+      // Old imports hold run-less history; migrating them is separate work, so they are left as they are. A delegated child's session is its task's, not one a person continues in a terminal, so it is not followed.
+      if (
+        thread.historyOrigin === "v1_import" ||
+        isDelegatedChild(thread) ||
+        providerThreadId === null
+      ) {
         yield* syncState.upsert({ ...linked, ...caughtUp, hydrationState: "pending" });
         return "pending" satisfies StepOutcome;
       }
-      // A thread the sync follows reads history back from the transcript, so T3 Code's next run sorts after every turn before it.
-      if (thread.historyOrigin !== "native") {
-        yield* eventSink.write({
-          events: [
-            {
-              id: yield* idAllocator.allocate.event({ threadId }),
-              type: "thread.metadata-updated",
-              threadId,
-              providerInstanceId: thread.providerInstanceId,
-              occurredAt: thread.updatedAt,
-              payload: { ...thread, historyOrigin: "native" },
-            },
-          ],
-        });
-      }
+      yield* markFollowed(thread);
       if (input.mode === "entry") {
         // An entry whose file changed shows the session's latest title and activity.
         const changed =
@@ -1864,39 +1983,6 @@ const make = Effect.gen(function* () {
         skipCopied: thread.forkedFrom !== null || thread.lineage.relationshipToParent === "fork",
       };
       const notice = isSyncThread(thread) && linked.hydrationState !== "full";
-      // Checked before every step, so no read writes past the floor.
-      const free = yield* capacity.freeDiskBytes;
-      if (free !== undefined && free < options.minFreeDiskGiB * 1024 ** 3) {
-        if (notice) {
-          yield* threadNotice(thread, target, "history", {
-            status: "failed",
-            message: `History not loaded: the disk holding T3 Code's data is below the ${options.minFreeDiskGiB} GB the Claude session sync keeps free.`,
-          });
-        } else {
-          yield* threadNotice(thread, target, "disk", {
-            status: "failed",
-            message: `Not following this Claude Code session: the disk holding T3 Code's data is below the ${options.minFreeDiskGiB} GB the Claude session sync keeps free.`,
-          });
-          diskNoticeShown.add(threadId);
-        }
-        yield* syncState.upsert(linked);
-        return "paused" satisfies StepOutcome;
-      }
-      if (!diskNoticeChecked.has(threadId)) {
-        // A note left failed by an earlier server is found once, so going on again closes it.
-        diskNoticeChecked.add(threadId);
-        const left = yield* projections.getTurnItem({
-          threadId,
-          itemId: TurnItemId.make(`x:${target.idScope}:disk`),
-        });
-        if (left?.status === "failed") diskNoticeShown.add(threadId);
-      }
-      if (diskNoticeShown.delete(threadId)) {
-        yield* threadNotice(thread, target, "disk", {
-          status: "completed",
-          message: "Following this Claude Code session again.",
-        });
-      }
       // A run in flight owns the thread's turns until it settles, which asks for a read again.
       const active = yield* sql<{ readonly found: number }>`
         SELECT 1 AS found FROM orchestration_v2_projection_runs
@@ -1907,6 +1993,36 @@ const make = Effect.gen(function* () {
         yield* syncState.upsert(linked);
         return "deferred" satisfies StepOutcome;
       }
+      const diskNoticeId = TurnItemId.make(`x:${target.idScope}:disk`);
+      // Checked before every step, so no read writes past the floor.
+      const free = yield* capacity.freeDiskBytes;
+      if (free !== undefined && free < options.minFreeDiskGiB * 1024 ** 3) {
+        if (notice) {
+          yield* threadNotice(thread, target, "history", {
+            status: "failed",
+            message: `History not loaded: the disk holding T3 Code's data is below the ${options.minFreeDiskGiB} GB the Claude session sync keeps free.`,
+          });
+        } else if (input.live) {
+          // Only a session a terminal is running has turns the pause holds back.
+          yield* diskNotice(thread, target, diskNoticeId, options.minFreeDiskGiB);
+          diskNoticeShown.add(threadId);
+        }
+        yield* syncState.upsert(linked);
+        return "paused" satisfies StepOutcome;
+      }
+      if (!diskNoticeChecked.has(threadId)) {
+        // A note left by an earlier server is found once, so going on again hides it.
+        diskNoticeChecked.add(threadId);
+        const left = yield* projections.getTurnItem({ threadId, itemId: diskNoticeId });
+        if (
+          left !== null &&
+          left.runId !== claudeNativeRunIds(target.idScope, REMOVED_TURN_ID).runId
+        ) {
+          diskNoticeShown.add(threadId);
+        }
+      }
+      // Following goes on, so the note leaves the thread with the next write.
+      const hide = diskNoticeShown.delete(threadId) ? [diskNoticeId] : [];
       if (linked.hydrationState !== "hydrating" && linked.hydrationState !== "full") {
         if (notice) {
           yield* threadNotice(thread, target, "history", {
@@ -1927,9 +2043,12 @@ const make = Effect.gen(function* () {
           row: linked,
           target,
           held,
+          hide,
           fallbackAt: DateTime.makeUnsafe(transcript.mtimeMs),
         }),
       );
+      // A pass that wrote nothing still owes the note's hiding.
+      if (read._tag !== "Read" && hide.length > 0) diskNoticeShown.add(threadId);
       if (read._tag === "Deleted") return "deleted" satisfies StepOutcome;
       if (read._tag === "Changed") return "more" satisfies StepOutcome;
       if (read._tag === "Deferred") {
@@ -2194,6 +2313,9 @@ const make = Effect.gen(function* () {
       const { settings, stores } = yield* currentState;
       const failures: Array<ClaudeSessionSyncError> = [];
       if (!settings.claudeSessionSync.enabled) return failures;
+      if (options?.full === true) {
+        yield* markFollowedThreads(stores).pipe(Effect.mapError(fail("mark followed threads")));
+      }
       for (const store of stores) {
         yield* sweepStore(store, settings, options?.full === true, failures);
       }

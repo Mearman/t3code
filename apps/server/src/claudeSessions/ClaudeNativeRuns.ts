@@ -24,6 +24,10 @@ import {
   commandInputFromClaudeTool,
   fileNameFromClaudeTool,
 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import {
+  MAX_RUN_ORDINAL,
+  TURN_ITEM_POSITIONS_PER_RUN,
+} from "../orchestration-v2/TurnItemPositionStore.ts";
 import { field } from "../orchestration-v2/unknownField.ts";
 import type {
   ClaudeTranscriptItem,
@@ -139,8 +143,12 @@ export function claudeNativeOrdinals(
 ): ReadonlyMap<string, number> {
   const ordinals = new Map<string, number>();
   let previous = 0;
+  // A far-future start is clamped so every turn after it still has a safe ordinal below MAX_RUN_ORDINAL.
+  const latestStart = MAX_RUN_ORDINAL - turns.length - taken.size;
   for (const turn of turns) {
-    const start = Number.isNaN(turn.startMs) ? 0 : Math.floor(turn.startMs / 1000);
+    const start = Number.isNaN(turn.startMs)
+      ? 0
+      : Math.min(Math.floor(turn.startMs / 1000), latestStart);
     let ordinal = Math.max(start, previous + 1);
     while (taken.has(ordinal)) ordinal += 1;
     ordinals.set(turn.id, ordinal);
@@ -155,6 +163,8 @@ export const claudePromptTextKey = (text: string) => hashClaudeTranscriptText(te
 /** A stored item as far as deciding whether to write it again needs; its position is the position store's, set when it was first written to its run. */
 export interface StoredNativeItem {
   readonly runId: string | null;
+  /** Its position, which the position store keeps in its run's range of `TURN_ITEM_POSITIONS_PER_RUN`. */
+  readonly ordinal: number;
   readonly status: string;
 }
 
@@ -430,8 +440,6 @@ export interface ClaudeNativeTurnPlanInput {
   readonly modelSlug: (reported: string) => string;
   /** Stands in for a line whose timestamp is missing or not a time, until a valid one follows. */
   readonly fallbackAt: DateTime.Utc;
-  /** Writes every item even when stored as it is, so items follow a run whose ordinal moved into its range. */
-  readonly rewrite: boolean;
 }
 
 export interface ClaudeNativeTurnPlan {
@@ -502,10 +510,15 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
   };
 
   const event = eventMaker(target, input.eventId);
+  // An item is stored as planned only in this run, with this status, at a position in this run's range: one left in an old range when the run's ordinal moved is written again, which moves it.
   const unchanged = (id: string, status: string) => {
-    if (input.rewrite) return false;
     const stored = input.storedItems.get(id);
-    return stored !== undefined && stored.runId === ids.runId && stored.status === status;
+    return (
+      stored !== undefined &&
+      stored.runId === ids.runId &&
+      stored.status === status &&
+      Math.floor(stored.ordinal / TURN_ITEM_POSITIONS_PER_RUN) === input.ordinal
+    );
   };
 
   // A line read again with other bytes, or one that left the turn, takes its old items with it.

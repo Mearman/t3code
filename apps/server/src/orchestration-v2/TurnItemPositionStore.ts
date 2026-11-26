@@ -33,6 +33,13 @@ export interface TurnItemPositionStoreV2Shape {
   ) => Effect.Effect<OrchestrationV2TurnItem, TurnItemPositionStoreError>;
 }
 
+/** Item positions each run's range holds: a run's items take `ordinal * TURN_ITEM_POSITIONS_PER_RUN` onward. */
+export const TURN_ITEM_POSITIONS_PER_RUN = 1_000_000;
+
+/** The largest run ordinal whose item positions all stay safe integers, which SQLite reads back as numbers. */
+export const MAX_RUN_ORDINAL =
+  Math.floor((Number.MAX_SAFE_INTEGER + 1) / TURN_ITEM_POSITIONS_PER_RUN) - 1;
+
 export class TurnItemPositionStoreV2 extends Context.Service<
   TurnItemPositionStoreV2,
   TurnItemPositionStoreV2Shape
@@ -70,8 +77,8 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
                 LIMIT 1
               `;
           const runOrdinal = suppliedRunOrdinal ?? runRows[0]?.ordinal ?? null;
-          const lowerBound = runOrdinal === null ? 0 : runOrdinal * 1_000_000;
-          const upperBound = runOrdinal === null ? 999_999 : lowerBound + 999_999;
+          const lowerBound = runOrdinal === null ? 0 : runOrdinal * TURN_ITEM_POSITIONS_PER_RUN;
+          const upperBound = lowerBound + TURN_ITEM_POSITIONS_PER_RUN - 1;
           const current = existing[0]?.ordinal;
           if (current !== undefined) {
             // A steer that missed its turn starts the next run; it moves into that run's range.
