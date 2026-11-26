@@ -41,9 +41,9 @@ export class ClaudeSessionProjects extends Context.Service<
       readonly storeKey: string;
     }) => Effect.Effect<ClaudeSessionPlacement, ClaudeSessionProjectError>;
   }
->()("t3/claudeSessions/ClaudeSessionProjects/ClaudeSessionProjects") {}
+>()("t3/claudeSessions/ClaudeSessionProjects") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
