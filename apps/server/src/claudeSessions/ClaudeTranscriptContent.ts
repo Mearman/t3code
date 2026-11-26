@@ -76,12 +76,26 @@ export type ClaudeTranscriptItem =
       readonly offset: number;
     };
 
+/** One line's items, with the hash that says whether a caller already holds this version. */
+export interface ClaudeTranscriptLineContent {
+  readonly lineUuid: string;
+  readonly hash: number;
+  readonly items: ReadonlyArray<ClaudeTranscriptItem>;
+}
+
 export interface ClaudeTranscriptTurnContent {
   readonly turn: ClaudeTranscriptTurn;
-  /** Undefined for a turn opened by a line with no prompt before it. */
-  readonly prompt: ClaudeTranscriptPrompt | undefined;
-  readonly forkedFrom: ClaudeTranscriptForkSource | undefined;
-  readonly items: ReadonlyArray<ClaudeTranscriptItem>;
+  /** Read only when the opener's line was; undefined `prompt` is a turn with no prompt before it. */
+  readonly opener:
+    | {
+        readonly prompt: ClaudeTranscriptPrompt | undefined;
+        readonly forkedFrom: ClaudeTranscriptForkSource | undefined;
+      }
+    | undefined;
+  /** The turn's lines not in `known` with the same hash, in item order. */
+  readonly lines: ReadonlyArray<ClaudeTranscriptLineContent>;
+  /** Lines in `known` that are no longer in the turn. */
+  readonly removedLineUuids: ReadonlyArray<string>;
 }
 
 export class ClaudeTranscriptChangedError extends Schema.TaggedError<ClaudeTranscriptChangedError>()(
@@ -235,16 +249,23 @@ const forkOf = (record: ClaudeTranscriptRecord) =>
     ? record.line.forkedFrom
     : undefined;
 
+// Adjacent lines are read together up to this size, and the fiber yields between reads.
+const READ_GROUP_BYTES = 1024 * 1024;
+
 /**
- * Reads one turn's lines by their indexed offsets, and nothing else of the file. Fails with `ClaudeTranscriptChangedError` when a line's bytes are not those indexed, as after a rewrite the guard windows missed; sync the index and take the structure again. Memory is the turn's bytes.
+ * Reads the turn's lines a caller does not already hold, by their indexed offsets, and nothing
+ * else of the file: `known` maps line uuids to the hashes the caller holds. Lines are read in
+ * groups of at most a mebibyte (or one longer line) with a yield after each. Fails with
+ * `ClaudeTranscriptChangedError` when a line's bytes are not those indexed; sync again first.
  */
 export const readClaudeTranscriptTurn = Effect.fn("readClaudeTranscriptTurn")(function* (input: {
   readonly filePath: string;
   readonly index: ClaudeTranscriptIndex;
   readonly idScope: string;
   readonly turn: ClaudeTranscriptTurn;
+  readonly known: ReadonlyMap<string, number>;
 }) {
-  const { index, turn } = input;
+  const { index, turn, known } = input;
   const fileSystem = yield* FileSystem.FileSystem;
   const handle = yield* fileSystem.open(input.filePath, { flag: "r" });
   const decoder = new TextDecoder();
@@ -254,24 +275,29 @@ export const readClaudeTranscriptTurn = Effect.fn("readClaudeTranscriptTurn")(fu
     readonly length: number;
     readonly hash: number;
   }> = [];
+  const inTurn = new Set(turn.lineUuids);
   for (const uuid of turn.lineUuids) {
     const entry = index.entryOf(uuid);
     if (entry === undefined) return yield* new ClaudeTranscriptChangedError({ lineUuid: uuid });
-    located.push({ uuid, ...index.location(entry) });
+    const location = index.location(entry);
+    if (known.get(uuid) !== location.hash) located.push({ uuid, ...location });
   }
-  // Lines next to each other in the file are read in one call.
   const groups: Array<Array<(typeof located)[number]>> = [];
+  let groupBytes = 0;
   for (const line of located.toSorted((left, right) => left.offset - right.offset)) {
     const group = groups.at(-1);
     const previous = group?.at(-1);
     if (
       group !== undefined &&
       previous !== undefined &&
-      line.offset === previous.offset + previous.length + 1
+      line.offset === previous.offset + previous.length + 1 &&
+      groupBytes + line.length <= READ_GROUP_BYTES
     ) {
       group.push(line);
+      groupBytes += line.length + 1;
     } else {
       groups.push([line]);
+      groupBytes = line.length + 1;
     }
   }
   const records = new Map<string, ClaudeTranscriptRecord | { readonly unreadable: number }>();
@@ -294,29 +320,35 @@ export const readClaudeTranscriptTurn = Effect.fn("readClaudeTranscriptTurn")(fu
         decoded._tag === "Record" ? decoded.record : { unreadable: line.offset },
       );
     }
+    yield* Effect.yieldNow;
   }
 
-  let prompt: ClaudeTranscriptPrompt | undefined;
-  let forkedFrom: ClaudeTranscriptForkSource | undefined;
-  const items: Array<ClaudeTranscriptItem> = [];
+  let opener: ClaudeTranscriptTurnContent["opener"];
+  const lines: Array<ClaudeTranscriptLineContent> = [];
+  const hashes = new Map(located.map((line) => [line.uuid, line.hash]));
   for (const uuid of turn.lineUuids) {
     const record = records.get(uuid);
-    if (record === undefined) continue;
+    const hash = hashes.get(uuid);
+    if (record === undefined || hash === undefined) continue;
     if ("unreadable" in record) {
-      items.push({
+      const item: ClaudeTranscriptItem = {
         _tag: "Unreadable",
         id: claudeTranscriptItemId(input.idScope, uuid, undefined),
         lineUuid: uuid,
         offset: record.unreadable,
-      });
+      };
+      lines.push({ lineUuid: uuid, hash, items: [item] });
       continue;
     }
-    if (uuid === turn.id) {
-      prompt = openerPrompt(turn, record);
-      forkedFrom = forkOf(record);
-    }
-    items.push(...itemsOf(input.idScope, record));
+    if (uuid === turn.id)
+      opener = { prompt: openerPrompt(turn, record), forkedFrom: forkOf(record) };
+    lines.push({ lineUuid: uuid, hash, items: itemsOf(input.idScope, record) });
   }
-  const content: ClaudeTranscriptTurnContent = { turn, prompt, forkedFrom, items };
+  const content: ClaudeTranscriptTurnContent = {
+    turn,
+    opener,
+    lines,
+    removedLineUuids: [...known.keys()].filter((uuid) => !inTurn.has(uuid)),
+  };
   return content;
 }, Effect.scoped);
