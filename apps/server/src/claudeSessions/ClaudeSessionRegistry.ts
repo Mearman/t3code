@@ -6,7 +6,11 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import { indexClaudeProcessTable, type ClaudeProcessRow } from "./ClaudeProcessTable.ts";
+import {
+  indexClaudeProcessTable,
+  type ClaudeProcessRow,
+  type ClaudeProcessTable,
+} from "./ClaudeProcessTable.ts";
 
 /**
  * The fields T3 Code reads from `<home>/sessions/<pid>.json`, which Claude Code writes for each
@@ -27,13 +31,17 @@ export const ClaudeSessionRegistryEntry = Schema.Struct({
 });
 export type ClaudeSessionRegistryEntry = typeof ClaudeSessionRegistryEntry.Type;
 
-/** `pid` comes from the file name; `sessionId` is set when the entry names one anyway. */
+/**
+ * `pid` comes from the file name, `modifiedAt` is the file's modification time in epoch
+ * milliseconds, and `sessionId` is set when the entry names one anyway.
+ */
 export class ClaudeSessionRegistryEntryError extends Schema.TaggedError<ClaudeSessionRegistryEntryError>()(
   "ClaudeSessionRegistryEntryError",
   {
     file: Schema.String,
     pid: Schema.Int,
     sessionId: Schema.optional(Schema.String),
+    modifiedAt: Schema.optional(Schema.Number),
     cause: Schema.Defect(),
   },
 ) {
@@ -72,11 +80,17 @@ export const readClaudeSessionRegistry = Effect.fn("readClaudeSessionRegistry")(
     if (Result.isSuccess(decoded)) entries.push(decoded.success);
     else {
       const sessionId = Option.getOrUndefined(decodeSessionId(text))?.sessionId;
+      const info = yield* fileSystem
+        .stat(file)
+        .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(null)));
+      if (info === null) continue;
+      const modifiedAt = Option.getOrUndefined(info.mtime)?.getTime();
       unrecognised.push(
         new ClaudeSessionRegistryEntryError({
           file,
           pid: Number(name.slice(0, -".json".length)),
           ...(sessionId === undefined ? {} : { sessionId }),
+          ...(modifiedAt === undefined ? {} : { modifiedAt }),
           cause: decoded.failure,
         }),
       );
@@ -100,7 +114,7 @@ export interface ClaudeSessionHolder {
 
 // The entry's own record of when its process started, as far as this host can check it.
 function holderIdentity(
-  entry: ClaudeSessionRegistryEntry,
+  entry: Pick<ClaudeSessionRegistryEntry, "procStart" | "startedAt">,
   started: number,
   matchStartTime: boolean,
 ): "same" | "other" | "unknown" {
@@ -112,6 +126,33 @@ function holderIdentity(
     return started <= Math.ceil(entry.startedAt / 1000) ? "same" : "other";
   }
   return "unknown";
+}
+
+/**
+ * The pids of running processes that wrote a file in `registry`. One left by a dead process under
+ * a reused pid names none: its recorded start, or for an unreadable file its modification time,
+ * rules the running process out.
+ */
+export function liveClaudeEntryPids(
+  registry: {
+    readonly entries: ReadonlyArray<ClaudeSessionRegistryEntry>;
+    readonly unrecognised: ReadonlyArray<ClaudeSessionRegistryEntryError>;
+  },
+  table: ClaudeProcessTable,
+  matchStartTime: boolean,
+): ReadonlySet<number> {
+  const written = [
+    ...registry.entries,
+    ...registry.unrecognised.map(({ pid, modifiedAt }) => ({ pid, startedAt: modifiedAt })),
+  ];
+  return new Set(
+    written.flatMap((entry) => {
+      const started = table.byPid.get(entry.pid)?.startTimeSeconds;
+      return started === undefined || holderIdentity(entry, started, matchStartTime) === "other"
+        ? []
+        : [entry.pid];
+    }),
+  );
 }
 
 /**
@@ -140,10 +181,10 @@ export function ownedByRoot(
 }
 
 /**
- * Live holders per session id among `entries` that are not T3 Code's own (see `ownedByRoot`);
- * `entryPids` are every entry's pid. `procStart` (read with `LC_ALL=C TZ=UTC`) must name the
- * process's start under `matchStartTime`; otherwise `startedAt` rules out a reused pid, and a
- * holder neither can check is returned unconfirmed.
+ * Live holders per session id among `entries` that are not T3 Code's own (see `ownedByRoot`, with
+ * `liveClaudeEntryPids`). `procStart` (read with `LC_ALL=C TZ=UTC`) must name the process's start
+ * under `matchStartTime`; otherwise `startedAt` rules out a reused pid, and a holder neither can
+ * check is returned unconfirmed.
  */
 export function externalClaudeSessionHolders(input: {
   readonly entries: ReadonlyArray<ClaudeSessionRegistryEntry>;

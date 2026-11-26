@@ -11,6 +11,7 @@ import {
 } from "./ClaudeProcessTable.ts";
 import {
   externalClaudeSessionHolders,
+  liveClaudeEntryPids,
   ownedByRoot,
   readClaudeSessionRegistry,
   type ClaudeSessionRegistryEntry,
@@ -35,10 +36,7 @@ const candidatesFor = (
   },
   sessionId: string,
 ) => ({
-  entryPids: new Set([
-    ...registry.entries.map((entry) => entry.pid),
-    ...registry.unrecognised.map((entry) => entry.pid),
-  ]),
+  registry,
   entries: registry.entries.filter((entry) => entry.sessionId === sessionId),
   unattributed: registry.unrecognised.filter(
     (entry) => entry.sessionId === undefined || entry.sessionId === sessionId,
@@ -70,12 +68,14 @@ export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(functi
   }
   const processes = yield* input.readProcesses;
   // Claude may have been writing an entry; only one still unreadable after the read counts.
-  const { entryPids, entries, unattributed } =
+  const { registry, entries, unattributed } =
     first.unattributed.length === 0
       ? first
       : candidatesFor(yield* readClaudeSessionRegistry(input.sessionsDir), input.sessionId);
   // A pid in either read is T3 Code's: one spawned meanwhile, or one that exited since.
   const ownRootPids = [...new Set([...spawned, ...(yield* input.ownRootPids)])];
+  const table = indexClaudeProcessTable(processes);
+  const entryPids = liveClaudeEntryPids(registry, table, input.matchStartTime);
   const holder = externalClaudeSessionHolders({
     entries,
     entryPids,
@@ -92,7 +92,6 @@ export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(functi
         } satisfies ClaudeSessionHold)
       : ({ _tag: "unconfirmed", pid: holder.entry.pid } satisfies ClaudeSessionHold);
   }
-  const table = indexClaudeProcessTable(processes);
   const roots = new Set(ownRootPids);
   // Without a readable entry a live pid is all there is to match.
   const unreadable = unattributed.find(

@@ -63,6 +63,8 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
     // Runs between the probe's two registry reads, as Claude can write an entry during `ps`.
     readProcesses: (
       write: (written: Record<string, string>) => Effect.Effect<void>,
+      // Dates a file as last written at `millis`.
+      touch: (name: string, millis: number) => Effect.Effect<void>,
     ) => Effect.Effect<ReadonlyArray<ClaudeProcessRow>, ClaudeProcessTableError> = () =>
       Effect.succeed(processes),
     matchStartTime = true,
@@ -76,12 +78,16 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         Effect.forEach(Object.entries(written), ([name, text]) =>
           fileSystem.writeFileString(path.join(sessionsDir, name), text),
         ).pipe(Effect.orDie);
+      const touch = (name: string, millis: number) => {
+        const at = DateTime.toDateUtc(DateTime.makeUnsafe(millis));
+        return fileSystem.utimes(path.join(sessionsDir, name), at, at).pipe(Effect.orDie);
+      };
       yield* write(files);
       return yield* probeClaudeSessionHold({
         sessionsDir,
         sessionId,
         ownRootPids,
-        readProcesses: readProcesses(write),
+        readProcesses: readProcesses(write, touch),
         matchStartTime,
       });
     });
@@ -170,6 +176,39 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       expect(
         yield* probeWith({ "101.json": entry(101, "spawned"), "102.json": '{"pid":102' }, "any"),
       ).toEqual({ _tag: "unreadable", pid: 102 });
+    }),
+  );
+
+  it.effect("ignores a leftover file under a spawned launcher's reused pid", () =>
+    Effect.gen(function* () {
+      // 101 launches 102; a dead process that had pid 101 left a file behind.
+      const withLeftover = (leftover: string) => ({
+        "101.json": leftover,
+        "102.json": entry(102, "launched"),
+      });
+      expect(
+        yield* probeWith(withLeftover(entry(101, "gone", { procStart: EARLIER })), "launched"),
+      ).toBeUndefined();
+      const beforeStart = START_SECONDS * 1000 - 60_000;
+      expect(
+        yield* probeWith(
+          withLeftover(entry(101, "gone", { startedAt: beforeStart })),
+          "launched",
+          () => Effect.succeed(processes),
+          false,
+        ),
+      ).toBeUndefined();
+      // An unreadable file is dated by when it was last written.
+      const lastWritten = (written: number) =>
+        probeWith(withLeftover('{"pid":101'), "launched", (_write, touch) =>
+          touch("101.json", written).pipe(Effect.as(processes)),
+        );
+      expect(yield* lastWritten(beforeStart)).toBeUndefined();
+      expect(yield* lastWritten(START_SECONDS * 1000 + 500)).toEqual({
+        _tag: "held",
+        pid: 102,
+        sdk: false,
+      });
     }),
   );
 
