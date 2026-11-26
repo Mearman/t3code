@@ -84,7 +84,11 @@ const secondTurn = [
 const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer).pipe(
   Layer.provideMerge(SqlitePersistence.layerMemory),
 );
-const capacityFree = Layer.succeed(ClaudeSyncCapacity.ClaudeSyncCapacity, { wait: Effect.void });
+const ROOMY = 1024 ** 4;
+const capacityFree = Layer.succeed(ClaudeSyncCapacity.ClaudeSyncCapacity, {
+  wait: Effect.void,
+  freeDiskBytes: Effect.succeed(ROOMY),
+});
 const persistence = Layer.mergeAll(
   stores,
   EventSink.layer.pipe(Layer.provide(stores)),
@@ -664,6 +668,7 @@ describe("ClaudeSessionSync", () => {
                   yield* deleteThread(claudeThreadId);
                 }
               }).pipe(Effect.provideContext(context), Effect.orDie),
+              freeDiskBytes: Effect.succeed(ROOMY),
             };
           }),
         ).pipe(Layer.provide(persistence), Layer.orDie);
@@ -697,6 +702,7 @@ describe("ClaudeSessionSync", () => {
               ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never))
               : Effect.void,
           ),
+          freeDiskBytes: Effect.succeed(ROOMY),
         });
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
@@ -738,6 +744,75 @@ describe("ClaudeSessionSync", () => {
         }).pipe(
           Effect.provide(syncLayer(settingsFor([extra], { excludedCwdGlobs: ["/work/**"] }))),
         );
+      }),
+    ),
+  );
+
+  it.effect("adds nothing when a transcript longer than one read is read again from the top", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        const file = yield* append(home, longTranscript);
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          const state = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
+          yield* syncAll({ full: true });
+          yield* openThread(claudeThreadId);
+          expect(yield* nativeRuns(claudeThreadId)).toHaveLength(3);
+          const row = yield* sessionRow(home);
+          expect(row).toBeDefined();
+          if (row === undefined) return;
+          yield* state.upsert({ ...row, byteOffset: 0, guardHash: null, parserState: null });
+          const events = yield* count("orchestration_v2_events");
+          yield* sync.followFile(file);
+          expect(yield* count("orchestration_v2_events")).toBe(events);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("shows a thread loading its history, and when it has loaded", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, firstTurn);
+        yield* Effect.gen(function* () {
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* syncAll({ full: true });
+          yield* openThread(claudeThreadId);
+          expect(
+            yield* projections.getTurnItem({
+              threadId: claudeThreadId,
+              itemId: TurnItemId.make(`x:${SESSION}:history`),
+            }),
+          ).toMatchObject({ type: "system_notice", status: "completed" });
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("reads no history below the free-disk floor, and says why", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, firstTurn);
+        const nearlyFull = Layer.succeed(ClaudeSyncCapacity.ClaudeSyncCapacity, {
+          wait: Effect.void,
+          freeDiskBytes: Effect.succeed(5 * 1024 ** 3),
+        });
+        yield* Effect.gen(function* () {
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* syncAll({ full: true });
+          yield* openThread(claudeThreadId);
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([]);
+          const notice = yield* projections.getTurnItem({
+            threadId: claudeThreadId,
+            itemId: TurnItemId.make(`x:${SESSION}:history`),
+          });
+          expect(notice).toMatchObject({ type: "system_notice", status: "failed" });
+          expect(notice?.type === "system_notice" ? notice.message : "").toContain("5.0 GB free");
+          expect((yield* sessionRow(home))?.hydrationState).toBe("entry");
+        }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), nearlyFull)));
       }),
     ),
   );

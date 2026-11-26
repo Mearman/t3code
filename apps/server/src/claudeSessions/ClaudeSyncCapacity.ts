@@ -1,10 +1,13 @@
-// @effect-diagnostics nodeBuiltinImport:off - node:os gives the load average and node:perf_hooks the event loop utilisation the sync yields to.
+// @effect-diagnostics nodeBuiltinImport:off - node:os gives the load average, node:perf_hooks the event loop utilisation and node:fs the free disk the sync yields to.
+import * as NodeFS from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePerfHooks from "node:perf_hooks";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+
+import * as ServerConfig from "../config.ts";
 
 /** At most this many sync steps a second, so even an idle machine reads its backlog gradually. */
 const MIN_STEP_MS = 100;
@@ -17,10 +20,13 @@ export class ClaudeSyncCapacity extends Context.Service<
   {
     /** Returns once the machine and this server have room for one more bounded sync step. */
     readonly wait: Effect.Effect<void>;
+    /** Free bytes on the disk holding T3 Code's data, or undefined when the platform cannot say. */
+    readonly freeDiskBytes: Effect.Effect<number | undefined>;
   }
 >()("t3/claudeSessions/ClaudeSyncCapacity") {}
 
-const make = Effect.sync(() => {
+const make = Effect.gen(function* () {
+  const { stateDir } = yield* ServerConfig.ServerConfig;
   let since = NodePerfHooks.performance.eventLoopUtilization();
   let sinceAt = NodePerfHooks.performance.now();
 
@@ -42,7 +48,12 @@ const make = Effect.sync(() => {
     while (yield* busy) yield* Effect.sleep(BUSY_BACKOFF);
   });
 
-  return ClaudeSyncCapacity.of({ wait });
+  const freeDiskBytes = Effect.tryPromise(() => NodeFS.statfs(stateDir)).pipe(
+    Effect.map((stats) => Number(stats.bavail) * Number(stats.bsize)),
+    Effect.orElseSucceed(() => undefined),
+  );
+
+  return ClaudeSyncCapacity.of({ wait, freeDiskBytes });
 });
 
 export const layer = Layer.effect(ClaudeSyncCapacity, make);

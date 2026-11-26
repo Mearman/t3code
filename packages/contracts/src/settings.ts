@@ -1076,7 +1076,7 @@ export const ObservabilitySettings = Schema.Struct({
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
-const ClaudeSessionHydrateRecentDays = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const ClaudeSessionNonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 /** Showing every Claude Code session from the configured Claude homes as a thread. */
 export const ClaudeSessionSyncSettings = Schema.Struct({
@@ -1086,9 +1086,11 @@ export const ClaudeSessionSyncSettings = Schema.Struct({
    */
   backgroundFill: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** With the background fill on, sessions changed within this many days are filled first. */
-  hydrateRecentDays: ClaudeSessionHydrateRecentDays.pipe(
-    Schema.withDecodingDefault(Effect.succeed(7)),
+  hydrateRecentDays: ClaudeSessionNonNegativeInt.pipe(
+    Schema.withDecodingDefault(Effect.succeed(0)),
   ),
+  /** No history is read while the disk holding T3 Code's data has less than this many GB free. */
+  minFreeDiskGiB: ClaudeSessionNonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(20))),
   /** Further Claude homes whose sessions are shown, beside those of the Claude instances. */
   additionalHomes: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -2045,7 +2047,8 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Struct({
       enabled: Schema.optionalKey(Schema.Boolean),
       backgroundFill: Schema.optionalKey(Schema.Boolean),
-      hydrateRecentDays: Schema.optionalKey(ClaudeSessionHydrateRecentDays),
+      hydrateRecentDays: Schema.optionalKey(ClaudeSessionNonNegativeInt),
+      minFreeDiskGiB: Schema.optionalKey(ClaudeSessionNonNegativeInt),
       additionalHomes: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
       excludedCwdGlobs: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
     }),

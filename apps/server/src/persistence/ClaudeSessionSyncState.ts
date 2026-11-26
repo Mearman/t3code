@@ -57,6 +57,16 @@ export type ClaudeSessionSyncState = typeof ClaudeSessionSyncState.Type;
 
 const StoreLookup = Schema.Struct({ storeKey: Schema.String });
 
+/** What a sweep compares a transcript against, without the read position it does not need. */
+const ClaudeSessionSyncSummary = Schema.Struct({
+  sessionId: Schema.String,
+  hydrationState: ClaudeSessionHydrationState,
+  filePath: Schema.String,
+  fileSize: NonNegativeInt,
+  fileMtimeMs: NonNegativeInt,
+});
+export type ClaudeSessionSyncSummary = typeof ClaudeSessionSyncSummary.Type;
+
 const NativeSessionLookup = Schema.Struct({ nativeSessionId: Schema.String });
 
 /** The provider thread T3 already holds for a Claude session, found by its native session id. */
@@ -78,6 +88,13 @@ export class ClaudeSessionSyncStateRepository extends Context.Service<
     readonly upsert: (
       state: ClaudeSessionSyncState,
     ) => Effect.Effect<void, ClaudeSessionSyncStateRepositoryError>;
+    /** Every session recorded for one store, as a sweep compares it. */
+    readonly listStoreSummaries: (
+      storeKey: string,
+    ) => Effect.Effect<
+      ReadonlyArray<ClaudeSessionSyncSummary>,
+      ClaudeSessionSyncStateRepositoryError
+    >;
     /** Every session recorded for one store. */
     readonly listStore: (
       storeKey: string,
@@ -150,6 +167,17 @@ const make = Effect.gen(function* () {
     Request: StoreLookup,
     Result: ClaudeSessionSyncState,
     execute: ({ storeKey }) => selectRows(sql`store_key = ${storeKey}`),
+  });
+
+  const summaryRows = SqlSchema.findAll({
+    Request: StoreLookup,
+    Result: ClaudeSessionSyncSummary,
+    execute: ({ storeKey }) => sql`
+      SELECT session_id AS "sessionId", hydration_state AS "hydrationState",
+        file_path AS "filePath", file_size AS "fileSize", file_mtime_ms AS "fileMtimeMs"
+      FROM fork_claude_session_sync_state
+      WHERE store_key = ${storeKey}
+    `,
   });
 
   const threadRow = SqlSchema.findOneOption({
@@ -268,6 +296,14 @@ const make = Effect.gen(function* () {
         Effect.mapError(toRepositoryError("upsertClaudeSessionSyncState")),
       );
     }),
+    listStoreSummaries: Effect.fn("ClaudeSessionSyncStateRepository.listStoreSummaries")(
+      function (storeKey) {
+        return summaryRows({ storeKey }).pipe(
+          NodeSqliteClient.readOnly,
+          Effect.mapError(toRepositoryError("listClaudeSessionSyncSummaries")),
+        );
+      },
+    ),
     listStore: Effect.fn("ClaudeSessionSyncStateRepository.listStore")(function (storeKey) {
       return listRows({ storeKey }).pipe(
         NodeSqliteClient.readOnly,
