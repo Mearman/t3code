@@ -35,7 +35,7 @@ export type MeshFrame =
   | { readonly type: "reset"; readonly streamId: number; readonly code: MeshResetCode }
   | { readonly type: "window"; readonly streamId: number; readonly increment: number };
 
-const malformed = (message: string) => new MeshProtocolError("malformed_frame", message);
+const malformed = (detail: string) => new MeshProtocolError({ reason: "malformed_frame", detail });
 
 /** Layout: type (u8), stream id (u32 big-endian), then a body that depends on the type. */
 export function encodeMeshFrame(frame: MeshFrame): Uint8Array {
@@ -174,7 +174,10 @@ export function createMeshMux(options: {
   const writable = (streamId: number) => {
     const stream = streams.get(streamId);
     if (stream === undefined || stream.localEnded) {
-      throw new MeshProtocolError("stream_state", `Stream ${streamId} is not open for writing.`);
+      throw new MeshProtocolError({
+        reason: "stream_state",
+        detail: `Stream ${streamId} is not open for writing.`,
+      });
     }
     return stream;
   };
@@ -184,13 +187,22 @@ export function createMeshMux(options: {
   return {
     open(kind, head) {
       if (head.length > MESH_MAX_OPEN_HEAD_BYTES) {
-        throw new MeshProtocolError("message_too_large", "The stream head exceeds one frame.");
+        throw new MeshProtocolError({
+          reason: "message_too_large",
+          detail: "The stream head exceeds one frame.",
+        });
       }
       if (localOpen >= maxStreams) {
-        throw new MeshProtocolError("stream_limit", "Too many streams are open on this channel.");
+        throw new MeshProtocolError({
+          reason: "stream_limit",
+          detail: "Too many streams are open on this channel.",
+        });
       }
       if (nextLocalId > MAX_STREAM_ID) {
-        throw new MeshProtocolError("stream_ids_exhausted", "This channel has no stream ids left.");
+        throw new MeshProtocolError({
+          reason: "stream_ids_exhausted",
+          detail: "This channel has no stream ids left.",
+        });
       }
       const streamId = nextLocalId;
       nextLocalId += 2;
@@ -201,7 +213,10 @@ export function createMeshMux(options: {
     send(streamId, data) {
       const stream = writable(streamId);
       if (data.length > stream.sendCredit) {
-        throw new MeshProtocolError("flow_control", "The data exceeds the stream's credit.");
+        throw new MeshProtocolError({
+          reason: "flow_control",
+          detail: "The data exceeds the stream's credit.",
+        });
       }
       stream.sendCredit -= data.length;
       for (let offset = 0; offset < data.length; offset += MESH_MAX_DATA_BYTES) {
@@ -243,7 +258,10 @@ export function createMeshMux(options: {
       const { streamId } = frame;
       if (frame.type === "open") {
         if (isLocal(streamId) || streamId <= lastRemoteId) {
-          throw new MeshProtocolError("stream_state", "The peer opened an id it cannot use.");
+          throw new MeshProtocolError({
+            reason: "stream_state",
+            detail: "The peer opened an id it cannot use.",
+          });
         }
         lastRemoteId = streamId;
         if (remoteOpen >= maxStreams) {
@@ -257,22 +275,34 @@ export function createMeshMux(options: {
       if (stream === undefined) {
         // Frames already in flight when a stream closed are dropped; any other is a violation.
         if (opened(streamId)) return undefined;
-        throw new MeshProtocolError("stream_state", "The frame names a stream never opened.");
+        throw new MeshProtocolError({
+          reason: "stream_state",
+          detail: "The frame names a stream never opened.",
+        });
       }
       switch (frame.type) {
         case "data":
           if (stream.remoteEnded) {
-            throw new MeshProtocolError("stream_state", "The peer sent data after END.");
+            throw new MeshProtocolError({
+              reason: "stream_state",
+              detail: "The peer sent data after END.",
+            });
           }
           if (frame.data.length > stream.receiveCredit) {
-            throw new MeshProtocolError("flow_control", "The peer sent beyond its credit.");
+            throw new MeshProtocolError({
+              reason: "flow_control",
+              detail: "The peer sent beyond its credit.",
+            });
           }
           stream.receiveCredit -= frame.data.length;
           stream.unconsumed += frame.data.length;
           return frame;
         case "end":
           if (stream.remoteEnded) {
-            throw new MeshProtocolError("stream_state", "The peer ended a stream twice.");
+            throw new MeshProtocolError({
+              reason: "stream_state",
+              detail: "The peer ended a stream twice.",
+            });
           }
           stream.remoteEnded = true;
           closeIfDone(streamId, stream);
@@ -282,7 +312,10 @@ export function createMeshMux(options: {
           return frame;
         case "window":
           if (stream.sendCredit + frame.increment > MAX_WINDOW_BYTES) {
-            throw new MeshProtocolError("flow_control", "The peer granted more than 2^31-1.");
+            throw new MeshProtocolError({
+              reason: "flow_control",
+              detail: "The peer granted more than 2^31-1.",
+            });
           }
           stream.sendCredit += frame.increment;
           return { type: "credit", streamId, credit: stream.sendCredit };
