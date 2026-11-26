@@ -967,6 +967,30 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
       }),
     );
 
+    it.effect("restores no files over turns that ran outside T3, but still rewinds", () =>
+      Effect.gen(function* () {
+        const history = yield* seedRollbackHistory;
+        const sql = yield* SqlClient.SqlClient;
+        const nativeOrigin = JSON.stringify({
+          kind: "claude_transcript",
+          nativeSessionId: "session-1",
+          promptUuid: "prompt-1",
+        });
+        yield* sql`UPDATE orchestration_v2_projection_runs
+          SET payload_json = json_set(payload_json, '$.nativeOrigin', json(${nativeOrigin}))
+          WHERE run_id = ${history.runId(3)}`;
+
+        const refused = yield* history.rollback(2).pipe(Effect.flip);
+        assert.equal("reason" in refused ? refused.reason : undefined, "transcript-work");
+        assert.deepEqual(history.rollbackCounts, []);
+        assert.deepEqual(history.restored, []);
+
+        yield* history.rollback(2, false);
+        assert.lengthOf(history.rollbackCounts, 1);
+        assert.deepEqual(history.restored, []);
+      }),
+    );
+
     it.effect(
       "rewinds stopped runs repeatedly without counting discarded provider turns again",
       () =>
