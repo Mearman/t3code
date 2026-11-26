@@ -67,8 +67,7 @@ export function compareTimes(left: number, right: number): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-const compareStrings = (left: string, right: string) =>
-  left < right ? -1 : left > right ? 1 : 0;
+const compareStrings = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
 
 function at<T>(values: ArrayLike<T>, index: number): T {
   const value = values[index];
