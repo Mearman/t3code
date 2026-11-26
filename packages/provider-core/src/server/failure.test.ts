@@ -333,9 +333,6 @@ it("keeps every curated message without a failure code", () => {
     })),
   );
 });
-  assert.equal(failure.message, `${tag} text`);
-  assert.equal(failure.code, null);
-});
 
 it("does not expose defect text nested inside a known error category", () => {
   const failure = makeProviderFailure({
