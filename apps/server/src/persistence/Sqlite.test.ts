@@ -7,11 +7,13 @@ import type * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { SERVER_EXIT_CODE_SCHEMA_BEHIND } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Runtime from "effect/Runtime";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import { vi } from "vite-plus/test";
@@ -230,6 +232,54 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
       if (opened._tag === "Failure") {
         assert.instanceOf(opened.failure, SqlitePersistence.ServerOwnsDatabaseError);
       }
+    }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
+  it.effect("never migrates a database behind this build when asked for the current schema", () =>
+    Effect.gen(function* () {
+      const recorded = Math.max(...migrationManifest.map(([id]) => id)) - 1;
+      yield* migrateTo(recorded);
+
+      // No server holds the lock, as while a service restarts: the CLI must still not migrate.
+      const opened = yield* Effect.void.pipe(
+        Effect.provide(SqlitePersistence.layerCliConfigCurrentSchema),
+        Effect.result,
+      );
+
+      assert.equal(yield* latestRecordedMigrationId, recorded);
+      assert.equal(opened._tag, "Failure");
+      if (opened._tag === "Failure") {
+        assert.instanceOf(opened.failure, SqlitePersistence.DatabaseSchemaBehindError);
+        assert.equal(opened.failure[Runtime.errorExitCode], SERVER_EXIT_CODE_SCHEMA_BEHIND);
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
+  it.effect(
+    "opens a database ahead of this build for a client that requires the current schema",
+    () =>
+      Effect.gen(function* () {
+        yield* migrateTo();
+        const { dbPath } = yield* ServerConfig.ServerConfig;
+        const ahead = Math.max(...migrationManifest.map(([id]) => id)) + 1;
+        // A newer server owns the home and has recorded a migration this build does not know.
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${ahead}, 'Newer')`;
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+        yield* ownT3Home();
+
+        yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfigCurrentSchema));
+        assert.equal(yield* latestRecordedMigrationId, ahead);
+      }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
+  it.effect("opens a current database for a client that requires the current schema", () =>
+    Effect.gen(function* () {
+      yield* migrateTo();
+      yield* ownT3Home();
+
+      yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfigCurrentSchema));
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
   );
 

@@ -33,6 +33,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as SqlClient from "effect/sql/SqlClient";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
@@ -1868,10 +1869,12 @@ export const layer = Layer.effect(EnvironmentAuth, make).pipe(
   Layer.provideMerge(EnvironmentAuthPolicy.layer),
 );
 
-const layerStorage = Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.layerCliConfig);
+/** The CLI's auth runtime over `database`, one of the persistence layer's CLI configurations. */
+export const layerRuntimeWith = <E, R>(database: Layer.Layer<SqlClient.SqlClient, E, R>) =>
+  layer.pipe(
+    Layer.provideMerge(ManagedPolicy.layer),
+    Layer.provideMerge(Layer.mergeAll(ServerSecretStore.layer, database)),
+    Layer.provideMerge(ServerEnvironment.layerIdentity),
+  );
 
-export const layerRuntime = layer.pipe(
-  Layer.provideMerge(ManagedPolicy.layer),
-  Layer.provideMerge(layerStorage),
-  Layer.provideMerge(ServerEnvironment.layerIdentity),
-);
+export const layerRuntime = layerRuntimeWith(SqlitePersistence.layerCliConfig);
