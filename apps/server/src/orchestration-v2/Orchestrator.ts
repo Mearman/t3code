@@ -582,9 +582,21 @@ export class OrchestratorV2 extends Context.Service<OrchestratorV2, Orchestrator
   "t3/orchestration-v2/Orchestrator/OrchestratorV2",
 ) {}
 
-/** Run ordinals can skip values: a queued run moves past newer runs when it starts. */
-function nextRunOrdinal(projection: Pick<OrchestrationV2ThreadProjection, "runs">): number {
-  return projection.runs.reduce((max, run) => Math.max(max, run.ordinal), 0) + 1;
+/**
+ * Run ordinals can skip values: a queued run moves past newer runs when it starts. On a thread that shows a Claude Code session, whose terminal turns the session sync writes as runs ordered by their start second, a new run takes at least the current second, so it sorts after every turn that happened before it, even one the sync has not written yet.
+ */
+export function nextRunOrdinal(
+  projection: {
+    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "ordinal">>;
+    readonly providerThreads: ReadonlyArray<Pick<OrchestrationV2ProviderThread, "nativeThreadRef">>;
+  },
+  now: DateTime.Utc,
+): number {
+  const next = projection.runs.reduce((max, run) => Math.max(max, run.ordinal), 0) + 1;
+  const showsClaudeSession = projection.providerThreads.some(
+    (providerThread) => providerThread.nativeThreadRef?.driver === "claudeAgent",
+  );
+  return showsClaudeSession ? Math.max(next, Math.floor(DateTime.toEpochMillis(now) / 1000)) : next;
 }
 
 /**
@@ -2756,7 +2768,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           turnItemTypes: ["user_message", "notification"],
           turnItemRunIds: newerRunIds,
         })).turnItems.length > 0;
-      const ordinal = startedAhead ? nextRunOrdinal(projection) : queuedRun.ordinal;
+      const ordinal = startedAhead
+        ? nextRunOrdinal(projection, yield* DateTime.now)
+        : queuedRun.ordinal;
       const commandId = CommandId.make(`command:system:start-queued:${queuedRun.id}`);
       const rootNodeId = queuedRun.rootNodeId;
       const attemptId = queuedRun.activeAttemptId;
@@ -8230,7 +8244,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       const now = yield* DateTime.now;
-      const ordinal = nextRunOrdinal(projection);
+      const ordinal = nextRunOrdinal(projection, now);
       const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
       const targetProviderThread = freshContext
         ? undefined
@@ -8624,7 +8638,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : "A fresh session can't start while a fork or merge is still being applied.",
       });
     }
-    const ordinal = nextRunOrdinal(projection);
+    const ordinal = nextRunOrdinal(projection, now);
     const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
     const contextBoundary = freshContext ? ordinal : contextBoundaryOrdinal(projection);
     // Handoffs carry the whole conversation, transcript turns included.
