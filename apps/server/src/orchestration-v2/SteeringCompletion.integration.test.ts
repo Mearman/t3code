@@ -1526,6 +1526,8 @@ const declinedSteerTimings = [
   "stop-after-decline",
   "queued-model",
   "two-steers",
+  // Another process holds the session; the steer queues like a declined one, without retries.
+  "held-session",
 ] as const;
 
 it.effect.each(declinedSteerTimings)(
@@ -1544,11 +1546,18 @@ it.effect.each(declinedSteerTimings)(
           Effect.suspend(() => beforeDecline).pipe(
             Effect.andThen(
               Effect.fail(
-                new ProviderAdapter.ProviderAdapterSteerDeclinedError({
-                  driver,
-                  providerThreadId: turn.providerThread.id,
-                  providerTurnId: turn.providerTurnId,
-                }),
+                timing === "held-session"
+                  ? new ProviderAdapter.ProviderAdapterThreadInUseError({
+                      driver,
+                      providerThreadId: turn.providerThread.id,
+                      detail: "Another Claude Code process has this session open.",
+                      cause: "held",
+                    })
+                  : new ProviderAdapter.ProviderAdapterSteerDeclinedError({
+                      driver,
+                      providerThreadId: turn.providerThread.id,
+                      providerTurnId: turn.providerTurnId,
+                    }),
               ),
             ),
           ),

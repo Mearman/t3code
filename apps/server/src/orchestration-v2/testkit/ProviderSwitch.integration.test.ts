@@ -69,6 +69,7 @@ import {
 import * as ProviderReplayHarness from "./ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -143,6 +144,8 @@ function makeTestAdapter(input: {
   // ACP cannot truncate, so its rollback answers with a fresh, empty native session.
   readonly rollback?: "truncates" | "replaces_native_thread";
   readonly beforeForcedNativeThread?: Effect.Effect<void>;
+  /** Native threads another process holds, as the Claude send gate reports them. */
+  readonly heldNativeThreads?: Ref.Ref<ReadonlySet<string>>;
 }): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     instanceId: input.instanceId,
@@ -215,6 +218,25 @@ function makeTestAdapter(input: {
                 // probe, never to the per-thread roster probe.
                 hasPendingBackgroundWork: Ref.get(input.backgroundWork),
                 hasPendingBackgroundWorkForThread: () => Effect.succeed(false),
+              }),
+          ...(input.heldNativeThreads === undefined
+            ? {}
+            : {
+                checkNativeThreadFree: (providerThread: OrchestrationV2ProviderThread) =>
+                  Ref.get(input.heldNativeThreads!).pipe(
+                    Effect.flatMap((held) =>
+                      held.has(providerThread.nativeThreadRef?.nativeId ?? "")
+                        ? Effect.fail(
+                            new ProviderAdapter.ProviderAdapterThreadInUseError({
+                              driver: input.driver,
+                              providerThreadId: providerThread.id,
+                              detail: "Another process has this session open.",
+                              cause: "held",
+                            }),
+                          )
+                        : Effect.void,
+                    ),
+                  ),
               }),
           ensureThread: (threadInput) =>
             Effect.gen(function* () {
@@ -1675,6 +1697,7 @@ describe("orchestration v2 provider switching", () => {
     "other-error",
     "repaired-native",
     "background",
+    "held",
   ] as const)("recovers invalid encrypted Codex history on the next prompt: %s", (scenario) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1684,6 +1707,7 @@ describe("orchestration v2 provider switching", () => {
         const generation = yield* Ref.make(0);
         const rejectedNativeThreads = yield* Ref.make<ReadonlySet<string>>(new Set());
         const pendingBackgroundWork = yield* Ref.make(false);
+        const heldNativeThreads = yield* Ref.make<ReadonlySet<string>>(new Set());
         const code =
           scenario === "raw-error"
             ? "other"
@@ -1702,6 +1726,7 @@ describe("orchestration v2 provider switching", () => {
             rejectedNativeThreads,
             pendingBackgroundWork,
             subagentOnlyBackgroundWork: true,
+            heldNativeThreads,
             failedRunOrdinals: new Set([2]),
             failure: makeProviderFailure({
               code,
@@ -1816,7 +1841,26 @@ describe("orchestration v2 provider switching", () => {
             });
           }
           if (scenario === "background") yield* Ref.set(pendingBackgroundWork, true);
+          if (scenario === "held") {
+            const nativeId = failed.providerThreads[0]!.nativeThreadRef!.nativeId!;
+            yield* Ref.set(heldNativeThreads, new Set([nativeId]));
+          }
           const recovered = yield* dispatch(3, "huh");
+          if (scenario === "held") {
+            // A fresh session would leave the conversation split from the process that holds it.
+            assert.equal(recovered.runs.at(-1)?.status, "failed");
+            assert.equal(yield* Ref.get(generation), 1);
+            assert.lengthOf(yield* Ref.get(capturedTurns), 2);
+            assert.isTrue(
+              recovered.turnItems.some(
+                (item) =>
+                  item.type === "error" &&
+                  item.runId === recovered.runs.at(-1)?.id &&
+                  item.failure.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+              ),
+            );
+            return;
+          }
           if (scenario === "repaired-native") {
             assert.equal(recovered.runs.at(-1)?.status, "completed");
             assert.equal(yield* Ref.get(generation), 1);
@@ -2811,6 +2855,23 @@ describe("orchestration v2 provider switching", () => {
         providerThreadId: ProviderThreadId.make("provider-thread:acp-refused-start"),
         runId: RunId.make("run:acp-refused-start"),
         refusedBeforePrompt: true,
+      }),
+    ],
+    // The Claude send gate refuses a session another process holds before the prompt.
+    [
+      "a Claude session another process holds",
+      new ProviderAdapter.ProviderAdapterTurnStartError({
+        driver: CLAUDE_DRIVER,
+        threadId,
+        providerThreadId: ProviderThreadId.make("provider-thread:held-session"),
+        runId: RunId.make("run:held-session"),
+        refusedBeforePrompt: true,
+        cause: new ProviderAdapter.ProviderAdapterThreadInUseError({
+          driver: CLAUDE_DRIVER,
+          providerThreadId: ProviderThreadId.make("provider-thread:held-session"),
+          detail: "Another Claude Code process has this session open.",
+          cause: "held",
+        }),
       }),
     ],
     // Injected history is text only, so a refusal after injection must not settle the image.
