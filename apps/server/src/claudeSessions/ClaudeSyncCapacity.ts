@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - node:os gives the load average, node:perf_hooks the event loop utilisation and node:fs the free disk the sync yields to.
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePerfHooks from "node:perf_hooks";
 
@@ -48,7 +48,7 @@ const make = Effect.gen(function* () {
     while (yield* busy) yield* Effect.sleep(BUSY_BACKOFF);
   });
 
-  const freeDiskBytes = Effect.tryPromise(() => NodeFS.statfs(stateDir)).pipe(
+  const freeDiskBytes = Effect.tryPromise(() => NodeFSP.statfs(stateDir)).pipe(
     Effect.map((stats) => Number(stats.bavail) * Number(stats.bsize)),
     Effect.orElseSucceed(() => undefined),
   );
