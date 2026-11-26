@@ -1076,6 +1076,18 @@ export const ObservabilitySettings = Schema.Struct({
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
+const ClaudeSessionHydrateRecentDays = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+/** Showing every Claude Code session from the configured Claude homes as a thread. */
+export const ClaudeSessionSyncSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Sessions changed within this many days get their full history at once; older ones on open. */
+  hydrateRecentDays: ClaudeSessionHydrateRecentDays.pipe(
+    Schema.withDecodingDefault(Effect.succeed(7)),
+  ),
+});
+export type ClaudeSessionSyncSettings = typeof ClaudeSessionSyncSettings.Type;
+
 export const SourceControlWritingStyleMode = Schema.Literals([
   "repo_conventions",
   "conventional_commits",
@@ -1626,6 +1638,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  claudeSessionSync: ClaudeSessionSyncSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sourceControlHosts: Schema.Record(Schema.String, SourceControlHostSettings).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -2016,6 +2029,12 @@ export const ServerSettingsPatch = Schema.Struct({
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideInstructions: Schema.optionalKey(TrimmedString),
   pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
+  claudeSessionSync: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      hydrateRecentDays: Schema.optionalKey(ClaudeSessionHydrateRecentDays),
+    }),
+  ),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),
