@@ -915,6 +915,8 @@ describe("auth scope options", () => {
   );
 });
 
+const isDatabaseSchemaBehindError = Schema.is(SqlitePersistence.DatabaseSchemaBehindError);
+
 describe("auth session --require-current-schema", () => {
   const databaseBehindThisBuild = (baseDir: string) =>
     Effect.gen(function* () {
@@ -945,7 +947,7 @@ describe("auth session --require-current-schema", () => {
           "--json",
         ]).pipe(Effect.provide(layerCliRuntime), Effect.flip);
 
-        if (!Schema.is(SqlitePersistence.DatabaseSchemaBehindError)(error)) {
+        if (!isDatabaseSchemaBehindError(error)) {
           return assert.fail(`Expected DatabaseSchemaBehindError, got ${String(error)}`);
         }
         // The desktop app reads the process exit code, which the runtime takes from this field.
