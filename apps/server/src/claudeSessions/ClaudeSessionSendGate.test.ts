@@ -324,10 +324,10 @@ describe("gateHeldClaudeSessionRuntime", () => {
       mcpSignInStart: runtime.mcpSignIn.start(mcp),
       mcpSignInComplete: runtime.mcpSignIn.complete({ ...mcp, callbackUrl: "http://localhost/" }),
       checkNativeThreadFree: runtime.checkNativeThreadFree(thread),
-    } satisfies Record<string, Effect.Effect<unknown, unknown>>;
+    };
   };
   const TURN_STARTS = new Set(["startTurn", "resumeTurn", "compactThread"]);
-  const refusals = (operations: ReturnType<typeof writes>) =>
+  const refusals = (operations: Readonly<Record<string, Effect.Effect<unknown, unknown>>>) =>
     Effect.forEach(Object.entries(operations), ([name, operation]) =>
       Effect.flip(operation).pipe(Effect.map((refusal) => [name, refusal] as const)),
     );
