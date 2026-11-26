@@ -161,12 +161,22 @@ export const makeAttachConfig = Effect.fn("DesktopAttachedServer.makeAttachConfi
 
   const baseDirArgs = ["--base-dir", environment.baseDir, "--require-current-schema"];
 
+  const setLedgerAside = Effect.fn("DesktopAttachedServer.setLedgerAside")(function* () {
+    const aside = `${ledgerPath}.unreadable-${yield* Clock.currentTimeMillis}`;
+    yield* fileSystem.rename(ledgerPath, aside).pipe(Effect.mapError(issueFailed));
+    yield* logAttachedWarning(
+      "the desktop session record was unreadable and was set aside; sessions it named stay live until they expire or are revoked in Settings",
+      { path: aside },
+    );
+    return EMPTY_LEDGER;
+  });
+
   // A missing file is an empty ledger; one that does not decode is set aside, never overwritten.
   const loadLedger = Effect.gen(function* () {
     const loaded = yield* Ref.get(ledgerRef);
     if (Option.isSome(loaded)) return loaded.value;
     const raw = yield* fileSystem.readFileString(ledgerPath).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchTags({
         PlatformError: (error) =>
           error.reason._tag === "NotFound" ? Effect.succeedNone : Effect.fail(issueFailed(error)),
@@ -175,18 +185,7 @@ export const makeAttachConfig = Effect.fn("DesktopAttachedServer.makeAttachConfi
     const ledger = Option.isNone(raw)
       ? EMPTY_LEDGER
       : yield* decodeSessionLedger(raw.value).pipe(
-          Effect.catchTags({
-            SchemaError: () =>
-              Effect.gen(function* () {
-                const aside = `${ledgerPath}.unreadable-${yield* Clock.currentTimeMillis}`;
-                yield* fileSystem.rename(ledgerPath, aside).pipe(Effect.mapError(issueFailed));
-                yield* logAttachedWarning(
-                  "the desktop session record was unreadable and was set aside; sessions it named stay live until they expire or are revoked in Settings",
-                  { path: aside },
-                );
-                return EMPTY_LEDGER;
-              }),
-          }),
+          Effect.catchTags({ SchemaError: () => setLedgerAside() }),
         );
     yield* Ref.set(ledgerRef, Option.some(ledger));
     return ledger;
@@ -237,7 +236,7 @@ export const makeAttachConfig = Effect.fn("DesktopAttachedServer.makeAttachConfi
     runCli(["auth", "session", "list", ...baseDirArgs, "--json"]).pipe(
       Effect.flatMap(({ stdout, exitCode }) =>
         exitCode === 0
-          ? decodeListedSessions(stdout)
+          ? decodeListedSessions(stdout).pipe(Effect.mapError(issueFailed))
           : Effect.fail(issueFailed(`exit ${exitCode}`)),
       ),
       Effect.map((sessions) => sessions.filter((session) => attempts.includes(session.subject))),
@@ -437,7 +436,12 @@ export const makeAttachConfig = Effect.fn("DesktopAttachedServer.makeAttachConfi
     const { issued, check } = outcome.success;
     yield* Ref.set(sessionRef, Option.some(issued));
     yield* Ref.set(retryRef, { failures: 0, notBefore: 0 });
-    yield* revokePrevious(server, issued);
+    yield* revokePrevious(server, issued).pipe(
+      Effect.catchTags({
+        AttachedSessionError: () =>
+          logAttachedWarning("could not read the desktop session record; the next issue retries"),
+      }),
+    );
     // An unanswered check is settled by the next probe, which finds the token cached.
     if (check === "unanswered") return "pending" as const;
     return yield* handOut(issued.token);
