@@ -108,6 +108,7 @@ export interface AttachedServer {
   readonly pid: number;
   readonly ownerId: string;
   readonly serviceManaged: boolean;
+  readonly serverVersion: string;
 }
 
 export type AttachedServerProbe =
@@ -122,14 +123,19 @@ export type AttachedServerProbe =
 export class AttachedSessionError extends Schema.TaggedError<AttachedSessionError>()(
   "AttachedSessionError",
   {
-    reason: Schema.Literals(["owner-unavailable", "issue-failed"]),
+    reason: Schema.Literals(["owner-unavailable", "schema-behind", "issue-failed"]),
     cause: Schema.optionalKey(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return this.reason === "owner-unavailable"
-      ? "No current server owns this T3 home, or its owner changed while a desktop session was issued."
-      : "Could not issue a desktop session on the server owning this T3 home.";
+    switch (this.reason) {
+      case "owner-unavailable":
+        return "No current server owns this T3 home, or its owner changed while a desktop session was issued.";
+      case "schema-behind":
+        return "The server owning this T3 home is older than this app's database, so no desktop session can be issued.";
+      case "issue-failed":
+        return "Could not issue a desktop session on the server owning this T3 home.";
+    }
   }
 }
 
@@ -139,11 +145,16 @@ export interface DesktopBackendAttachConfig {
   readonly probe: Effect.Effect<AttachedServerProbe>;
   /** Set while the run is attached to a server that answers. */
   readonly server: Option.Option<AttachedServer>;
-  /** A bearer session on the attached server, issued on first use and reused while it is valid. */
+  /** A bearer session on the attached server: reused while the server accepts it, else reissued. */
   readonly bearerToken: Effect.Effect<string, AttachedSessionError>;
-  /** Replaces the session once the server rejects it; true when the token changed. */
-  readonly renewRejectedSession: Effect.Effect<boolean>;
+  /**
+   * Makes sure the app holds a session `server` accepts. "renewed" means the token changed;
+   * "pending" that the home changed hands meanwhile; "refused" that none can be issued, for good.
+   */
+  readonly ensureSession: (server: AttachedServer) => Effect.Effect<AttachedSessionState>;
 }
+
+export type AttachedSessionState = "ready" | "renewed" | "pending" | "refused";
 
 export type DesktopBackendRunConfig = DesktopBackendStartConfig | DesktopBackendAttachConfig;
 
@@ -323,6 +334,8 @@ export interface BackendInstanceSpec {
   readonly onShutdown?: () => Effect.Effect<void>;
   readonly onPreflightFailed?: (failure: PreflightFailure) => Effect.Effect<boolean>;
   readonly onStateDirOwned?: () => Effect.Effect<void>;
+  /** An attached run's session was replaced; a renderer still holds the old token. */
+  readonly onSessionRenewed?: () => Effect.Effect<void>;
   /** Fires on each repeated crash or readiness timeout until the backend becomes ready. */
   readonly onStartupFailure?: (failure: BackendStartupFailure) => Effect.Effect<void>;
   readonly onMigrationProgress?: (
@@ -942,7 +955,14 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
       if (probe._tag === "Refused") {
         return { reason: "the T3 home belongs to a server this app cannot use", refused: true };
       }
-      if (probe._tag === "Ready") {
+      const session = probe._tag === "Ready" ? yield* config.ensureSession(probe.server) : null;
+      if (session === "refused") {
+        return {
+          reason: "no desktop session can be issued on the T3 home's server",
+          refused: true,
+        };
+      }
+      if (probe._tag === "Ready" && session !== "pending") {
         const server = probe.server;
         // The renderer read the old address at load; the next run hands out the new one.
         if (
@@ -970,9 +990,13 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
             },
           ] as const;
         });
+        const wasAttached = Option.isSome(attached);
         attached = Option.some(server);
         if (becameReady) {
           yield* spec.onReady?.(server.httpBaseUrl, server.pid) ?? Effect.void;
+        }
+        if (wasAttached && session === "renewed") {
+          yield* spec.onSessionRenewed?.() ?? Effect.void;
         }
       } else {
         const wasReady = yield* SubscriptionRef.modify(state, (latest) =>

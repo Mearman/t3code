@@ -43,8 +43,6 @@ import { m } from "../i18n/messages.ts";
 const { logInfo: logBackendPoolInfo, logWarning: logBackendPoolWarning } =
   DesktopObservability.makeComponentLogger("desktop-backend-pool");
 
-const ATTACHED_SESSION_CHECK_INTERVAL = Duration.minutes(5);
-
 const makeRecovery = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const supported =
@@ -308,8 +306,20 @@ export const layer = Layer.effect(
         onPreflightFailed: handlePrimaryPreflightFailure,
         // Runs outside the instance's lock: waiting on the owner must not hold up a quit.
         onStateDirOwned: () =>
-          DesktopHomeOwner.explainHomeRefusal().pipe(
-            Effect.provideContext(homeOwnerContext),
+          attachConfig.refusal.pipe(
+            Effect.flatMap((refusal) =>
+              Option.match(refusal, {
+                onSome: (unavailable) =>
+                  Effect.succeed<DesktopHomeOwner.HomeOwnerState>({
+                    _tag: "Unavailable",
+                    unavailable,
+                  }),
+                onNone: () =>
+                  DesktopHomeOwner.explainHomeRefusal().pipe(
+                    Effect.provideContext(homeOwnerContext),
+                  ),
+              }),
+            ),
             Effect.flatMap((state) =>
               state._tag === "Unavailable"
                 ? electronDialog
@@ -325,20 +335,9 @@ export const layer = Layer.effect(
             Effect.forkIn(layerScope),
             Effect.asVoid,
           ),
+        // The renderer caches its token until it fails, so it loads again to take the new one.
+        onSessionRenewed: () => desktopWindow.runMainContentsCommand("reload"),
       });
-
-    // A server may reject the attached session (expiry, or revoked elsewhere); the renderer holds
-    // the old token until it reloads.
-    yield* Effect.gen(function* () {
-      const config = yield* primary.currentConfig;
-      if (Option.isNone(config) || config.value._tag !== "Attach") return;
-      if (yield* config.value.renewRejectedSession) {
-        yield* desktopWindow.runMainContentsCommand("reload");
-      }
-    }).pipe(
-      Effect.repeat(Schedule.spaced(ATTACHED_SESSION_CHECK_INTERVAL)),
-      Effect.forkIn(layerScope),
-    );
 
     const instancesRef = yield* SynchronizedRef.make<
       ReadonlyMap<BackendInstanceId, RegisteredInstance>

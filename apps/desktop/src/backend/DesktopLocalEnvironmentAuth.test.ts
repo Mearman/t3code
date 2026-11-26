@@ -24,6 +24,7 @@ import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopLocalEnvironmentAuth from "./DesktopLocalEnvironmentAuth.ts";
 
 const config = {
+  _tag: "Spawn",
   executablePath: "/electron",
   entryPath: "/server/bin.mjs",
   cwd: "/server",
@@ -43,6 +44,61 @@ const config = {
 };
 
 describe("DesktopLocalEnvironmentAuth", () => {
+  it.effect("hands out a spawned backend's cached token while it restarts", () =>
+    Effect.gen(function* () {
+      const restarting = yield* Ref.make(false);
+      const layerPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
+        list: Effect.succeed([
+          {
+            id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+            label: Effect.succeed("Windows"),
+            currentConfig: Effect.succeedSome(config),
+            // A restarting backend is not ready; a cached token must not wait for it.
+            waitForReady: () =>
+              Ref.get(restarting).pipe(
+                Effect.flatMap((value) => (value ? Effect.never : Effect.succeed(true))),
+              ),
+          },
+        ]),
+      } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]);
+      const tokens = yield* Effect.gen(function* () {
+        const auth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth;
+        const first = yield* auth.getBearerToken;
+        yield* Ref.set(restarting, true);
+        return [first, yield* auth.getBearerToken];
+      }).pipe(
+        Effect.provide(
+          DesktopLocalEnvironmentAuth.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                layerPool,
+                Layer.succeed(
+                  HttpClient.HttpClient,
+                  HttpClient.make((request) =>
+                    Effect.succeed(
+                      HttpClientResponse.fromWeb(
+                        request,
+                        Response.json({
+                          access_token: "desktop-bearer-token",
+                          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+                          token_type: "Bearer",
+                          expires_in: 3600,
+                          scope: "orchestration:read",
+                        }),
+                      ),
+                    ),
+                  ),
+                ),
+                NodeCrypto.layerMac,
+              ),
+            ),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(tokens, ["desktop-bearer-token", "desktop-bearer-token"]);
+    }),
+  );
+
   it.effect("hands out the attached server's session without a desktop token exchange", () =>
     Effect.gen(function* () {
       const issued = yield* Ref.make(0);
@@ -53,7 +109,7 @@ describe("DesktopLocalEnvironmentAuth", () => {
         bearerToken: Ref.updateAndGet(issued, (count) => count + 1).pipe(
           Effect.map((count) => `attached-token-${count}`),
         ),
-        renewRejectedSession: Effect.succeed(false),
+        ensureSession: () => Effect.succeed("ready"),
       };
       const layerPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
         list: Effect.succeed([

@@ -134,5 +134,6 @@
   "aa448fa4491a5d4f": "The T3 Code server using this T3 home (PID {pid}) listens only on {origin}, so T3 Code cannot connect to it on this machine. Restart it without a specific host, then reopen T3 Code.",
   "c5079de7e1299c60": "Another environment answered on port {port}, where the T3 Code server using this T3 home (PID {pid}) should be. Stop whatever else listens on that port, then reopen T3 Code.",
   "32112d61c684d3a7": "The T3 Code server using this T3 home (PID {pid}, version {version}) is too old for this app. Update it with `t3 update`, passing `--base-dir` with this T3 home, then reopen T3 Code.",
-  "c008ff68ac1804b7": "The T3 Code server using this T3 home (PID {pid}, version {version}) is newer than this app. Update T3 Code, then reopen it."
+  "c008ff68ac1804b7": "The T3 Code server using this T3 home (PID {pid}, version {version}) is newer than this app. Update T3 Code, then reopen it.",
+  "57dfe53533b8a2a0": "T3 Code could not sign in to the T3 Code server using this T3 home (PID {pid}, version {version}). If that version differs from this app's, update whichever is older, then reopen T3 Code."
 }

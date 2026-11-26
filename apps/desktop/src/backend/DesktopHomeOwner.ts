@@ -121,9 +121,10 @@ export type HomeUnavailable =
         | "different-environment";
       readonly owner: HomeOwner;
     }
+  /** "session-failed": the server answers, but the bundled CLI could not issue a session on it. */
   | {
-      readonly reason: "older-server" | "newer-server";
-      readonly owner: HomeOwner;
+      readonly reason: "older-server" | "newer-server" | "session-failed";
+      readonly pid: number;
       readonly version: string;
     };
 
@@ -205,7 +206,7 @@ export const resolveHomeOwner = Effect.fn("DesktopHomeOwner.resolveHomeOwner")(
         _tag: "Unavailable",
         unavailable: {
           reason: protocol < ORCHESTRATION_PROTOCOL_VERSION ? "older-server" : "newer-server",
-          owner,
+          pid: owner.pid,
           version: descriptor.value.serverVersion,
         },
       };
@@ -217,6 +218,7 @@ export const resolveHomeOwner = Effect.fn("DesktopHomeOwner.resolveHomeOwner")(
         pid: owner.pid,
         ownerId,
         serviceManaged: owner.serviceManaged === true,
+        serverVersion: descriptor.value.serverVersion,
       },
     };
   },
@@ -332,14 +334,21 @@ export const homeUnavailableMessage = (unavailable: HomeUnavailable): string => 
         msg(
           "The T3 Code server using this T3 home (PID {pid}, version {version}) is too old for this app. Update it with `t3 update`, passing `--base-dir` with this T3 home, then reopen T3 Code.",
         ),
-        { pid: String(unavailable.owner.pid), version: unavailable.version },
+        { pid: String(unavailable.pid), version: unavailable.version },
       );
     case "newer-server":
       return m(
         msg(
           "The T3 Code server using this T3 home (PID {pid}, version {version}) is newer than this app. Update T3 Code, then reopen it.",
         ),
-        { pid: String(unavailable.owner.pid), version: unavailable.version },
+        { pid: String(unavailable.pid), version: unavailable.version },
+      );
+    case "session-failed":
+      return m(
+        msg(
+          "T3 Code could not sign in to the T3 Code server using this T3 home (PID {pid}, version {version}). If that version differs from this app's, update whichever is older, then reopen T3 Code.",
+        ),
+        { pid: String(unavailable.pid), version: unavailable.version },
       );
   }
 };

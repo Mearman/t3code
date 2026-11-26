@@ -134,5 +134,6 @@
   "aa448fa4491a5d4f": "Le serveur T3 Code qui utilise ce home T3 (PID {pid}) n’écoute que sur {origin}, T3 Code ne peut donc pas s’y connecter sur cette machine. Redémarrez-le sans hôte particulier, puis rouvrez T3 Code.",
   "c5079de7e1299c60": "Un autre environnement a répondu sur le port {port}, où devrait se trouver le serveur T3 Code qui utilise ce home T3 (PID {pid}). Arrêtez ce qui écoute d’autre sur ce port, puis rouvrez T3 Code.",
   "32112d61c684d3a7": "Le serveur T3 Code qui utilise ce home T3 (PID {pid}, version {version}) est trop ancien pour cette application. Mettez-le à jour avec `t3 update` en passant `--base-dir` avec ce home T3, puis rouvrez T3 Code.",
-  "c008ff68ac1804b7": "Le serveur T3 Code qui utilise ce home T3 (PID {pid}, version {version}) est plus récent que cette application. Mettez à jour T3 Code, puis rouvrez-le."
+  "c008ff68ac1804b7": "Le serveur T3 Code qui utilise ce home T3 (PID {pid}, version {version}) est plus récent que cette application. Mettez à jour T3 Code, puis rouvrez-le.",
+  "57dfe53533b8a2a0": "T3 Code n’a pas pu se connecter au serveur T3 Code qui utilise ce home T3 (PID {pid}, version {version}). Si cette version diffère de celle de cette application, mettez à jour la plus ancienne des deux, puis rouvrez T3 Code."
 }

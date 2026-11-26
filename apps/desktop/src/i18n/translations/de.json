@@ -134,5 +134,6 @@
   "aa448fa4491a5d4f": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}), lauscht nur auf {origin}, daher kann T3 Code sich auf diesem Rechner nicht mit ihm verbinden. Starte ihn ohne bestimmten Host neu und öffne T3 Code dann erneut.",
   "c5079de7e1299c60": "Auf Port {port}, wo der T3-Code-Server dieses T3-Homes (PID {pid}) sein sollte, hat eine andere Umgebung geantwortet. Stoppe, was sonst auf diesem Port lauscht, und öffne T3 Code dann erneut.",
   "32112d61c684d3a7": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}, Version {version}), ist für diese App zu alt. Aktualisiere ihn mit `t3 update` und übergib dabei `--base-dir` mit diesem T3-Home. Öffne T3 Code dann erneut.",
-  "c008ff68ac1804b7": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}, Version {version}), ist neuer als diese App. Aktualisiere T3 Code und öffne es dann erneut."
+  "c008ff68ac1804b7": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}, Version {version}), ist neuer als diese App. Aktualisiere T3 Code und öffne es dann erneut.",
+  "57dfe53533b8a2a0": "T3 Code konnte sich nicht beim T3-Code-Server anmelden, der dieses T3-Home verwendet (PID {pid}, Version {version}). Wenn diese Version von der dieser App abweicht, aktualisiere die ältere der beiden und öffne T3 Code dann erneut."
 }

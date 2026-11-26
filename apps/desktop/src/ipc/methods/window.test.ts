@@ -107,9 +107,10 @@ const attachedPrimaryConfig: DesktopBackendManager.DesktopBackendAttachConfig = 
     pid: 4321,
     ownerId: "owner-1",
     serviceManaged: true,
+    serverVersion: "1.2.3",
   }),
   bearerToken: Effect.die("the bootstrap must not issue a session"),
-  renewRejectedSession: Effect.succeed(false),
+  ensureSession: () => Effect.die("the bootstrap must not issue a session"),
 };
 
 describe("getLocalEnvironmentBootstraps", () => {
