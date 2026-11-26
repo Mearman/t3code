@@ -154,15 +154,7 @@ const encodeLineHashes = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Array(Schema.Tuple([Schema.String, Schema.Number]))),
 );
 
-const toRepositoryError = (operation: string) => (cause: unknown) =>
-  Schema.isSchemaError(cause)
-    ? PersistenceDecodeError.fromSchemaError(operation, cause)
-    : new PersistenceSqlError({ operation, cause });
-
-const make = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-
-  const selectRows = (where: Statement.Fragment) => sql`
+const selectSyncRows = (sql: SqlClient.SqlClient, where: Statement.Fragment) => sql`
       SELECT
         store_key AS "storeKey",
         session_id AS "sessionId",
@@ -180,6 +172,35 @@ const make = Effect.gen(function* () {
       FROM fork_claude_session_sync_state
       WHERE ${where}
   `;
+
+/**
+ * The newest session in these stores that has only an entry and no run in flight, as `nextEntryToHydrate` reads it; exported so a test can check it is answered from the hydration index.
+ */
+export const nextEntryToHydrateQuery = (
+  sql: SqlClient.SqlClient,
+  storeKeys: ReadonlyArray<string>,
+) =>
+  selectSyncRows(
+    sql,
+    // A thread with a run in flight is read once the run settles, so the fill passes it by.
+    sql`hydration_state = 'entry' AND store_key IN ${sql.in(storeKeys)}
+      AND NOT EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_runs AS run
+        WHERE run.thread_id = fork_claude_session_sync_state.thread_id
+          AND run.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+      )
+      ORDER BY file_mtime_ms DESC LIMIT 1`,
+  );
+
+const toRepositoryError = (operation: string) => (cause: unknown) =>
+  Schema.isSchemaError(cause)
+    ? PersistenceDecodeError.fromSchemaError(operation, cause)
+    : new PersistenceSqlError({ operation, cause });
+
+const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  const selectRows = (where: Statement.Fragment) => selectSyncRows(sql, where);
 
   const getRow = SqlSchema.findOneOption({
     Request: ClaudeSessionSyncKey,
@@ -210,17 +231,7 @@ const make = Effect.gen(function* () {
   const nextEntryRow = SqlSchema.findOneOption({
     Request: Schema.Struct({ storeKeys: Schema.Array(Schema.String) }),
     Result: ClaudeSessionSyncState,
-    execute: ({ storeKeys }) =>
-      selectRows(
-        // A thread with a run in flight is read once the run settles, so the fill passes it by.
-        sql`hydration_state = 'entry' AND store_key IN ${sql.in(storeKeys)}
-          AND NOT EXISTS (
-            SELECT 1 FROM orchestration_v2_projection_runs AS run
-            WHERE run.thread_id = fork_claude_session_sync_state.thread_id
-              AND run.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
-          )
-          ORDER BY file_mtime_ms DESC LIMIT 1`,
-      ),
+    execute: ({ storeKeys }) => nextEntryToHydrateQuery(sql, storeKeys),
   });
 
   const upsertRow = SqlSchema.void({

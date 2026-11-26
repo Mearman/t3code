@@ -222,11 +222,9 @@ describe("ClaudeSessionSyncStateRepository", () => {
         "failed",
       );
 
+      // The repository's own statement, so a change that stops it using the index fails here.
       const plan = yield* sql<{ readonly detail: string }>`
-        EXPLAIN QUERY PLAN
-        SELECT session_id FROM fork_claude_session_sync_state
-        WHERE hydration_state = 'entry' AND store_key IN (${key.storeKey})
-        ORDER BY file_mtime_ms DESC LIMIT 1
+        EXPLAIN QUERY PLAN ${ClaudeSessionSyncState.nextEntryToHydrateQuery(sql, [key.storeKey])}
       `;
       assert.isTrue(
         plan.some((detail) =>
