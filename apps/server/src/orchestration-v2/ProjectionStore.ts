@@ -1265,6 +1265,7 @@ export type AgentAwarenessThread = ProjectThreadAwarenessV2Input["thread"] &
     | "pendingGuestMessageCount"
     | "activeRunId"
     | "latestRunId"
+    | "latestRunNativeOrigin"
     | "hasActionableProposedPlan"
   >;
 
@@ -1281,6 +1282,7 @@ type ShellThreadRow = {
   readonly latest_run_completed_at: string | null;
   readonly latest_run_stop_requested: number;
   readonly latest_run_background_wake: number;
+  readonly latest_run_native_origin: number;
   readonly active_run_id: string | null;
   readonly active_run_status: string | null;
   readonly activity_run_status: string | null;
@@ -1888,8 +1890,8 @@ export function threadShellFromProjection(
         (left, right) =>
           DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
       )[0] ?? null;
-  // T3 Code's own idle compactions (unless they fail) and runs read back from a provider transcript
-  // stay out of the shell, so thread lists, notifications and the relay present T3's last turn.
+  // T3 Code's own idle compactions stay out of the shell unless they fail, so thread lists,
+  // notifications and the relay keep presenting the user's last turn.
   const runs = projection.runs.filter((run) => !isSilentRunForShell(run, projection));
   const latestRun =
     usageLimitRunPresentedAsLatest(
@@ -2002,14 +2004,18 @@ export function threadShellFromProjection(
       ),
     latestRunBackgroundWake:
       latestRun != null && isBackgroundWakeRunForShell(latestRun, projection),
+    ...(latestRun != null && isNativeOriginRun(latestRun) ? { latestRunNativeOrigin: true } : {}),
     activeRunId: activeRun?.id ?? null,
     blockedOnThreadWait: deriveBlockedOnThreadWait({ activeRun, turnItems: projection.turnItems }),
     activityRunStatus: activityRun?.status ?? null,
     activityRunStartedAt:
       activityRun === null ? null : orchestrationV2RunWorkStartedAt(activityRun),
     status: latestRun?.status ?? "idle",
+    // A transcript run's failure is not one T3 can recover from, so it offers no limit recovery.
     ...threadErrorSummary(
-      latestRootProviderFailure(latestRun, projection.turnItems),
+      latestRun != null && isNativeOriginRun(latestRun)
+        ? null
+        : latestRootProviderFailure(latestRun, projection.turnItems),
       providerSession?.lastError ?? null,
     ),
     pendingRuntimeRequest,
@@ -2087,7 +2093,6 @@ function isSilentRunForShell(
   run: OrchestrationV2ThreadProjection["runs"][number],
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems">,
 ): boolean {
-  if (isNativeOriginRun(run)) return true;
   return (
     run.status !== "failed" &&
     projection.messages.some(
@@ -2141,6 +2146,7 @@ type ShellThreadState = {
   readonly latestRunCompletedAt: DateTime.Utc | null;
   readonly latestRunStopRequested: boolean;
   readonly latestRunBackgroundWake: boolean;
+  readonly latestRunNativeOrigin: boolean;
   readonly activeRunId: RunId | null;
   readonly blockedOnThreadWait: boolean;
   readonly activityRunStatus: ShellActivityRunStatus | null;
@@ -2319,6 +2325,7 @@ function shellFromState(input: {
     latestRunCompletedAt: input.state.latestRunCompletedAt,
     latestRunStopRequested: input.state.latestRunStopRequested,
     latestRunBackgroundWake: input.state.latestRunBackgroundWake,
+    ...(input.state.latestRunNativeOrigin ? { latestRunNativeOrigin: true } : {}),
     activeRunId: input.state.activeRunId,
     blockedOnThreadWait: input.state.blockedOnThreadWait,
     activityRunStatus: input.state.activityRunStatus,
@@ -5021,6 +5028,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ),
     );
 
+    // Mirrors usageLimitRunPresentedAsLatest: a transcript run after a limited run shows the session
+    // went on outside T3. Walks the thread's ordinal index from the run and stops at the first hit.
+    const transcriptRunAfter = (alias: string) => {
+      const run = sql.literal(alias);
+      return sql`EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_runs later
+        WHERE later.thread_id = ${run}.thread_id AND later.ordinal > ${run}.ordinal
+          AND json_extract(later.payload_json, '$.nativeOrigin') IS NOT NULL
+      )`;
+    };
+
     const getLimitRecoveryCandidates = Effect.fn("ProjectionStore.getLimitRecoveryCandidates")(
       function* (options: Parameters<ProjectionStoreV2Shape["getLimitRecoveryCandidates"]>[0]) {
         const rows = yield* sql<{
@@ -5048,6 +5066,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT latest.run_id FROM orchestration_v2_projection_runs latest
             WHERE latest.thread_id = t.thread_id
               AND latest.status <> 'queued'
+              AND json_extract(latest.payload_json, '$.nativeOrigin') IS NULL
               AND NOT (
                 latest.status = 'cancelled'
                 AND json_extract(latest.payload_json, '$.startedAt') IS NULL
@@ -5057,8 +5076,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               latest.ordinal DESC, latest.run_id DESC
             LIMIT 1
           ) AND r.status = 'failed'
-            -- A transcript run is the session going on outside T3, so there is nothing to resume.
-            AND json_extract(r.payload_json, '$.nativeOrigin') IS NULL
+            AND NOT ${transcriptRunAfter("r")}
           INNER JOIN orchestration_v2_projection_turn_items item ON item.turn_item_id = (
             SELECT error.turn_item_id FROM orchestration_v2_projection_turn_items error
             WHERE error.thread_id = t.thread_id AND error.run_id = r.run_id
@@ -8415,8 +8433,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const isSilentShellRun = (alias: string) => {
       const run = sql.literal(alias);
       return sql`(
-        json_extract(${run}.payload_json, '$.nativeOrigin') IS NOT NULL
-        OR (${run}.status <> 'failed'
+        ${run}.status <> 'failed'
         AND EXISTS (
           SELECT 1 FROM orchestration_v2_projection_messages prompt
           WHERE prompt.message_id = json_extract(${run}.payload_json, '$.userMessageId')
@@ -8426,7 +8443,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           WHERE compaction.thread_id = ${run}.thread_id AND compaction.run_id = ${run}.run_id
             AND compaction.type = 'compaction'
             AND compaction.status = 'failed'
-        ))
+        )
       )`;
     };
     // The newest run not held or outlived before it started, matching latestUnheldRun.
@@ -8518,6 +8535,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   AND stop_request.type = 'run_interrupt_request'
               ) AS latest_run_stop_requested,
               ${isBackgroundWakeShellRun("presented")} AS latest_run_background_wake,
+              json_extract(presented.payload_json, '$.nativeOrigin') IS NOT NULL
+                AS latest_run_native_origin,
               active.run_id AS active_run_id,
               active.status AS active_run_status,
               (
@@ -8675,6 +8694,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 candidate.ordinal DESC, candidate.run_id DESC
               LIMIT 1
             ) AND blocked.status = 'failed'
+              AND NOT ${transcriptRunAfter("blocked")}
             WHERE ${includeDeleted ? sql`1 = 1` : sql`t.deleted_at IS NULL`}${
               listedOnly
                 ? sql` AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
@@ -9240,6 +9260,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             : DateTime.makeUnsafe(row.latest_run_completed_at);
         let latestRunStopRequested = row.latest_run_stop_requested === 1;
         let latestRunBackgroundWake = row.latest_run_background_wake === 1;
+        let latestRunNativeOrigin = row.latest_run_native_origin === 1;
         if (row.blocking_run_id !== null && row.blocking_failure_payload_json !== null) {
           const blockingFailure = yield* decodeTurnItemPayload(
             row.blocking_failure_payload_json,
@@ -9254,6 +9275,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             latestRunId = RunId.make(row.blocking_run_id);
             latestRunStopRequested = row.blocking_run_stop_requested === 1;
             latestRunBackgroundWake = row.blocking_run_background_wake === 1;
+            latestRunNativeOrigin = false;
             latestRunStatus = "failed";
             latestRunRequestedAt =
               row.blocking_run_requested_at === null
@@ -9295,6 +9317,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           latestRunCompletedAt,
           latestRunStopRequested,
           latestRunBackgroundWake,
+          latestRunNativeOrigin,
           activeRunId: row.active_run_id === null ? null : RunId.make(row.active_run_id),
           blockedOnThreadWait: deriveBlockedOnThreadWait({
             activeRun:
@@ -9315,7 +9338,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? row.activity_run_status
               : null,
           ...threadErrorSummary(
-            terminalFailureItem?.type === "error" ? terminalFailureItem.failure : null,
+            terminalFailureItem?.type === "error" && !latestRunNativeOrigin
+              ? terminalFailureItem.failure
+              : null,
             row.last_error,
           ),
           pendingRuntimeRequest,
@@ -9582,6 +9607,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               latestRunCompletedAt: state.latestRunCompletedAt,
               latestRunStopRequested: state.latestRunStopRequested,
               latestRunBackgroundWake: state.latestRunBackgroundWake,
+              ...(state.latestRunNativeOrigin ? { latestRunNativeOrigin: true } : {}),
               pendingRuntimeRequest: state.pendingRuntimeRequest,
               pendingBackgroundTasks: state.pendingBackgroundTasks,
             })),

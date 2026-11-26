@@ -1207,7 +1207,7 @@ describe("AgentAwarenessRelay", () => {
     const store = yield* ProjectionStore.ProjectionStoreV2;
     const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
     const pulls = yield* Queue.unbounded<void>();
-    const { relay, publications } = yield* makeTestRelay({
+    const { relay, publications, shellReads } = yield* makeTestRelay({
       readShell: (threadId) => store.getThreadShell(threadId).pipe(Effect.orDie),
       domainEvents: Stream.fromEffectRepeat(
         Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(events))),
@@ -1239,12 +1239,12 @@ describe("AgentAwarenessRelay", () => {
       checkpointId: null,
       contextHandoffId: null,
     });
-    const transcriptRun = (id: string, ordinal: number) => ({
+    const transcriptRun = (id: string, ordinal: number): OrchestrationV2Run => ({
       ...run(id, ordinal),
-      status: "interrupted" as const,
+      status: "completed",
       completedAt: now,
       nativeOrigin: {
-        kind: "claude_transcript" as const,
+        kind: "claude_transcript",
         nativeSessionId: "session-1",
         promptUuid: `prompt:${id}`,
       },
@@ -1293,13 +1293,17 @@ describe("AgentAwarenessRelay", () => {
         deletedAt: null,
       },
     });
-    return { relay, deliver, publications, run, transcriptRun, runEvent, now };
+    return { relay, deliver, publications, shellReads, run, transcriptRun, runEvent, now };
   });
 
   it.effect("publishes nothing for a thread whose only runs came from a transcript", () =>
     Effect.gen(function* () {
-      const { relay, deliver, publications, transcriptRun, runEvent } = yield* transcriptHarness();
+      const { relay, deliver, publications, shellReads, transcriptRun, runEvent } =
+        yield* transcriptHarness();
+      const readsBefore = shellReads.length;
       yield* deliver(runEvent("run.created", transcriptRun("run:transcript-only", 1)));
+      // Its run events are filtered before any read; the read guard is not what keeps this quiet.
+      assert.equal(shellReads.length, readsBefore);
       yield* TestClock.adjust("5 seconds");
       yield* relay.drain;
 
@@ -1317,10 +1321,26 @@ describe("AgentAwarenessRelay", () => {
       const appRun = run("run:app", 1);
       yield* deliver(runEvent("run.created", appRun));
       yield* deliver(runEvent("run.updated", { ...appRun, status: "completed", completedAt: now }));
-      yield* deliver(runEvent("run.created", transcriptRun("run:transcript", 2)));
+      // The session goes on outside T3 and fails there while T3's completion is held.
+      yield* deliver(
+        runEvent("run.created", { ...transcriptRun("run:transcript", 2), status: "failed" }),
+      );
+      yield* relay.publishThread(THREAD_ID);
       yield* TestClock.adjust("5 seconds");
       yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", "completed"],
+      );
 
+      // With the card live and nothing held, a later transcript ending still alerts nothing.
+      yield* deliver(
+        runEvent("run.created", { ...transcriptRun("run:transcript-2", 3), status: "failed" }),
+      );
+      // Its items' events still publish the thread; this stands in for one.
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
       assert.deepEqual(
         publications.map((publication) => publication.state?.phase ?? null),
         ["running", "completed"],

@@ -886,6 +886,18 @@ export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 export const isNativeOriginRun = (run: Pick<OrchestrationV2Run, "nativeOrigin">): boolean =>
   run.nativeOrigin !== undefined;
 
+/**
+ * Whether a run read back from a provider transcript stands after run ordinal `appRunOrdinal`. T3
+ * has no snapshot of what such a turn changed, so a rewind past it can rewind only the conversation.
+ */
+export const hasTranscriptRunAfter = (
+  runs: ReadonlyArray<Pick<OrchestrationV2Run, "nativeOrigin" | "ordinal" | "status">>,
+  appRunOrdinal: number,
+): boolean =>
+  runs.some(
+    (run) => run.ordinal > appRunOrdinal && run.status !== "rolled_back" && isNativeOriginRun(run),
+  );
+
 export const OrchestrationV2RunOutputSubmitted = Schema.Struct({
   runId: RunId,
   output: OrchestrationV2RunOutput,
@@ -2463,6 +2475,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   latestRunStopRequested: Schema.optional(Schema.Boolean),
   /** The latest run answers a background-work progress wake, like a Monitor line, not a terminal one. Absent from older servers. */
   latestRunBackgroundWake: Schema.optional(Schema.Boolean),
+  /** The latest run was read back from a provider transcript: shown, but nothing alerts on it. Absent otherwise and from older servers. */
+  latestRunNativeOrigin: Schema.optional(Schema.Literal(true)),
   activeRunId: Schema.NullOr(RunId),
   activityRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   activityRunStatus: Schema.optional(

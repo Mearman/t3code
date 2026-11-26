@@ -89,7 +89,8 @@ function shouldPublishAgentAwarenessEvent(
   ) {
     return false;
   }
-  // A run read back from a provider transcript ended outside T3; the shell leaves it out too.
+  // A transcript run's own events publish nothing; its items' events still reach the publish,
+  // where the shell's latestRunNativeOrigin keeps that run's ending from alerting.
   if (
     (event.type === "run.created" || event.type === "run.updated") &&
     typeof event.payload === "object" &&
@@ -488,8 +489,9 @@ export const make = Effect.gen(function* () {
 
   // Confirm through the same worker so tombstones cannot race live updates; recovery clears the deadline.
   const publishConfirmDeadlines = new Map<ThreadId, number>();
-  // Threads whose confirmation holds a completion, so a thread that settles during the hold still alerts.
-  const heldCompletions = new Set<ThreadId>();
+  // Threads whose confirmation holds a completion, and that completion, so a thread that settles
+  // or whose transcript moves on during the hold still alerts it.
+  const heldCompletions = new Map<ThreadId, RelayAgentActivityState>();
   let schedulePublishConfirm: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
   const publishRetries = new Map<
     ThreadId,
@@ -607,12 +609,24 @@ export const make = Effect.gen(function* () {
     const project = Option.isSome(thread)
       ? yield* projects.getById(thread.value.projectId)
       : Option.none<Project>();
-    const snapshot = resolveAgentAwarenessRelayPublishSnapshot({
+    const projected = resolveAgentAwarenessRelayPublishSnapshot({
       environmentId,
       thread,
       project,
       pendingSubagentRequest: yield* currentSubagentRequestFor(threadId),
     });
+    // A run read back from a provider transcript ended outside T3, so its ending is never news. A
+    // completion T3 holds for confirmation keeps its alert; otherwise the card stays as it was.
+    const externalEnd =
+      Option.isSome(thread) &&
+      thread.value.latestRunNativeOrigin === true &&
+      (projected.state?.phase === "completed" || projected.state?.phase === "failed");
+    const heldCompletion = heldCompletions.get(threadId);
+    if (externalEnd && heldCompletion === undefined) return;
+    const snapshot =
+      externalEnd && heldCompletion !== undefined
+        ? { ...projected, state: heldCompletion }
+        : projected;
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state, snapshot.subagentWait);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
@@ -621,12 +635,12 @@ export const make = Effect.gen(function* () {
     ) {
       if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
     }
-    // A thread T3 never ran had no card to clear; transcript backfill creates many of them.
+    // A thread with no card that T3 never ran, or whose latest run was outside T3, has nothing to
+    // clear; transcript backfill creates many of them.
     if (
       snapshot.state === null &&
       Option.isSome(thread) &&
-      thread.value.status === "idle" &&
-      thread.value.latestRunId === null &&
+      (thread.value.latestRunId === null || thread.value.latestRunNativeOrigin === true) &&
       !hasLivePublishedState(publishedStateByThread, threadId)
     ) {
       return;
@@ -652,7 +666,7 @@ export const make = Effect.gen(function* () {
     // alerts on every move into completed.
     const requiresConfirmation = snapshot.state === null || snapshot.state?.phase === "completed";
     if (requiresConfirmation) {
-      if (snapshot.state?.phase === "completed") heldCompletions.add(threadId);
+      if (snapshot.state?.phase === "completed") heldCompletions.set(threadId, snapshot.state);
       const nowMs = (yield* DateTime.now).epochMilliseconds;
       const deadline = publishConfirmDeadlines.get(threadId);
       if (deadline === undefined) {
