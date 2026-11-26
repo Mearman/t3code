@@ -75,7 +75,7 @@ export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(functi
       ? first
       : candidatesFor(yield* readClaudeSessionRegistry(input.sessionsDir), input.sessionId);
   // A pid in either read is T3 Code's: one spawned meanwhile, or one that exited since.
-  const ownRootPids = [...new Set([...spawned, ...(yield* input.ownRootPids)])];
+  const ownRootPids = yield* input.ownRootPids;
   const holder = externalClaudeSessionHolders({
     entries,
     entryPids,
