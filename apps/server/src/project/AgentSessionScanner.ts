@@ -321,7 +321,7 @@ function isTextContentBlock(block: typeof TranscriptContentBlock.Type): boolean 
   return block.type === "text" || block.type === "input_text" || block.type === "output_text";
 }
 
-function extractText(
+export function extractText(
   content: string | ReadonlyArray<typeof TranscriptContentBlock.Type> | undefined,
 ): string {
   if (typeof content === "string") return content.trim();
@@ -466,7 +466,10 @@ function claudeCommand(text: string): { readonly text: string; readonly titleTex
 }
 
 /** What a Claude user turn shows the user typed, and the part of it that may name the thread. */
-function claudeUserText(text: string): { readonly text: string; readonly titleText: string } {
+export function claudeUserText(text: string): {
+  readonly text: string;
+  readonly titleText: string;
+} {
   const outputEnd = claudeUiOutputEnd(text);
   if (
     outputEnd === text.length ||
@@ -493,7 +496,7 @@ function claudeVisibleText(record: DecodedTranscriptRecord) {
 }
 
 /** Saved titles can be the raw markup of a user turn, such as the command that opened the session. */
-function claudeTitle(title: string | undefined): string | undefined {
+export function claudeTitle(title: string | undefined): string | undefined {
   const trimmed = title?.trim();
   if (!trimmed) return undefined;
   return claudeUserText(trimmed).text === trimmed ? trimmed : undefined;
@@ -503,7 +506,7 @@ function claudeTitle(title: string | undefined): string | undefined {
 // envelope; title them after the prompt inside it.
 const WAKE_ENVELOPE = /^\s*<wake(?:\s[^>]*)?>([\s\S]*?)(?:<\/wake>|$)/;
 
-function deriveTitle(source: AgentSessionSource, text: string): string | undefined {
+export function deriveTitle(source: AgentSessionSource, text: string): string | undefined {
   const request = (source === "codex" ? text.replace(CODEX_TITLE_PREAMBLE, "") : text).replace(
     WAKE_ENVELOPE,
     "$1",

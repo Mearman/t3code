@@ -1433,7 +1433,9 @@ export function claudeHistoryEndsOnFailedRequest(
 }
 
 // Claude's interactive reply-on-resume removes native abort rows before querying the saved history.
-function claudeMessagesBeforeTrailingAborts(messages: ReadonlyArray<ClaudeHistoryMessage>): number {
+export function claudeMessagesBeforeTrailingAborts(
+  messages: ReadonlyArray<ClaudeHistoryMessage>,
+): number {
   let end = messages.length;
   let toolInterrupted = false;
   while (end > 0) {
@@ -4750,7 +4752,7 @@ function isClaudeAssistantToolResultContentBlock(
   return "tool_use_id" in part && typeof part.tool_use_id === "string";
 }
 
-function isClaudeUserToolResultContentBlock(
+export function isClaudeUserToolResultContentBlock(
   part: ClaudeUserContentBlock,
 ): part is ClaudeUserToolResultContentBlock {
   return "tool_use_id" in part && typeof part.tool_use_id === "string";
@@ -5773,13 +5775,13 @@ interface ClaudeSubagentProjectionTarget {
 
 /** Claude writes blocks separately with stop_reason null until the last.
  * Missing stop_reason keeps the turn open; pre-tool text is not the reply. */
-function isClaudeTranscriptTurnEnd(entry: unknown): boolean {
+export function isClaudeTranscriptTurnEnd(entry: unknown): boolean {
   if (field(entry, "type") !== "assistant") return false;
   const stopReason = field(field(entry, "message"), "stop_reason");
   return typeof stopReason === "string" && stopReason !== "tool_use";
 }
 
-function isClaudeTranscriptConversationLine(
+export function isClaudeTranscriptConversationLine(
   entry: unknown,
 ): entry is SDKAssistantMessage | SDKUserMessage {
   const type = field(entry, "type");
