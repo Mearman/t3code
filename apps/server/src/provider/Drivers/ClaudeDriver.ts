@@ -14,7 +14,7 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
-import { makeClaudeProcessTableReader } from "../../claudeSessions/ClaudeProcessTable.ts";
+import { claudeProcessTableRequirement } from "../../claudeSessions/ClaudeProcessTable.ts";
 import { ClaudeSpawnedProcesses } from "../../claudeSessions/ClaudeSpawnedProcesses.ts";
 import {
   gateHeldClaudeSessions,
@@ -216,24 +216,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     );
     const spawnedProcesses = yield* ClaudeSpawnedProcesses;
     const platform = yield* HostProcess.Platform;
-    const readProcesses = yield* makeClaudeProcessTableReader(platform).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    );
-    const sendGatedAdapter = gateHeldClaudeSessions(orchestrationAdapter, (sessionId) =>
-      spawnedProcesses.pids.pipe(
-        Effect.flatMap((ownRootPids) =>
-          probeClaudeSessionHold({
-            sessionsDir: path.join(configDir, "sessions"),
-            sessionId,
-            ownRootPids,
-            readProcesses,
-            // Windows has no `ps lstart` to match `procStart` against, so liveness decides.
-            matchStartTime: platform !== "win32",
-          }),
+    const sendGatedAdapter = gateHeldClaudeSessions(
+      orchestrationAdapter,
+      (sessionId) =>
+        probeClaudeSessionHold({
+          sessionsDir: path.join(configDir, "sessions"),
+          sessionId,
+          ownRootPids: spawnedProcesses.pids,
+          readProcesses: spawnedProcesses.readProcesses,
+          // Windows has no `ps lstart` to match `procStart` against; `startedAt` is checked instead.
+          matchStartTime: platform !== "win32",
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
         ),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-      ),
+      claudeProcessTableRequirement(platform),
     );
     const textGeneration = yield* makeClaudeTextGeneration(
       effectiveConfig,

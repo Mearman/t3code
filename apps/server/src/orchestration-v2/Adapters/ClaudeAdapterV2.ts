@@ -1620,7 +1620,6 @@ export const layerQueryRunner: Layer.Layer<
   | ProviderEventLoggers.ProviderEventLoggers
 > = Layer.effectContext(
   Effect.gen(function* () {
-    const spawnedProcesses = makeClaudeSpawnedProcesses();
     const random = yield* SecureRandom.SecureRandom;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const path = yield* Path.Path;
@@ -1631,32 +1630,13 @@ export const layerQueryRunner: Layer.Layer<
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
-    const psProcessTable = (yield* makeClaudeProcessTableReader(platform)).pipe(
-      Effect.orElseSucceed(() => []),
-    );
     const monitor = Option.getOrUndefined(yield* Effect.serviceOption(NativeTelemetryClient));
-    const nativeTable = platform === "darwin" ? monitor?.processIdentities : undefined;
-    // Both readers use epoch seconds so a sidecar restart preserves tracked orphans.
-    const readProcessTable =
-      nativeTable === undefined
-        ? psProcessTable
-        : nativeTable.pipe(
-            Effect.flatMap((rows) => {
-              const table: ClaudeProcessRow[] = [];
-              for (const { pid, ppid, pgid, startTimeMicros } of rows) {
-                if (pgid === undefined || startTimeMicros === undefined) return psProcessTable;
-                table.push({
-                  pid,
-                  ppid,
-                  pgid,
-                  startTimeSeconds: Math.floor(startTimeMicros / 1_000_000),
-                  startTimeMicros,
-                });
-              }
-              return table.length === 0 ? psProcessTable : Effect.succeed(table);
-            }),
-            Effect.catch(() => psProcessTable),
-          );
+    const readProcessesOrFail = yield* makeClaudeProcessTableReader(
+      platform,
+      platform === "darwin" ? monitor?.processIdentities : undefined,
+    );
+    const readProcessTable = readProcessesOrFail.pipe(Effect.orElseSucceed(() => []));
+    const spawnedProcesses = makeClaudeSpawnedProcesses(readProcessesOrFail);
     // Without an agent scope, a job that left the CLI's group escapes the group kill and is
     // re-parented once the CLI exits. So the CLI's tree is recorded while it runs, and what is
     // still the same process (pid and start time) is stopped after it exits.
