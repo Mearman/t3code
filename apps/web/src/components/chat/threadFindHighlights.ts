@@ -283,7 +283,6 @@ function textRuns(row: Element, matches: readonly ThreadFindRange[]): readonly T
   const runs: TextRun[] = [];
   let text: Node | null = null;
   for (const [index, { range }] of matches.entries()) {
-    // oxlint-disable-next-line t3code/explicit-run-origin -- text runs, not orchestration runs
     const last = runs.at(-1);
     if (last && range.startContainer === text) {
       last.end = index + 1;

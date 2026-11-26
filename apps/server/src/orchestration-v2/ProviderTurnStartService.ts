@@ -127,7 +127,8 @@ export function abandonedProviderTurns(
 ) {
   const attemptsByRun = Map.groupBy(projection.attempts, (attempt) => attempt.runId);
   const abandonedRuns = new Map<string | null, OrchestrationV2Run>();
-  for (const previous of projection.runs) {
+  // The provider ran a transcript turn itself, so it never abandoned one.
+  for (const previous of runsByOrigin(projection.runs, "t3")) {
     if (
       previous.ordinal >= run.ordinal ||
       previous.providerThreadId !== providerThreadId ||

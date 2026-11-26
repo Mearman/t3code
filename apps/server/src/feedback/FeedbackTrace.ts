@@ -1,3 +1,4 @@
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import type { OrchestrationV2Run, OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -77,7 +78,7 @@ export const buildFeedbackTrace = (input: {
   readonly submittingRunId: OrchestrationV2Run["id"];
 }): FeedbackTrace => {
   const window = feedbackTraceWindow(input.turns);
-  const started = input.runs
+  const started = runsByOrigin(input.runs, "any")
     .filter((run) => run.startedAt !== null)
     .toSorted((a, b) => a.ordinal - b.ordinal);
   const runs = started.slice(-window);

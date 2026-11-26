@@ -621,7 +621,7 @@ function latestRestartContinuation(
 export function latestActiveRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | undefined {
-  return projection.runs
+  return runsByOrigin(projection.runs, "t3")
     .filter(isActiveRun)
     .toSorted((left, right) => right.ordinal - left.ordinal)[0];
 }
@@ -629,7 +629,7 @@ export function latestActiveRun(
 function latestSteerableRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "providerTurns">,
 ): OrchestrationV2Run | undefined {
-  return projection.runs
+  return runsByOrigin(projection.runs, "t3")
     .filter(
       (run) =>
         run.status === "running" &&

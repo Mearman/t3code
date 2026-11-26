@@ -133,10 +133,8 @@ function sliceLine(line: Line, start: number, end: number): Array<Run> {
 
 function pushRun(runs: Array<Run>, run: Run): void {
   if (run.text.length === 0) return;
-  // oxlint-disable-next-line t3code/explicit-run-origin -- text runs, not orchestration runs
   const last = runs.at(-1);
   if (last !== undefined && last.pen === run.pen) {
-    // oxlint-disable-next-line t3code/explicit-run-origin -- text runs, not orchestration runs
     runs[runs.length - 1] = { pen: last.pen, text: last.text + run.text };
   } else {
     runs.push(run);

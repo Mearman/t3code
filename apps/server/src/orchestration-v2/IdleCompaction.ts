@@ -3,6 +3,7 @@ import {
   isNativeOriginRun,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { COMPACTION_SUGGESTION_MIN_TOKENS } from "@t3tools/shared/claudeCompaction";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
@@ -56,7 +57,8 @@ export function idleCompactionWindow(
     return null;
   if (!isListedThreadLineage(thread.lineage)) return null;
   // A removed or steered queued message leaves a cancelled run that never started.
-  const latestRun = runs
+  // Every run: a transcript run as the latest is what stops the compaction below.
+  const latestRun = runsByOrigin(runs, "any")
     .filter((run) => run.status !== "cancelled" || run.startedAt !== null)
     .reduce<(typeof runs)[number] | null>(
       (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),

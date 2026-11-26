@@ -7,6 +7,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -89,7 +90,7 @@ export const make = Effect.gen(function* () {
           )
         )
           return;
-        const latestRun = records.runs
+        const latestRun = runsByOrigin(records.runs, "any")
           .filter((run) => run.status !== "cancelled" || run.startedAt !== null)
           .reduce<(typeof records.runs)[number] | undefined>(
             (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),

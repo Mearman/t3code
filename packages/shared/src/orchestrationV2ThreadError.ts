@@ -70,11 +70,14 @@ export type RunOrigin = "t3" | "any";
  * The runs `origin` reads, in their original order. The `t3code/explicit-run-origin` lint rule
  * requires every run collection that is ordered or searched for a latest run to pass through here.
  */
-export function runsByOrigin<Run extends { readonly nativeOrigin?: unknown }>(
+export function runsByOrigin<Run extends object>(
   runs: ReadonlyArray<Run>,
   origin: RunOrigin,
 ): ReadonlyArray<Run> {
-  return origin === "any" ? runs : runs.filter((run) => run.nativeOrigin === undefined);
+  // Read at run time, so a run type that omits the field still drops a transcript run's object.
+  return origin === "any"
+    ? runs
+    : runs.filter((run) => !("nativeOrigin" in run) || run.nativeOrigin === undefined);
 }
 
 /**

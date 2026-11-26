@@ -19,6 +19,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -277,7 +278,7 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-      const parentRun = parent.runs
+      const parentRun = runsByOrigin(parent.runs, "t3")
         .filter(ThreadManagement.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
       if (
