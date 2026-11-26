@@ -35,7 +35,10 @@ export class CipherState {
     try {
       plaintext = chacha20poly1305(this.#key, nonce, ad).decrypt(ciphertext);
     } catch {
-      throw new MeshProtocolError("decrypt_failed", "The Noise message failed authentication.");
+      throw new MeshProtocolError({
+        reason: "decrypt_failed",
+        detail: "The Noise message failed authentication.",
+      });
     }
     this.#nonce += 1n;
     return plaintext;
@@ -43,7 +46,10 @@ export class CipherState {
 
   #nonceBytes(): Uint8Array {
     if (this.#nonce >= NOISE_MAX_NONCE) {
-      throw new MeshProtocolError("nonce_exhausted", "The Noise cipher state has no nonces left.");
+      throw new MeshProtocolError({
+        reason: "nonce_exhausted",
+        detail: "The Noise cipher state has no nonces left.",
+      });
     }
     // 32 zero bits, then the counter as 64-bit little-endian, written in halves for Hermes.
     const nonce = new Uint8Array(12);

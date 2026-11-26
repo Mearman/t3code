@@ -26,14 +26,20 @@ export function generateNoiseKeyPair(): NoiseKeyPair {
 
 function noiseKeyPair(privateKey: Uint8Array): NoiseKeyPair {
   if (privateKey.length !== KEY_BYTES) {
-    throw new MeshProtocolError("invalid_key", "An X25519 private key is 32 bytes.");
+    throw new MeshProtocolError({
+      reason: "invalid_key",
+      detail: "An X25519 private key is 32 bytes.",
+    });
   }
   return { publicKey: x25519.getPublicKey(privateKey), privateKey };
 }
 
 function checkPublicKey(publicKey: Uint8Array) {
   if (publicKey.length !== KEY_BYTES) {
-    throw new MeshProtocolError("invalid_key", "An X25519 public key is 32 bytes.");
+    throw new MeshProtocolError({
+      reason: "invalid_key",
+      detail: "An X25519 public key is 32 bytes.",
+    });
   }
 }
 
@@ -43,7 +49,10 @@ function dh(privateKey: Uint8Array, publicKey: Uint8Array): Uint8Array {
     return x25519.getSharedSecret(privateKey, publicKey);
   } catch {
     // noble rejects a small-order public key, whose shared secret would be all zeros.
-    throw new MeshProtocolError("invalid_key", "The X25519 public key is not usable.");
+    throw new MeshProtocolError({
+      reason: "invalid_key",
+      detail: "The X25519 public key is not usable.",
+    });
   }
 }
 
@@ -123,14 +132,21 @@ function transport(
 ): NoiseTransport {
   let failed = false;
   const live = () => {
-    if (failed) throw new MeshProtocolError("channel_failed", "The Noise channel has failed.");
+    if (failed)
+      throw new MeshProtocolError({
+        reason: "channel_failed",
+        detail: "The Noise channel has failed.",
+      });
   };
   return {
     handshakeHash,
     encrypt(plaintext) {
       live();
       if (plaintext.length > NOISE_MAX_PLAINTEXT_BYTES) {
-        throw new MeshProtocolError("message_too_large", "The plaintext exceeds one message.");
+        throw new MeshProtocolError({
+          reason: "message_too_large",
+          detail: "The plaintext exceeds one message.",
+        });
       }
       return send.encryptWithAd(EMPTY, plaintext);
     },
@@ -149,22 +165,34 @@ function transport(
 
 function checkMessageSize(message: Uint8Array, minimum: number) {
   if (message.length > NOISE_MAX_MESSAGE_BYTES) {
-    throw new MeshProtocolError("message_too_large", "The Noise message exceeds 65535 bytes.");
+    throw new MeshProtocolError({
+      reason: "message_too_large",
+      detail: "The Noise message exceeds 65535 bytes.",
+    });
   }
   if (message.length < minimum) {
-    throw new MeshProtocolError("message_too_short", "The Noise message is truncated.");
+    throw new MeshProtocolError({
+      reason: "message_too_short",
+      detail: "The Noise message is truncated.",
+    });
   }
 }
 
 // Both NK messages are an ephemeral key, then the payload and its tag.
 function checkPayloadSize(payload: Uint8Array) {
   if (KEY_BYTES + payload.length + TAG_BYTES > NOISE_MAX_MESSAGE_BYTES) {
-    throw new MeshProtocolError("message_too_large", "The handshake payload is too large.");
+    throw new MeshProtocolError({
+      reason: "message_too_large",
+      detail: "The handshake payload is too large.",
+    });
   }
 }
 
 const outOfOrder = () =>
-  new MeshProtocolError("handshake_order", "The Noise handshake step is out of order.");
+  new MeshProtocolError({
+    reason: "handshake_order",
+    detail: "The Noise handshake step is out of order.",
+  });
 
 interface HandshakeOptions {
   /** Bytes both sides must agree on, mixed into the handshake hash. */
