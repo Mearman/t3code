@@ -29,6 +29,7 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { ClaudeSpawnedProcesses } from "../../claudeSessions/ClaudeSpawnedProcesses.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
+import * as SpawnWorker from "../../process/SpawnWorker.ts";
 import {
   ClaudeAgentSdkQueryRunner,
   type ClaudeAgentSdkQueryOpenInput,
@@ -38,6 +39,7 @@ import {
 } from "./ClaudeAdapterV2.ts";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
+vi.mock("../../process/SpawnWorker.ts", { spy: true });
 
 const FORK_SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -702,29 +704,44 @@ const openFakeCli = (cli: string) =>
   });
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI process", () => {
-  it.effect("counts a spawned CLI as T3 Code's own while it runs", () =>
-    Effect.gen(function* () {
-      const cli = fakeClaudeCli(
-        ['dir=$(dirname "$0")', 'echo $$ > "$dir/pid"', "cat > /dev/null"].join("\n"),
-      );
-      const dir = NodePath.dirname(cli);
-      NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "pid")]);
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
-      );
-      // The FIFO's read finishes once the CLI has written its pid, so no polling is needed.
-      const reported = Effect.promise(() =>
-        NodeFS.promises.readFile(NodePath.join(dir, "pid"), "utf8"),
-      );
-      const spawned = yield* ClaudeSpawnedProcesses;
+  // The runner spawns through a worker on Windows, whose branch this host can run too.
+  it.effect.each([HostProcess.Platform.defaultValue(), "win32" as const])(
+    "counts a spawned CLI as T3 Code's own while it runs (%s)",
+    (platform) =>
+      Effect.gen(function* () {
+        const cli = fakeClaudeCli(
+          ['dir=$(dirname "$0")', 'echo $$ > "$dir/pid"', "cat > /dev/null"].join("\n"),
+        );
+        const dir = NodePath.dirname(cli);
+        NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "pid")]);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+        );
+        // The FIFO's read finishes once the CLI has written its pid, so no polling is needed.
+        const reported = Effect.promise(() =>
+          NodeFS.promises.readFile(NodePath.join(dir, "pid"), "utf8"),
+        );
+        const spawned = yield* ClaudeSpawnedProcesses;
+        const workerSpawn = vi.mocked(SpawnWorker.spawnPiped);
+        workerSpawn.mockClear();
 
-      const session = yield* openFakeCli(cli);
-      const pid = Number((yield* reported).trim());
-      const whileRunning = yield* spawned.pids;
-      yield* session.close;
+        const session = yield* openFakeCli(cli);
+        const pid = Number((yield* reported).trim());
+        // A worker reports its child's pid in a later message than the child can write in.
+        const worker = workerSpawn.mock.results[0]?.value;
+        if (worker !== undefined && worker.pid === undefined) {
+          yield* Effect.promise(() => new Promise((resolve) => worker.once("spawn", resolve)));
+        }
+        const whileRunning = yield* spawned.pids;
+        yield* session.close;
 
-      assert.include(whileRunning, pid);
-    }).pipe(Effect.provide(realQueryRunner)),
+        assert.equal(workerSpawn.mock.calls.length, platform === "win32" ? 1 : 0);
+        assert.include(whileRunning, pid);
+      }).pipe(
+        Effect.provide(
+          realQueryRunner.pipe(Layer.provide(Layer.succeed(HostProcess.Platform, platform))),
+        ),
+      ),
   );
 
   // The leftover child holds a FIFO open; its death produces EOF without polling.
