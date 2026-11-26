@@ -277,6 +277,50 @@ export class ClaudeTranscriptTurnRules {
     return { turn: entry, opens, isItem: true, isAnchor: true, depth: 0, promptEntry, provisional };
   }
 
+  /** The prompt id a compaction's summary names, by its key; 0 for none or any other root. */
+  summaryKey(
+    root: number,
+    eachChild: (entry: number, visit: (child: number) => void) => void,
+  ): number {
+    if (this.kind(root) !== Kind.CompactBoundary) return 0;
+    let summary = NONE;
+    eachChild(root, (child) => {
+      if (!this.is(child, Flag.CompactSummary) || this.index.promptKey(child) === 0) return;
+      if (summary === NONE || this.compareTurns(child, summary) < 0) summary = child;
+    });
+    return summary === NONE ? 0 : this.index.promptKey(summary);
+  }
+
+  /**
+   * The turn a root filed by time joins: of `candidates` (openers in turn order, each a turn the root may join), the latest started at or before it that carries the summary's prompt id when one is named and such a turn exists, else the latest started at or before it.
+   */
+  hostFor(
+    root: number,
+    summaryKey: number,
+    candidates: ReadonlyArray<number>,
+    promptEntry: (turn: number) => number,
+    eligible: (turn: number) => boolean = () => true,
+  ): number {
+    const time = this.index.timestamp(root);
+    let low = 0;
+    let high = candidates.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (compareTimes(this.index.timestamp(at(candidates, middle)), time) <= 0) low = middle + 1;
+      else high = middle;
+    }
+    let latest = NONE;
+    for (let position = low - 1; position >= 0; position--) {
+      const turn = at(candidates, position);
+      if (!eligible(turn)) continue;
+      if (latest === NONE) latest = turn;
+      if (summaryKey === 0) return latest;
+      const prompt = promptEntry(turn);
+      if (prompt !== NONE && this.index.promptKey(prompt) === summaryKey) return turn;
+    }
+    return latest;
+  }
+
   /** Item order within a turn: the opener first, then by time, depth and uuid. */
   compareLines(opener: number, left: number, leftDepth: number, right: number, rightDepth: number) {
     return (
@@ -410,7 +454,7 @@ export function claudeTranscriptCycleCuts(
 }
 
 /**
- * The complete turn structure of everything indexed, as a pure function of the index's entries; the definition every incremental result must equal. A line belongs to the turn of the nearest opener up its parent chain. A root whose parent is named but absent, or a compaction, is filed with the latest turn reached from a true root that started at or before it, so a line written before its parent already sits where its parent will put it. File order decides only which copy of a uuid is the entry (the first well-formed one) and the session's titles and derivation (the latest line).
+ * The complete turn structure of everything indexed, as a pure function of the index's entries; the definition every incremental result must equal. A line belongs to the turn of the nearest opener up its parent chain. A root whose parent is named but absent, or a compaction, is filed by time: roots are taken in order of time then uuid, and each is filed with the latest turn started at or before it among the turns of true roots' trees and earlier roots' trees, preferring one carrying the prompt id its compaction summary names. So a line written before its parent already sits where its parent will put it. File order decides only which copy of a uuid is the entry (the first well-formed one) and the session's titles and derivation (the latest line).
  */
 export function claudeTranscriptStructure(index: ClaudeTranscriptIndex): ClaudeTranscriptStructure {
   const rules = new ClaudeTranscriptTurnRules(index);
@@ -463,7 +507,8 @@ export function claudeTranscriptStructure(index: ClaudeTranscriptIndex): ClaudeT
   };
   const detached = (entry: number) => cut[entry] === 0 && rules.isDetachedRoot(entry);
 
-  // Parents before children: true roots and their trees, then roots filed by time.
+  // Parents before children: true roots and their trees, then each root filed by time with its
+  // tree, in root order, since a root is filed among the turns of the trees before it.
   const order = new Int32Array(count);
   let tail = 0;
   const bfs = (roots: ReadonlyArray<number>) => {
@@ -483,7 +528,8 @@ export function claudeTranscriptStructure(index: ClaudeTranscriptIndex): ClaudeT
   }
   bfs(trueRoots);
   const rootedCount = tail;
-  bfs(detachedRoots);
+  detachedRoots.sort((left, right) => rules.compareTurns(left, right));
+  for (const root of detachedRoots) bfs([root]);
 
   const reachesReply = new Uint8Array(count);
   const hasResult = new Uint8Array(count);
@@ -526,7 +572,7 @@ export function claudeTranscriptStructure(index: ClaudeTranscriptIndex): ClaudeT
     if (kind === undefined) throw new RangeError(`No turn ${opener}.`);
     return kind;
   };
-  const rootedOpeners: Array<number> = [];
+  const openers: Array<number> = [];
   const decideAt = (position: number, host: number) => {
     const entry = at(order, position);
     const up = at(parent, entry);
@@ -548,28 +594,23 @@ export function claudeTranscriptStructure(index: ClaudeTranscriptIndex): ClaudeT
     if (decision.opens !== undefined) {
       openerKind.set(entry, decision.opens);
       promptEntry.set(entry, decision.promptEntry);
-      if (position < rootedCount) rootedOpeners.push(entry);
+      let low = 0;
+      let high = openers.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (rules.compareTurns(at(openers, middle), entry) < 0) low = middle + 1;
+        else high = middle;
+      }
+      openers.splice(low, 0, entry);
     }
   };
   for (let position = 0; position < rootedCount; position++) decideAt(position, NONE);
-  rootedOpeners.sort((left, right) => rules.compareTurns(left, right));
-  const hostFor = (entry: number) => {
-    let low = 0;
-    let high = rootedOpeners.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (compareTimes(index.timestamp(at(rootedOpeners, middle)), index.timestamp(entry)) <= 0) {
-        low = middle + 1;
-      } else {
-        high = middle;
-      }
-    }
-    return low === 0 ? NONE : at(rootedOpeners, low - 1);
-  };
   let host = NONE;
   for (let position = rootedCount; position < count; position++) {
     const entry = at(order, position);
-    if (at(parent, entry) === NONE) host = hostFor(entry);
+    if (at(parent, entry) === NONE) {
+      host = rules.hostFor(entry, rules.summaryKey(entry, eachChild), openers, inputs.promptEntry);
+    }
     decideAt(position, host);
   }
 

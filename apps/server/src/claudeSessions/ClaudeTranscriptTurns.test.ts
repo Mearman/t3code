@@ -325,6 +325,82 @@ describe("claudeTranscriptStructure", () => {
     });
   });
 
+  // Rewrite inspection 2 finding 2: a later compaction with a missing logical parent joins the turn running then.
+  it("files a second compaction whose logical parent is gone with the turn running then", () => {
+    const f = claudeTranscriptFixture();
+    const structure = structureOf([
+      f.prompt("p0", null, "Go"),
+      f.text("a0", "p0", "Working", null),
+      f.boundary("cb1", "gone-1"),
+      f.summary("s1", "cb1", { promptId: "pid-p0" }),
+      f.text("a1", "s1", "Continuing"),
+      f.prompt("p2", "a1", "Next"),
+      f.text("a2", "p2", "Working", null),
+      f.boundary("cb2", "gone-2"),
+      f.summary("s2", "cb2", { promptId: "pid-p2" }),
+      f.text("a3", "s2", "Continuing"),
+    ]);
+
+    expect(turnIds(structure)).toEqual(["p0", "p2"]);
+    expect(turn(structure, "p2").lineUuids).toEqual(["p2", "a2", "cb2", "a3"]);
+    expect(turn(structure, "p0").end?.reason).toBe("turn-end");
+  });
+
+  it("files a compaction with the turn its summary's prompt id names over a later one", () => {
+    const f = claudeTranscriptFixture();
+    const structure = structureOf([
+      f.prompt("p1", null, "Long job"),
+      f.toolUse("a1", "p1", "t1", null),
+      f.prompt("p2", "a1", "Meanwhile"),
+      f.boundary("cb", "gone"),
+      f.summary("s1", "cb", { promptId: "pid-p1" }),
+      f.text("a2", "s1", "Back on the job"),
+    ]);
+
+    expect(turnOf(structure, "cb")).toBe("p1");
+    expect(turnOf(structure, "a2")).toBe("p1");
+  });
+
+  // Rewrite inspection 2 finding 1: a queued turn's prompt id changes when a meta line above opens late.
+  it("follows a queued turn's prompt id to the lines below it at any depth", () => {
+    const f = claudeTranscriptFixture();
+    const t = (seconds: number) => ({ timestamp: f.iso(seconds) });
+    const structure = structureOf([
+      f.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+      f.meta("m", "p1", "B", "<task-notification>y</task-notification>", t(2)),
+      f.result("r", "m", "t1", t(3)),
+      f.text("a1", "r", "Done", "end_turn", t(4)),
+      f.queued("q", "a1", "Next", t(5)),
+      f.text("a2", "q", "Ok", "end_turn", t(6)),
+      f.meta("m2", "a2", "A", "<task-notification>x</task-notification>", t(7)),
+      f.text("a3", "m2", "Seen", "end_turn", t(8)),
+      f.text("a4", "m", "Reply", "end_turn", t(9)),
+    ]);
+
+    expect(turnIds(structure)).toEqual(["p1", "m", "q", "m2"]);
+    expect(turn(structure, "q")).toMatchObject({
+      opener: "queued",
+      promptId: "B",
+      lineUuids: ["q", "a2"],
+    });
+    expect(turn(structure, "m2").lineUuids).toEqual(["m2", "a3"]);
+  });
+
+  it("follows a queued root's prompt id when a turn at the same time arrives later", () => {
+    const f = claudeTranscriptFixture();
+    const t = (seconds: number) => ({ timestamp: f.iso(seconds) });
+    const structure = structureOf([
+      f.queued("q", "gone", "Next", t(5)),
+      f.text("a2", "q", "Ok", "end_turn", t(6)),
+      f.meta("m2", "a2", "A", "<task-notification>x</task-notification>", t(7)),
+      f.text("a3", "m2", "Seen", "end_turn", t(8)),
+      f.prompt("p1", null, "Go", { ...t(5), promptId: "A" }),
+    ]);
+
+    expect(turnIds(structure)).toEqual(["p1", "q"]);
+    expect(turn(structure, "q").lineUuids).toEqual(["q", "a2", "a3"]);
+  });
+
   it("opens an orphan turn for a line filed by time before any turn has started", () => {
     const f = claudeTranscriptFixture();
     const structure = structureOf([
