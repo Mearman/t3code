@@ -67,9 +67,15 @@ function memberName(node: Node): string | undefined {
  * "undecided" for a bare run collection, "decided" once it went through runsByOrigin, directly or
  * through a variable initialised from it (`decided` holds those names for the file).
  */
+/** What the pre-pass learned: variables in scope that hold decided runs, and functions returning them. */
+interface Decided {
+  readonly variable: (identifier: Node & { readonly name: string }) => boolean;
+  readonly functions: ReadonlySet<string>;
+}
+
 function runCollection(
   node: Node,
-  decided: ReadonlySet<string>,
+  decided: Decided,
   throughDerived = false,
 ): "undecided" | "decided" | undefined {
   const expression = unwrap(node);
@@ -82,7 +88,7 @@ function runCollection(
     return "decided";
   }
   if (expression.type === "Identifier") {
-    if (decided.has(expression.name)) return "decided";
+    if (decided.variable(expression)) return "decided";
     return RUN_COLLECTION_NAME.test(expression.name) ? "undecided" : undefined;
   }
   if (expression.type === "MemberExpression") {
@@ -100,7 +106,12 @@ function runCollection(
   }
   if (expression.type === "CallExpression") {
     const callee = unwrap(expression.callee as Node);
-    if (callee.type === "Identifier" && callee.name === ORIGIN_SELECTOR) return "decided";
+    if (
+      callee.type === "Identifier" &&
+      (callee.name === ORIGIN_SELECTOR || decided.functions.has(callee.name))
+    ) {
+      return "decided";
+    }
     const method = memberName(callee);
     if (
       callee.type === "MemberExpression" &&
@@ -268,22 +279,80 @@ export default defineRule({
     if (TEST_FILE.test(context.filename) || SELECTOR_MODULE.test(context.filename)) return {};
     const checksLatestRunId =
       SERVER_FILE.test(context.filename) && !SHELL_BUILDER.test(context.filename);
-    const decided = new Set<string>();
-    const collectDecided = (node: Node) => {
+    // A variable is decided where its declaring block (or function) encloses the use; the
+    // shadowing of a name by an inner declaration is not modelled.
+    const scopes = new Map<Node, Set<string>>();
+    const functions = new Set<string>();
+    const decided: Decided = {
+      functions,
+      variable: (identifier) => {
+        for (
+          let ancestor = (identifier as { parent?: Node }).parent;
+          ancestor !== undefined;
+          ancestor = (ancestor as { parent?: Node }).parent
+        ) {
+          if (scopes.get(ancestor)?.has(identifier.name) === true) return true;
+        }
+        return false;
+      },
+    };
+    const isScope = (node: Node) =>
+      node.type === "Program" || node.type === "BlockStatement" || node.type === "StaticBlock";
+    const isFunction = (node: Node) =>
+      node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression";
+    // Every return of a function, outside the functions nested in it.
+    const returnsOf = (body: Node): Node[] => {
+      const found: Node[] = [];
+      const visit = (node: Node) => {
+        if (node.type === "ReturnStatement") {
+          if (node.argument != null) found.push(node.argument as Node);
+          return;
+        }
+        if (isFunction(node)) return;
+        for (const child of children(node)) visit(child);
+      };
+      for (const child of children(body)) visit(child);
+      return found;
+    };
+    let learned = true;
+    const collectDecided = (node: Node, scope: Node) => {
+      const inner = isScope(node) ? node : scope;
       if (
         node.type === "VariableDeclarator" &&
         node.id.type === "Identifier" &&
         node.init != null &&
         runCollection(node.init as Node, decided) === "decided"
       ) {
-        decided.add(node.id.name);
+        const names = scopes.get(scope) ?? new Set<string>();
+        if (!names.has(node.id.name)) {
+          names.add(node.id.name);
+          scopes.set(scope, names);
+          learned = true;
+        }
       }
-      for (const child of children(node)) collectDecided(child);
+      if (node.type === "FunctionDeclaration" && node.id != null && node.body != null) {
+        const returns = returnsOf(node.body as Node);
+        if (
+          !functions.has(node.id.name) &&
+          returns.length > 0 &&
+          returns.every((value) => runCollection(value, decided) === "decided")
+        ) {
+          functions.add(node.id.name);
+          learned = true;
+        }
+      }
+      for (const child of children(node)) collectDecided(child, inner);
     };
     return {
       // Runs first, so a variable is known to be decided wherever it is used.
       Program(node) {
-        collectDecided(node as Node);
+        // Repeats until nothing new is learned: a function can return a variable, and the reverse.
+        while (learned) {
+          learned = false;
+          collectDecided(node as Node, node as Node);
+        }
       },
       CallExpression(node) {
         const callee = unwrap(node.callee as Node);

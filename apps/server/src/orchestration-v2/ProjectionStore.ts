@@ -3991,7 +3991,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         }
       };
       showPrompts(prompts);
-      const newestFirst = runs
+      // As modelSwitchSince reads them: a transcript turn can anchor a model switch.
+      const newestFirst = runsByOrigin(runs, "any")
         .filter(isModelSwitchCandidate)
         .toSorted((left, right) => (runRanAfter(left, right) ? -1 : 1));
       // The batches double, so a thread with no such run takes few queries.

@@ -124,6 +124,30 @@ describe("t3code/explicit-run-origin", () => {
      export const last = coveredRuns.at(-1);`,
   );
 
+  rule.invalid(
+    "reports a run collection whose decided namesake is in another function",
+    `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;
+     declare const projection: { runs: ReadonlyArray<{ ordinal: number }> };
+     export function shown() {
+       const runs = runsByOrigin(projection.runs, "any");
+       return runs.at(-1);
+     }
+     export function acted(runs: ReadonlyArray<{ ordinal: number }>) {
+       return runs.at(-1);
+     }`,
+  );
+
+  rule.valid(
+    "allows a pick from a same-file function that returns a decided collection",
+    `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;
+     declare const projection: { runs: ReadonlyArray<{ ordinal: number; silent: boolean }> };
+     function shownRuns() {
+       return runsByOrigin(projection.runs, "any").filter((run) => !run.silent);
+     }
+     const runs = shownRuns();
+     export const last = runs.at(-1);`,
+  );
+
   rule.valid(
     "allows comparing a run with a number, which picks no run",
     `declare const runs: ReadonlyArray<{ ordinal: number }>;
