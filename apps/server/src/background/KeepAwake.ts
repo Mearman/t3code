@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { isNativeOriginRun } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
@@ -136,6 +137,17 @@ class KeepAwakeInhibitorExited extends Schema.TaggedError<KeepAwakeInhibitorExit
   }
 }
 
+/**
+ * Whether any run is preparing, starting or running. The first IN repeats the recovery index's condition, so SQLite seeks the few active runs instead of scanning every run.
+ */
+export const activeRunQuery = (sql: SqlClient.SqlClient) => sql<{ readonly active: number }>`
+  SELECT EXISTS (
+    SELECT 1 FROM orchestration_v2_projection_runs
+    WHERE status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+      AND status IN ('preparing', 'starting', 'running')
+  ) AS active
+`;
+
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const platform = yield* HostProcess.Platform;
@@ -154,12 +166,7 @@ export const layer = Layer.effectDiscard(
     const sql = yield* SqlClient.SqlClient;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-    const hasActiveRun = sql<{ readonly active: number }>`
-      SELECT EXISTS (
-        SELECT 1 FROM orchestration_v2_projection_runs
-        WHERE status IN ('preparing', 'starting', 'running')
-      ) AS active
-    `.pipe(
+    const hasActiveRun = activeRunQuery(sql).pipe(
       Effect.map((rows) => rows[0]?.active === 1),
       retryWithBackoff("keep-awake could not read active runs"),
     );
@@ -170,15 +177,15 @@ export const layer = Layer.effectDiscard(
         Effect.map((afterSequence) =>
           Stream.concat(
             Stream.succeed(undefined),
-            events
-              .streamApplicationEvents({ afterSequence })
-              .pipe(
-                Stream.filter(
-                  (stored) =>
-                    "event" in stored &&
-                    (stored.event.type === "run.created" || stored.event.type === "run.updated"),
-                ),
+            events.streamApplicationEvents({ afterSequence }).pipe(
+              Stream.filter(
+                (stored) =>
+                  "event" in stored &&
+                  (stored.event.type === "run.created" || stored.event.type === "run.updated") &&
+                  // A run read back from a transcript is written finished, so it never keeps the host awake.
+                  !isNativeOriginRun(stored.event.payload),
               ),
+            ),
           ),
         ),
       ),

@@ -4,6 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import ForkMigration0001 from "./ForkMigrations/001_ClaudeSessionSyncState.ts";
 import ForkMigration0002 from "./ForkMigrations/002_ClaudeSessionSyncProgress.ts";
+import { claudeNativeIdIndex } from "./ForkIndexes.ts";
 import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
 
 // Upstream's migrator skips every id at or below the highest it has recorded, so a fork migration in its ledger would suppress the upstream one that later takes that id. Fork schema names start with `fork_` so no upstream CREATE can collide with them.
@@ -34,20 +35,7 @@ export function skippedForkMigrations(
 }
 
 // Fork indexes on upstream tables. Upstream migrations run without them, since a table rebuild would drop one and a column drop could fail on one; every start recreates any that is missing.
-const forkIndexesOnUpstreamTables = [
-  {
-    name: "fork_provider_threads_claude_native_id_idx",
-    create: (sql: SqlClient.SqlClient) => sql`
-      CREATE INDEX IF NOT EXISTS fork_provider_threads_claude_native_id_idx
-      ON orchestration_v2_projection_provider_threads (
-        json_extract(payload_json, '$.nativeThreadRef.nativeId'),
-        updated_at
-      )
-      WHERE json_valid(payload_json)
-        AND json_extract(payload_json, '$.nativeThreadRef.driver') = 'claudeAgent'
-    `,
-  },
-] as const;
+const forkIndexesOnUpstreamTables = [claudeNativeIdIndex] as const;
 
 const missingForkIndexes = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
