@@ -88,6 +88,7 @@ import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { Button } from "../ui/button";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { type ServerClientSessionRecord } from "~/environments/primary";
+import { isDesktopPrimaryAttached } from "~/environments/primary/target";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { useUiStateStore } from "~/uiStateStore";
 import {
@@ -437,6 +438,10 @@ function ConnectionsSettingsContent({
   const canMaintain = useEnvironmentScope(accessEnvironmentId, AuthEnvironmentMaintainScope);
   const canManageRelay = useEnvironmentScope(accessEnvironmentId, AuthRelayWriteScope);
   const canManageLocalBackend = isPrimaryAccess && !isLocalEnvironmentDisabled() && canMaintain;
+  // Exposure and WSL settings change how this app starts its own server, which an attached one is not.
+  const primaryAttached = isDesktopPrimaryAttached();
+  const managesDesktopBackend =
+    canManageLocalBackend && desktopBridge !== undefined && !primaryAttached;
   const showsAccess = view === "access";
   const authAccessChanges = useEnvironmentQuery(
     showsAccess && canReadAccess && accessEnvironmentId !== null
@@ -455,11 +460,11 @@ function ConnectionsSettingsContent({
     reportFailure: false,
   });
   const desktopNetworkAccess = useEnvironmentQuery(
-    showsAccess && canManageLocalBackend && desktopBridge ? desktopNetworkAccessStateAtom : null,
+    showsAccess && managesDesktopBackend ? desktopNetworkAccessStateAtom : null,
     m,
   );
   const desktopWsl = useEnvironmentQuery(
-    showsAccess && canManageLocalBackend && desktopBridge ? desktopWslAccessStateAtom : null,
+    showsAccess && managesDesktopBackend ? desktopWslAccessStateAtom : null,
     m,
   );
   const desktopWslState = desktopWsl.data;
@@ -1240,6 +1245,14 @@ function ConnectionsSettingsContent({
       managed={isLocalBackendNetworkAccessible ? undefined : remoteClientsDenial}
     />
   );
+  const renderAttachedServerRow = () => (
+    <SettingsRow
+      title={gt("Running server")}
+      description={gt(
+        "T3 Code is using the server that was already running for this T3 home, such as the background service. Quitting T3 Code leaves it and its agents running. Change its network access where that server was started.",
+      )}
+    />
+  );
   const renderDisabledNetworkAccessRow = () => (
     <SettingsRow
       title={searchableSetting("network-access").title}
@@ -1387,13 +1400,15 @@ function ConnectionsSettingsContent({
                 }
               />
             ) : null}
-            {canManageLocalBackend && desktopBridge ? (
+            {managesDesktopBackend ? (
               <>
                 {renderNetworkAccessRow()}
                 {renderEndpointRows()}
                 {renderTailscaleRow()}
                 {renderWslRow()}
               </>
+            ) : canManageLocalBackend && primaryAttached ? (
+              renderAttachedServerRow()
             ) : canManageLocalBackend ? (
               renderDisabledNetworkAccessRow()
             ) : null}

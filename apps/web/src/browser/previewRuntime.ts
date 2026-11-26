@@ -9,6 +9,7 @@ import { Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "~/connection/catalog";
 import { isElectron } from "~/env";
+import { isDesktopPrimaryAttached } from "~/environments/primary/target";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
@@ -76,6 +77,8 @@ export function rendersServerTabNatively(
 ): boolean {
   return (
     isElectron &&
+    // Only a server this app spawned has the desktop's browser host to render into.
+    !isDesktopPrimaryAttached() &&
     snapshot?.runtime === "server" &&
     !snapshot.headless &&
     primaryEnvironmentId !== null &&

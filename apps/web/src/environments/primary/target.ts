@@ -85,6 +85,11 @@ function getDesktopLocalEnvironmentBootstrap(): DesktopEnvironmentBootstrap | nu
   return bootstraps.find((entry) => entry.id === PRIMARY_LOCAL_ENVIRONMENT_ID) ?? null;
 }
 
+/** Whether this desktop app uses a server that already owned its T3 home instead of its own. */
+export function isDesktopPrimaryAttached(): boolean {
+  return typeof window !== "undefined" && getDesktopLocalEnvironmentBootstrap()?.attached === true;
+}
+
 function parseTargetUrl(input: {
   readonly rawValue: string;
   readonly baseUrl?: string;

@@ -13015,5 +13015,7 @@
       "v": "v"
     },
     " weitere unter Verknüpfte Elemente"
-  ]
+  ],
+  "fff0f40120d64a95": "Laufender Server",
+  "4e09b4f186002d26": "T3 Code verwendet den Server, der für dieses T3-Home bereits lief, etwa den Hintergrunddienst. Wenn du T3 Code beendest, laufen er und seine Agenten weiter. Ändere seinen Netzwerkzugriff dort, wo dieser Server gestartet wurde."
 }

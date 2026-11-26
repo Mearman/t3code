@@ -13015,5 +13015,7 @@
       "v": "v"
     },
     " mais em Itens vinculados"
-  ]
+  ],
+  "fff0f40120d64a95": "Servidor em execução",
+  "4e09b4f186002d26": "O T3 Code está usando o servidor que já estava em execução para este T3 home, como o serviço em segundo plano. Sair do T3 Code mantém o servidor e seus agentes em execução. Altere o acesso à rede dele onde esse servidor foi iniciado."
 }
