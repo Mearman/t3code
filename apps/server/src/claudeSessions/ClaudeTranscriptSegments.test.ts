@@ -1,23 +1,21 @@
 import { describe, expect, it } from "@effect/vitest";
-import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
 import {
   ClaudeTranscriptLineError,
+  ClaudeTranscriptParserState,
   initialClaudeTranscriptParserState,
   parseClaudeTranscriptLines,
   type ClaudeTranscriptEvent,
-  type ClaudeTranscriptParserState,
 } from "./ClaudeTranscriptSegments.ts";
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
 const AT = "2026-01-01T00:00:00.000Z";
+const LATER = "2026-01-01T00:00:05.000Z";
 
-const user = (
-  uuid: string,
-  parentUuid: string | null,
-  content: unknown,
-  extra: Record<string, unknown> = {},
-) => ({
+type Extra = Record<string, unknown>;
+
+const user = (uuid: string, parentUuid: string | null, content: unknown, extra: Extra = {}) => ({
   type: "user",
   uuid,
   parentUuid,
@@ -32,8 +30,9 @@ const assistant = (
   uuid: string,
   parentUuid: string,
   block: unknown,
-  stopReason: string,
-  messageId = "msg-1",
+  stopReason: string | null,
+  messageId = `msg-${uuid}`,
+  extra: Extra = {},
 ) => ({
   type: "assistant",
   uuid,
@@ -48,36 +47,52 @@ const assistant = (
     content: [block],
     stop_reason: stopReason,
   },
+  ...extra,
 });
 
-const turnDuration = (uuid: string, parentUuid: string, durationMs: number) => ({
+const system = (subtype: string, uuid: string, parentUuid: string | null, extra: Extra = {}) => ({
   type: "system",
-  subtype: "turn_duration",
+  subtype,
+  uuid,
+  parentUuid,
+  timestamp: LATER,
+  isSidechain: false,
+  ...extra,
+});
+
+const turnDuration = (uuid: string, parentUuid: string, durationMs = 1200) =>
+  system("turn_duration", uuid, parentUuid, { durationMs, isMeta: true });
+
+const attachment = (uuid: string, parentUuid: string, value: unknown) => ({
+  type: "attachment",
   uuid,
   parentUuid,
   timestamp: AT,
-  durationMs,
-  isMeta: true,
+  isSidechain: false,
+  attachment: value,
 });
+
+const queued = (uuid: string, parentUuid: string, prompt: unknown, extra: Extra = {}) =>
+  attachment(uuid, parentUuid, { type: "queued_command", prompt, commandMode: "prompt", ...extra });
 
 const text = (value: string) => ({ type: "text", text: value });
 const toolUse = (id: string) => ({ type: "tool_use", id, name: "Read", input: {} });
 const toolResult = (id: string) => ({ type: "tool_result", tool_use_id: id, content: "done" });
+const INTERRUPT = "[Request interrupted by user for tool use]";
 
 const lines = (records: ReadonlyArray<unknown>) =>
   records.map((record, index) => ({
     text: typeof record === "string" ? record : JSON.stringify(record),
-    offset: index * 100,
+    offset: index * 1000,
   }));
 
-function parse(
+const parse = (
   records: ReadonlyArray<unknown>,
   state: ClaudeTranscriptParserState = initialClaudeTranscriptParserState,
-) {
-  const result = parseClaudeTranscriptLines({ sessionId: SESSION, state, lines: lines(records) });
-  if (Result.isFailure(result)) throw result.failure;
-  return result.success;
-}
+) => parseClaudeTranscriptLines({ sessionId: SESSION, state, lines: lines(records) });
+
+const id = (lineUuid: string, block?: number) =>
+  block === undefined ? `x:${SESSION}:${lineUuid}` : `x:${SESSION}:${lineUuid}:${block}`;
 
 const summary = (events: ReadonlyArray<ClaudeTranscriptEvent>) =>
   events.map((event) => {
@@ -86,39 +101,96 @@ const summary = (events: ReadonlyArray<ClaudeTranscriptEvent>) =>
         return `start ${event.segmentId}`;
       case "Item":
         return `item ${event.item.id}`;
+      case "QueuedPrompt":
+        return `queued ${event.id} in ${event.segmentId}`;
       case "SegmentEnded":
         return `end ${event.segmentId} ${event.reason} ${event.lastAssistantUuid}`;
       case "Branch":
         return `branch ${event.lineUuid} from ${event.parentUuid}`;
+      case "ForkedFrom":
+        return `forked from ${event.sessionId}`;
       default:
         return event._tag;
     }
   });
 
+const prompts = (events: ReadonlyArray<ClaudeTranscriptEvent>) =>
+  events.flatMap((event) => (event._tag === "SegmentStarted" ? [event.prompt] : []));
+
 // One full turn: thinking, a tool call and its result, a two-block reply, then Claude's timing.
 const turn = [
   user("p1", null, "Read the file", { promptId: "prompt-1", origin: { kind: "human" } }),
-  assistant("a1", "p1", { type: "thinking", thinking: "", signature: "s" }, "tool_use"),
-  assistant("a2", "a1", toolUse("tool-1"), "tool_use"),
+  attachment("at1", "p1", { type: "hook_success" }),
+  assistant("a1", "at1", { type: "thinking", thinking: "", signature: "s" }, "tool_use", "m1"),
+  assistant("a2", "a1", toolUse("tool-1"), "tool_use", "m1"),
   user("r1", "a2", [toolResult("tool-1")], { promptId: "prompt-1" }),
-  assistant("a3", "r1", text("Part one"), "end_turn", "msg-2"),
-  assistant("a4", "a3", text("Part two"), "end_turn", "msg-2"),
-  turnDuration("d1", "a4", 1200),
+  assistant("a3", "r1", text("Part one"), "end_turn", "m2"),
+  assistant("a4", "a3", text("Part two"), "end_turn", "m2"),
+  turnDuration("d1", "a4"),
 ];
+
+// Every record shape the parser treats specially, in one transcript.
+const everything = [
+  ...turn,
+  user("p2", "d1", "Typed again under the same prompt id", { promptId: "prompt-1" }),
+  assistant("b1", "p2", toolUse("tool-2"), "tool_use"),
+  queued("q1", "b1", "Also check the tests", { origin: { kind: "human" } }),
+  user("r2", "b1", [toolResult("tool-2")], { promptId: "prompt-1" }),
+  user("i1", "r2", [text(INTERRUPT)], { promptId: "prompt-1" }),
+  turnDuration("d2", "i1"),
+  user("o1", "d2", "<local-command-stdout>late output</local-command-stdout>", {
+    promptId: "prompt-1",
+  }),
+  user("m1", "o1", "Peer message", {
+    isMeta: true,
+    promptId: "prompt-3",
+    origin: { kind: "peer" },
+  }),
+  assistant("c1", "m1", text("Answering the peer"), "end_turn"),
+  "not json",
+  system("local_command", "lc1", "c1", { content: "<command-name>/model</command-name>" }),
+  system("local_command", "lc2", "lc1", {
+    content: "<local-command-stdout>Set model</local-command-stdout>",
+  }),
+  queued("q2", "lc2", "<task-notification>done</task-notification>", {
+    commandMode: "task-notification",
+  }),
+  assistant("c2", "q2", text("Noted"), "end_turn"),
+  assistant("c2", "q2", text("Noted"), "end_turn"),
+  user("p4", "a4", "Rewound to the first reply", { promptId: "prompt-4" }),
+  assistant("e1", "p4", text("Forked work"), "end_turn", "me1", {
+    forkedFrom: { sessionId: "source-session", messageUuid: "source-message" },
+  }),
+  {
+    type: "system",
+    subtype: "compact_boundary",
+    uuid: "b1x",
+    parentUuid: null,
+    logicalParentUuid: "e1",
+    timestamp: AT,
+    compactMetadata: { trigger: "auto", preTokens: 1000, postTokens: 100 },
+  },
+  user("s1", "b1x", "Summary", { isCompactSummary: true, promptId: "prompt-5" }),
+  user("p5", "s1", "After compaction", { promptId: "prompt-5" }),
+];
+
+const encodeState = Schema.encodeSync(Schema.fromJsonString(ClaudeTranscriptParserState));
+const decodeState = Schema.decodeSync(Schema.fromJsonString(ClaudeTranscriptParserState));
 
 describe("parseClaudeTranscriptLines", () => {
   it("segments a turn and closes it on the reply and on Claude's turn timing", () => {
-    const { events, state } = parse(turn);
+    const { events, malformed } = parse(turn);
 
+    expect(malformed).toEqual([]);
     expect(summary(events)).toEqual([
       "start p1",
-      `item x:${SESSION}:p1`,
-      `item x:${SESSION}:a1:0`,
-      `item x:${SESSION}:a2:0`,
-      `item x:${SESSION}:r1:0`,
-      `item x:${SESSION}:a3:0`,
+      `item ${id("p1")}`,
+      `item ${id("a1", 0)}`,
+      `item ${id("a2", 0)}`,
+      `item ${id("r1", 0)}`,
+      `item ${id("a3", 0)}`,
       "end p1 turn-end a3",
-      `item x:${SESSION}:a4:0`,
+      `item ${id("a4", 0)}`,
       "end p1 turn-end a4",
       "end p1 turn-duration a4",
     ]);
@@ -128,22 +200,104 @@ describe("parseClaudeTranscriptLines", () => {
         title: "Read the file",
         promptId: "prompt-1",
         originKind: "human",
+        hidden: false,
       },
     });
-    expect(events.at(-1)).toMatchObject({ durationMs: 1200 });
-    expect(state).toEqual({
-      segment: { segmentId: "p1", promptId: "prompt-1", ended: true, lastAssistantUuid: "a4" },
-      lastUuid: "d1",
-    });
+    expect(events.at(-1)).toMatchObject({ durationMs: 1200, timestamp: LATER });
   });
 
-  it("gives the same events whether lines arrive at once or across reads", () => {
-    const whole = parse(turn);
-    const first = parse(turn.slice(0, 3));
-    const second = parse(turn.slice(3), first.state);
+  it("gives the same events and state at every split point, through the stored state", () => {
+    const whole = parse(everything);
+    const all = lines(everything);
 
-    expect([...first.events, ...second.events]).toEqual(whole.events);
-    expect(second.state).toEqual(whole.state);
+    for (let split = 0; split <= all.length; split += 1) {
+      const first = parseClaudeTranscriptLines({
+        sessionId: SESSION,
+        state: initialClaudeTranscriptParserState,
+        lines: all.slice(0, split),
+      });
+      const second = parseClaudeTranscriptLines({
+        sessionId: SESSION,
+        state: decodeState(encodeState(first.state)),
+        lines: all.slice(split),
+      });
+      expect([...first.events, ...second.events], `split at ${split}`).toEqual(whole.events);
+      expect([...first.malformed, ...second.malformed].map((error) => error.offset)).toEqual(
+        whole.malformed.map((error) => error.offset),
+      );
+      expect(second.state).toEqual(whole.state);
+    }
+  });
+
+  it("reads every record shape of a long session", () => {
+    const { events, malformed } = parse(everything);
+
+    expect(malformed.map((error) => error.offset)).toEqual([everything.indexOf("not json") * 1000]);
+    expect(summary(events)).toEqual([
+      ...summary(parse(turn).events),
+      "start p2",
+      `item ${id("p2")}`,
+      `item ${id("b1", 0)}`,
+      `queued ${id("q1")} in p2`,
+      `item ${id("r2", 0)}`,
+      `item ${id("i1", 0)}`,
+      "end p2 interrupted b1",
+      "end p2 interrupted b1",
+      `item ${id("o1")}`,
+      "end p2 interrupted b1",
+      "start m1",
+      `item ${id("c1", 0)}`,
+      "end m1 turn-end c1",
+      "start lc1",
+      `item ${id("lc1")}`,
+      "end lc1 turn-end undefined",
+      `item ${id("lc2")}`,
+      "end lc1 turn-end undefined",
+      "start q2",
+      `item ${id("q2")}`,
+      `item ${id("c2", 0)}`,
+      "end q2 turn-end c2",
+      "branch p4 from a4",
+      "start p4",
+      `item ${id("p4")}`,
+      "forked from source-session",
+      `item ${id("e1", 0)}`,
+      "end p4 turn-end e1",
+      "CompactBoundary",
+      "start p5",
+      `item ${id("p5")}`,
+    ]);
+    expect(prompts(events).map((prompt) => prompt?.text)).toEqual([
+      "Read the file",
+      "Typed again under the same prompt id",
+      "Peer message",
+      "/model",
+      "",
+      "Rewound to the first reply",
+      "After compaction",
+    ]);
+    expect(prompts(events)[2]).toMatchObject({
+      hidden: true,
+      originKind: "peer",
+      promptId: "prompt-3",
+    });
+    expect(prompts(events)[4]).toMatchObject({ originKind: "task-notification", hidden: false });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        _tag: "QueuedPrompt",
+        prompt: expect.objectContaining({ text: "Also check the tests", originKind: "human" }),
+        blocks: [text("Also check the tests")],
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        _tag: "Item",
+        item: expect.objectContaining({
+          id: id("e1", 0),
+          forkedFrom: { sessionId: "source-session", messageUuid: "source-message" },
+        }),
+      }),
+    );
   });
 
   it("closes an unfinished segment when the next prompt arrives", () => {
@@ -153,99 +307,169 @@ describe("parseClaudeTranscriptLines", () => {
       user("p2", "a1", "Second", { promptId: "prompt-2" }),
     ]);
 
-    expect(summary(events)).toContain("end p1 next-prompt a1");
-    expect(summary(events)).toContain("start p2");
-  });
-
-  it("ends a segment interrupted by the user without opening another", () => {
-    const { events } = parse([
-      user("p1", null, "Go", { promptId: "prompt-1" }),
-      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
-      user("i1", "a1", [text("[Request interrupted by user for tool use]")], {
-        promptId: "prompt-2",
-      }),
-    ]);
-
     expect(summary(events)).toEqual([
       "start p1",
-      `item x:${SESSION}:p1`,
-      `item x:${SESSION}:a1:0`,
-      `item x:${SESSION}:i1:0`,
-      "end p1 interrupted a1",
+      `item ${id("p1")}`,
+      `item ${id("a1", 0)}`,
+      "end p1 next-prompt a1",
+      "start p2",
+      `item ${id("p2")}`,
+    ]);
+  });
+
+  it("keeps a reply that follows an end in its segment and ends it again", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", text("Early"), "end_turn", "m1"),
+      assistant("a2", "a1", toolUse("tool-1"), "tool_use", "m1"),
+      user("r1", "a2", [toolResult("tool-1")], { promptId: "prompt-1" }),
+      assistant("a3", "r1", text("Done"), "end_turn", "m2"),
+      user("h1", "a3", "<bash-stdout>hook</bash-stdout>", { promptId: "prompt-1" }),
+    ]);
+
+    expect(summary(events).slice(3)).toEqual([
+      "end p1 turn-end a1",
+      `item ${id("a2", 0)}`,
+      `item ${id("r1", 0)}`,
+      `item ${id("a3", 0)}`,
+      "end p1 turn-end a3",
+      `item ${id("h1")}`,
+      "end p1 turn-end a3",
     ]);
   });
 
   it.each([
-    ["a meta line", user("m1", "a1", "Skill text", { isMeta: true, promptId: "prompt-9" })],
-    ["a sidechain line", user("s1", "a1", "Subagent prompt", { isSidechain: true })],
-    ["a compact summary", user("c1", "a1", "Summary", { isCompactSummary: true })],
-  ])("neither opens a segment nor records items for %s", (_name, record) => {
+    ["a meta line without a prompt id", user("m1", "a1", "Skill text", { isMeta: true })],
+    [
+      "a meta line of the same turn",
+      user("m1", "a1", "Skill", { isMeta: true, promptId: "prompt-1" }),
+    ],
+    ["a sidechain line", user("s1", "a1", "Subagent prompt", { isSidechain: true, promptId: "x" })],
+    ["a compact summary", user("c1", "a1", "Summary", { isCompactSummary: true, promptId: "y" })],
+  ])("adds nothing for %s", (_name, record) => {
     const { events } = parse([user("p1", null, "Go", { promptId: "prompt-1" }), record]);
 
-    expect(summary(events)).toEqual(["start p1", `item x:${SESSION}:p1`]);
+    expect(summary(events)).toEqual(["start p1", `item ${id("p1")}`]);
   });
 
-  it("keeps command output in its command's segment and opens one for a notification", () => {
+  it("opens a turn from a meta line only once a reply follows it", () => {
+    const opener = user("m1", "a1", "Wake up", { isMeta: true, promptId: "prompt-2" });
+    const base = [
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", text("Done"), "end_turn"),
+    ];
+
+    expect(
+      summary(parse([...base, opener, assistant("a2", "m1", text("Up"), "end_turn")]).events),
+    ).toEqual([
+      ...summary(parse(base).events),
+      "start m1",
+      `item ${id("a2", 0)}`,
+      "end m1 turn-end a2",
+    ]);
+    expect(
+      summary(
+        parse([...base, opener, user("p2", "m1", "Typed", { promptId: "prompt-2" })]).events,
+      ).slice(-2),
+    ).toEqual(["start p2", `item ${id("p2")}`]);
+  });
+
+  it("keeps a meta line that a tool result of its prompt id follows in the running turn", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      user("m1", "a1", "Hook context", { isMeta: true, promptId: "prompt-2" }),
+      user("r1", "m1", [toolResult("tool-1")], { promptId: "prompt-2" }),
+      assistant("a2", "r1", text("Done"), "end_turn"),
+    ]);
+
+    expect(summary(events).filter((line) => line.startsWith("start"))).toEqual(["start p1"]);
+  });
+
+  it("opens a segment for a queued prompt delivered after the turn ended", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", text("Done"), "end_turn"),
+      queued("q1", "a1", [text("Next one"), { type: "image", source: { type: "base64" } }]),
+      assistant("a2", "q1", text("On it"), "end_turn"),
+    ]);
+
+    expect(summary(events).slice(4)).toEqual([
+      "start q1",
+      `item ${id("q1", 0)}`,
+      `item ${id("q1", 1)}`,
+      `item ${id("a2", 0)}`,
+      "end q1 turn-end a2",
+    ]);
+    expect(prompts(events)[1]).toMatchObject({ text: "Next one", promptId: undefined });
+  });
+
+  it("records a slash command once when Claude Code also wrote it as a user line", () => {
     const { events } = parse([
       user("p1", null, "<command-name>/model</command-name>", { promptId: "prompt-1" }),
-      user("o1", "p1", "<local-command-stdout>Set model</local-command-stdout>", {
-        promptId: "prompt-1",
+      system("local_command", "lc1", "p1", { content: "<command-name>/model</command-name>" }),
+      system("local_command", "lc2", "lc1", {
+        content: "<local-command-stdout>Set</local-command-stdout>",
       }),
-      user("n1", "o1", "<task-notification>done</task-notification>", {
-        promptId: "prompt-2",
-        origin: { kind: "task-notification" },
-      }),
+    ]);
+
+    expect(summary(events)).toEqual(["start p1", `item ${id("p1")}`, `item ${id("lc2")}`]);
+  });
+
+  it("reports a branch only when a prompt abandons the segment before it", () => {
+    const parallel = [
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("t1"), "tool_use", "m1"),
+      assistant("a2", "a1", toolUse("t2"), "tool_use", "m1"),
+      user("r1", "a1", [toolResult("t1")], { promptId: "prompt-1" }),
+      user("r2", "a2", [toolResult("t2")], { promptId: "prompt-1" }),
+      assistant("a3", "a1", text("Done"), "end_turn", "m2"),
+      turnDuration("d1", "a3"),
+      attachment("at1", "d1", { type: "output_style" }),
+      user("p2", "d1", "Chained", { promptId: "prompt-2" }),
+      assistant("b1", "at1", text("Fine"), "end_turn"),
+    ];
+
+    expect(parse(parallel).events.filter((event) => event._tag === "Branch")).toEqual([]);
+    expect(
+      parse([...parallel, user("p3", "a3", "Rewound", { promptId: "prompt-3" })]).events.filter(
+        (event) => event._tag === "Branch",
+      ),
+    ).toEqual([{ _tag: "Branch", lineUuid: "p3", parentUuid: "a3", previousUuid: "b1" }]);
+  });
+
+  it("skips a line whose uuid it has already read", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", text("Done"), "end_turn"),
+      user("p2", "a1", "Next", { promptId: "prompt-2" }),
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a2", "p2", text("Again"), "end_turn"),
+      assistant("a2", "p2", text("Again"), "end_turn"),
     ]);
 
     expect(summary(events)).toEqual([
       "start p1",
-      `item x:${SESSION}:p1`,
-      `item x:${SESSION}:o1`,
-      "end p1 next-prompt undefined",
-      "start n1",
-      `item x:${SESSION}:n1`,
+      `item ${id("p1")}`,
+      `item ${id("a1", 0)}`,
+      "end p1 turn-end a1",
+      "start p2",
+      `item ${id("p2")}`,
+      `item ${id("a2", 0)}`,
+      "end p2 turn-end a2",
     ]);
-    expect(events[0]).toMatchObject({ prompt: { text: "/model" } });
-    expect(events.at(-2)).toMatchObject({ prompt: { text: "", originKind: "task-notification" } });
   });
 
   it("opens a segment for content that has no prompt before it", () => {
     const { events } = parse([assistant("a1", "earlier", text("Hi"), "end_turn")]);
 
-    expect(summary(events)).toEqual([
-      "branch a1 from earlier",
-      "start a1",
-      `item x:${SESSION}:a1:0`,
-      "end a1 turn-end a1",
-    ]);
-    expect(events[1]).toMatchObject({ prompt: undefined });
-  });
-
-  it("reports a prompt that branches from an earlier line, and not a chained one", () => {
-    const { events } = parse([
-      ...turn,
-      { type: "attachment", uuid: "at1", parentUuid: "d1", timestamp: AT, attachment: {} },
-      user("p2", "at1", "Chained", { promptId: "prompt-2" }),
-      user("p3", "a2", "Rewound", { promptId: "prompt-3" }),
-    ]);
-
-    expect(events.filter((event) => event._tag === "Branch")).toEqual([
-      { _tag: "Branch", lineUuid: "p3", parentUuid: "a2", previousUuid: "p2" },
-    ]);
+    expect(summary(events)).toEqual(["start a1", `item ${id("a1", 0)}`, "end a1 turn-end a1"]);
+    expect(prompts(events)).toEqual([undefined]);
   });
 
   it("records compaction, titles and the sessions a transcript derives from", () => {
     const { events } = parse([
       user("p1", null, "Go", { promptId: "prompt-1" }),
-      {
-        type: "system",
-        subtype: "compact_boundary",
-        uuid: "b1",
-        parentUuid: null,
-        logicalParentUuid: "p1",
-        timestamp: AT,
-        compactMetadata: { trigger: "auto", preTokens: 1000, postTokens: 100 },
-      },
       { type: "ai-title", aiTitle: "Generated", sessionId: SESSION },
       { type: "ai-title", aiTitle: "<command-name>/clear</command-name>", sessionId: SESSION },
       { type: "custom-title", customTitle: "Renamed", sessionId: SESSION },
@@ -260,15 +484,6 @@ describe("parseClaudeTranscriptLines", () => {
     ]);
 
     expect(events.slice(2)).toEqual([
-      {
-        _tag: "CompactBoundary",
-        segmentId: "p1",
-        lineUuid: "b1",
-        logicalParentUuid: "p1",
-        trigger: "auto",
-        preTokens: 1000,
-        timestamp: AT,
-      },
       { _tag: "Title", source: "ai", title: "Generated" },
       { _tag: "Title", source: "custom", title: "Renamed" },
       { _tag: "Title", source: "custom", title: null },
@@ -281,25 +496,45 @@ describe("parseClaudeTranscriptLines", () => {
     ["a record without a type", { uuid: "x1" }],
     ["a reply without a uuid", { type: "assistant", message: { content: [text("Hi")] } }],
     ["a prompt without a timestamp", { ...user("p2", "p1", "Hi"), timestamp: undefined }],
+    ["text that is not a string", user("p2", "p1", [{ type: "text", text: 3 }])],
+    ["content that is neither text nor blocks", user("p2", "p1", 3)],
+    ["a prompt id that is not a string", user("p2", "p1", "Hi", { promptId: 3 })],
+    ["an origin that is not a record", user("p2", "p1", "Hi", { origin: "human" })],
+    [
+      "a fork source without its message",
+      user("p2", "p1", "Hi", { forkedFrom: { sessionId: "s" } }),
+    ],
     [
       "a tool call without an id",
       assistant("a1", "p1", { type: "tool_use", name: "Read" }, "tool_use"),
     ],
-    ["a turn timing without its duration", { ...turnDuration("d1", "p1", 1), durationMs: "1" }],
     [
-      "a compaction without its metadata",
-      { type: "system", subtype: "compact_boundary", uuid: "b1", timestamp: AT },
+      "a stop reason that is not text",
+      assistant("a1", "p1", text("Hi"), "end_turn", "m", {
+        message: { content: [], stop_reason: 1 },
+      }),
     ],
+    ["a turn timing without its duration", { ...turnDuration("d1", "p1"), durationMs: "1" }],
+    ["a queued prompt without its text", attachment("q1", "p1", { type: "queued_command" })],
+    ["a slash command without its text", system("local_command", "lc1", "p1")],
+    ["a compaction without its metadata", system("compact_boundary", "b1", null)],
     ["a title that is not text", { type: "ai-title", aiTitle: 3 }],
-  ])("fails loudly at %s", (_name, record) => {
-    const result = parseClaudeTranscriptLines({
-      sessionId: SESSION,
-      state: initialClaudeTranscriptParserState,
-      lines: lines([user("p1", null, "Go"), record]),
-    });
+  ])("steps past %s, keeping what came before and after", (_name, record) => {
+    const { events, malformed, state } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      record,
+      assistant("a9", "p1", text("Still read"), "end_turn"),
+    ]);
 
-    const failure = Result.isFailure(result) ? result.failure : undefined;
-    expect(failure).toBeInstanceOf(ClaudeTranscriptLineError);
-    expect(failure?.offset).toBe(100);
+    expect(malformed).toHaveLength(1);
+    expect(malformed[0]).toBeInstanceOf(ClaudeTranscriptLineError);
+    expect(malformed[0]?.offset).toBe(1000);
+    expect(summary(events)).toEqual([
+      "start p1",
+      `item ${id("p1")}`,
+      `item ${id("a9", 0)}`,
+      "end p1 turn-end a9",
+    ]);
+    expect(state.lastUuid).toBe("a9");
   });
 });
