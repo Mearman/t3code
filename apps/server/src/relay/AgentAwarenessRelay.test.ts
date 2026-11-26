@@ -1201,6 +1201,122 @@ describe("AgentAwarenessRelay", () => {
       Effect.provide(ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
     ),
   );
+
+  it.effect("clears a live card instead of alerting a run read back from a transcript", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+      const pulls = yield* Queue.unbounded<void>();
+      const { relay, publications } = yield* makeTestRelay({
+        readShell: (threadId) => store.getThreadShell(threadId).pipe(Effect.orDie),
+        domainEvents: Stream.fromEffectRepeat(
+          Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(events))),
+        ),
+      });
+      yield* relay.start();
+      yield* Queue.take(pulls);
+      const deliver = Effect.fnUntraced(function* (event: OrchestrationV2DomainEvent) {
+        yield* store.apply(event);
+        yield* Queue.offer(events, event);
+        yield* Queue.take(pulls);
+        yield* relay.drain;
+      });
+
+      const now = yield* DateTime.now;
+      const run = (id: string, ordinal: number) => ({
+        id: RunId.make(id),
+        threadId: THREAD_ID,
+        ordinal,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+        providerThreadId: null,
+        userMessageId: MessageId.make(`message:${id}`),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "running" as const,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      });
+      const appRun = run("run:app", 1);
+      const transcriptRun = {
+        ...run("run:transcript", 2),
+        status: "completed" as const,
+        completedAt: now,
+        nativeOrigin: {
+          kind: "claude_transcript" as const,
+          nativeSessionId: "session-1",
+          promptUuid: "prompt-1",
+        },
+      };
+
+      yield* deliver({
+        id: EventId.make("event:transcript:thread"),
+        type: "thread.created",
+        threadId: THREAD_ID,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: THREAD_ID,
+          projectId: PROJECT_ID,
+          title: "Thread",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { rootThreadId: THREAD_ID, parentThreadId: null, relationshipToParent: null },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      yield* deliver({
+        id: EventId.make("event:transcript:app-run"),
+        type: "run.created",
+        threadId: THREAD_ID,
+        runId: appRun.id,
+        occurredAt: now,
+        payload: appRun,
+      });
+      yield* deliver({
+        id: EventId.make("event:transcript:app-run-completed"),
+        type: "run.updated",
+        threadId: THREAD_ID,
+        runId: appRun.id,
+        occurredAt: now,
+        payload: { ...appRun, status: "completed", completedAt: now },
+      });
+      yield* deliver({
+        id: EventId.make("event:transcript:native-run"),
+        type: "run.created",
+        threadId: THREAD_ID,
+        runId: transcriptRun.id,
+        occurredAt: now,
+        payload: transcriptRun,
+      });
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", null],
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+    ),
+  );
 });
 
 it.effect("catches up after startup without polling after success", () =>

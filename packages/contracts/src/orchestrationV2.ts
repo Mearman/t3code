@@ -817,6 +817,21 @@ export const OrchestrationV2RunOutput = Schema.Struct({
 });
 export type OrchestrationV2RunOutput = typeof OrchestrationV2RunOutput.Type;
 
+/**
+ * A run T3 did not execute: it was read back from a provider's own transcript. It is written already finished, so lifecycle consumers that would act on a run T3 sent must skip it.
+ */
+const OrchestrationV2RunNativeOrigin = Schema.Struct({
+  kind: Schema.Literal("claude_transcript"),
+  nativeSessionId: TrimmedNonEmptyString,
+  /** The transcript uuid of the prompt line that opened this run; the run's idempotency key. */
+  promptUuid: TrimmedNonEmptyString,
+  /** Claude's own label for who sent the prompt, such as `human` or `task_notification`. */
+  turnOrigin: Schema.optional(TrimmedNonEmptyString),
+  /** The uuid the prompt continued from when it is not the previous run's last line. */
+  branchedFrom: Schema.optional(TrimmedNonEmptyString),
+});
+export type OrchestrationV2RunNativeOrigin = typeof OrchestrationV2RunNativeOrigin.Type;
+
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
   threadId: ThreadId,
@@ -863,8 +878,13 @@ export const OrchestrationV2Run = Schema.Struct({
    * the turn started, and their updates must not put an unanswered run back.
    */
   output: Schema.optional(OrchestrationV2RunOutput),
+  nativeOrigin: Schema.optional(OrchestrationV2RunNativeOrigin),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
+
+/** Whether T3 executed this run, as opposed to reading it back from a provider transcript. */
+export const isNativeOriginRun = (run: Pick<OrchestrationV2Run, "nativeOrigin">): boolean =>
+  run.nativeOrigin !== undefined;
 
 export const OrchestrationV2RunOutputSubmitted = Schema.Struct({
   runId: RunId,

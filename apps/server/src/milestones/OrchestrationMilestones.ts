@@ -1,4 +1,5 @@
 import {
+  isNativeOriginRun,
   type GuestMessageId,
   type GuestShareId,
   type MilestoneActor,
@@ -136,6 +137,8 @@ const make = Effect.gen(function* () {
           const run = event.payload;
           // A queued run cancelled before it started did no work worth telling of.
           if (run.startedAt === null || run.completedAt === null || !isNew(run.completedAt)) return;
+          // A run read back from a provider transcript happened outside T3.
+          if (isNativeOriginRun(run)) return;
           if (
             run.status !== "completed" &&
             run.status !== "failed" &&

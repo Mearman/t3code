@@ -12,6 +12,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   RuntimeRequestId,
   ThreadId,
   type ThreadGuestMessage,
@@ -237,6 +238,20 @@ it.effect("tells each thread transition once, with its lineage", () =>
       // A later update of a settled run is not a second settlement.
       ended("event:parent-done-again", parentRun, "completed"),
       ended("event:child-failed", childRun, "failed"),
+      // A run read back from the Claude transcript happened outside T3, so it is not told.
+      ended(
+        "event:native-done",
+        {
+          ...parentRun,
+          id: RunId.make("run:milestone-native"),
+          nativeOrigin: {
+            kind: "claude_transcript",
+            nativeSessionId: "session-1",
+            promptUuid: "prompt-1",
+          },
+        },
+        "completed",
+      ),
       request("event:asked", "pending"),
       request("event:answered", "resolved"),
       shared("event:guest-asked", [guestMessage("guest:one", "pending")]),
