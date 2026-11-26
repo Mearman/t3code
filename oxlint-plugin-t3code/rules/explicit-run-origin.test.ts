@@ -37,6 +37,14 @@ describe("t3code/explicit-run-origin", () => {
      export const last = coveredRuns.at(-1);`,
   );
 
+  rule.valid(
+    "allows a pick from a decided collection that may be absent",
+    `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;
+     declare const initial: { runs: ReadonlyArray<{ ordinal: number }> } | null;
+     const initialRuns = initial == null ? undefined : runsByOrigin(initial.runs, "any");
+     export const last = initialRuns?.at(-1);`,
+  );
+
   rule.invalid(
     "reports a conditional that falls back to a bare run collection",
     `declare const projection: { runs: ReadonlyArray<{ ordinal: number }> };

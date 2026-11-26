@@ -65,6 +65,14 @@ function runCollection(
   decided: ReadonlySet<string>,
 ): "undecided" | "decided" | undefined {
   const expression = unwrap(node);
+  // An empty array, or no collection at all, holds no runs to choose among.
+  if (
+    (expression.type === "ArrayExpression" && expression.elements.length === 0) ||
+    (expression.type === "Identifier" && expression.name === "undefined") ||
+    (expression.type === "Literal" && expression.value === null)
+  ) {
+    return "decided";
+  }
   if (expression.type === "Identifier") {
     if (decided.has(expression.name)) return "decided";
     return RUN_COLLECTION_NAME.test(expression.name) ? "undecided" : undefined;
@@ -73,8 +81,6 @@ function runCollection(
     const name = memberName(expression);
     return name !== undefined && RUN_COLLECTION_NAME.test(name) ? "undecided" : undefined;
   }
-  // An empty array holds no runs to choose among.
-  if (expression.type === "ArrayExpression" && expression.elements.length === 0) return "decided";
   if (expression.type === "ConditionalExpression" || expression.type === "LogicalExpression") {
     const branches =
       expression.type === "ConditionalExpression"
