@@ -337,7 +337,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
     >,
   ) =>
     Effect.forEach(Object.entries(operations), ([name, operation]) =>
-      Effect.flip(operation).pipe(Effect.map((refusal) => [name, refusal] as const)),
+      Effect.flip(Effect.asVoid(operation)).pipe(Effect.map((refusal) => [name, refusal] as const)),
     );
   const expectInUse = (name: string, refusal: unknown) => {
     // The tag is what stops the turn start service from opening a fresh native session.
