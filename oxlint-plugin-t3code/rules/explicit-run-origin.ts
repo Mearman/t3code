@@ -359,10 +359,8 @@ export default defineRule({
       // Runs first, so a variable is known to be decided wherever it is used.
       Program(node) {
         // Repeats until nothing new is learned: a function can return a variable, and the reverse.
-        while (learned) {
-          learned = false;
-          collectDecided(node as Node, node as Node);
-        }
+        learned = false;
+        collectDecided(node as Node, node as Node);
       },
       CallExpression(node) {
         const callee = unwrap(node.callee as Node);
