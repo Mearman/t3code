@@ -26,6 +26,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -8028,12 +8029,15 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           const failures: Array<unknown> = [];
           let pins = 0;
           let bumps = 0;
+          let steps = 0;
+          // Both checks run at once; one stager at a time keeps their adds from meeting each other.
+          const stager = yield* Semaphore.make(1);
           // Stages a new file in both worktrees, as an agent's own Git might at any moment.
           const addEverywhere = Effect.forEach(
             [outer, inner],
             (worktreePath) =>
               Effect.gen(function* () {
-                const file = `step-${added.length}.txt`;
+                const file = `step-${steps++}.txt`;
                 yield* writeTextFile(worktreePath, file, "step\n");
                 yield* git(worktreePath, ["add", file]);
                 added.push(path.join(worktreePath, file));
@@ -8044,7 +8048,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
                 Effect.provideService(Path.Path, path),
               ),
             { discard: true },
-          );
+          ).pipe(stager.withPermit);
           const fixture = yield* racyIndexFixture({
             afterPin: Effect.sync(() => pins++).pipe(Effect.andThen(addEverywhere)),
             beforeBump: Effect.sync(() => bumps++).pipe(Effect.andThen(addEverywhere)),
