@@ -58,6 +58,11 @@ export type ClaudeTranscriptEndReason =
   | "interrupted"
   | "next-prompt";
 
+/**
+ * What a read of a transcript reports, in file order. `Item`, `QueuedPrompt` and `SegmentEnded`
+ * name the segment their line continues, which can be an earlier one than the latest: Claude Code
+ * keeps writing a turn after a newer prompt starts.
+ */
 export type ClaudeTranscriptEvent =
   | {
       readonly _tag: "SegmentStarted";
@@ -92,7 +97,7 @@ export type ClaudeTranscriptEvent =
       readonly durationMs: number | undefined;
     }
   | {
-      /** A segment whose parent is older than the segment before it, abandoning that one. */
+      /** A segment that starts from a line before the latest segment, not after it; both can go on. */
       readonly _tag: "Branch";
       readonly lineUuid: string;
       readonly parentUuid: string;
@@ -126,13 +131,16 @@ const SegmentState = Schema.Struct({
   segmentId: Schema.String,
   /** The turn's prompt id, which the output Claude Code writes for the turn repeats. */
   promptId: Schema.NullOr(Schema.String),
+  startedAt: Schema.String,
   endReason: Schema.NullOr(EndReason),
+  durationMs: Schema.NullOr(Schema.Number),
   lastAssistantUuid: Schema.NullOr(Schema.String),
-  openerText: Schema.String,
+  /** The latest reply stopped for a tool, so the turn goes on when its result arrives. */
+  awaitingTool: Schema.Boolean,
 });
 type SegmentState = typeof SegmentState.Type;
 
-// A meta line with a new prompt id opens a turn once a reply or an interrupt follows it.
+// A meta line with a new prompt id opens a turn once a line descending from it follows.
 const PendingOpener = Schema.Struct({
   uuid: Schema.String,
   parentUuid: Schema.NullOr(Schema.String),
@@ -142,7 +150,7 @@ const PendingOpener = Schema.Struct({
   titleText: Schema.String,
   originKind: Schema.NullOr(Schema.String),
   forkedFrom: Schema.NullOr(ForkSource),
-  /** The line before the opener, and whether the opener's parent abandons the open segment. */
+  /** The line before the opener, and whether the opener's parent is outside the latest segment. */
   previousUuid: Schema.NullOr(Schema.String),
   branches: Schema.Boolean,
 });
@@ -152,12 +160,15 @@ const PendingOpener = Schema.Struct({
  * is not kept here: the consumer stores each read's `consumedUuids` and names them in `known`.
  */
 export const ClaudeTranscriptParserState = Schema.Struct({
-  /** The latest segments, oldest first; the last is the one new content joins. */
+  /** Segments a recent uuid still names, and the latest, oldest first. */
   segments: Schema.Array(SegmentState),
+  /** The next segment's ordinal; a pending meta opener's lines are already filed under it. */
   nextOrdinal: Schema.Number,
   /** The latest main-chain uuids with their segment ordinals, oldest first. */
   recentUuids: Schema.Array(Schema.Tuple([Schema.String, Schema.Number])),
   lastUuid: Schema.NullOr(Schema.String),
+  /** What the latest segment's prompt showed, to spot a command Claude Code records twice. */
+  latestOpenerText: Schema.String,
   pendingOpener: Schema.NullOr(PendingOpener),
   forkSessionId: Schema.NullOr(Schema.String),
 });
@@ -168,14 +179,17 @@ export const initialClaudeTranscriptParserState: ClaudeTranscriptParserState = {
   nextOrdinal: 0,
   recentUuids: [],
   lastUuid: null,
+  latestOpenerText: "",
   pendingOpener: null,
   forkSessionId: null,
 };
 
-// Claude Code writes a line's parent a few records before it, and finishes a reply within a
-// few turns of the next prompt; these bound the stored state of a long session.
+// Bounds the stored state. A parent further back, or written after its child, is not found, and
+// its line joins the latest segment.
 const RECENT_UUID_LIMIT = 512;
-const RECENT_SEGMENT_LIMIT = 16;
+
+// Claude Code's model name for the reply it writes itself, such as after an interrupt.
+const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
 
 export class ClaudeTranscriptLineError extends Schema.TaggedError<ClaudeTranscriptLineError>()(
   "ClaudeTranscriptLineError",
@@ -364,7 +378,7 @@ type DecodedRecord =
   | {
       readonly kind: "conversation";
       readonly line: typeof ConversationLine.Type;
-      readonly entry: unknown;
+      readonly isTurnEnd: boolean;
       readonly blocks: ReadonlyArray<IndexedBlock>;
       readonly visible: Visible;
       readonly isToolResult: boolean;
@@ -396,7 +410,7 @@ function decodeBody(type: string, entry: unknown): DecodedRecord {
       return {
         kind: "conversation",
         line,
-        entry,
+        isTurnEnd: isClaudeTranscriptTurnEnd(entry),
         blocks,
         visible: claudeUserText(blockText(blocks)),
         isToolResult: blocks.some(({ block }) => typeof field(block, "tool_use_id") === "string"),
@@ -526,7 +540,10 @@ export interface ClaudeTranscriptParseResult {
   readonly events: ReadonlyArray<ClaudeTranscriptEvent>;
   /** Lines that could not be understood; each was stepped past, its uuid kept as a parent. */
   readonly malformed: ReadonlyArray<ClaudeTranscriptLineError>;
-  /** The uuids first read here, in file order; the consumer stores them with the new state. */
+  /**
+   * The uuids whose lines this fold read, malformed ones excepted. Store them in the same commit
+   * as the events and the new state, never before, or a failed commit loses those lines for good.
+   */
   readonly consumedUuids: ReadonlyArray<string>;
 }
 
@@ -545,8 +562,9 @@ export function foldClaudeTranscriptLines(input: {
   const segments = [...input.state.segments];
   let nextOrdinal = input.state.nextOrdinal;
   const recentUuids = [...input.state.recentUuids];
-  const recentSegment = new Map(recentUuids);
+  const recentOrdinal = new Map(recentUuids);
   let lastUuid = input.state.lastUuid;
+  let latestOpenerText = input.state.latestOpenerText;
   let pendingOpener = input.state.pendingOpener;
   let forkSessionId = input.state.forkSessionId;
   const events: Array<ClaudeTranscriptEvent> = [];
@@ -557,52 +575,76 @@ export function foldClaudeTranscriptLines(input: {
   const itemId = (lineUuid: string, index: number | undefined) =>
     claudeTranscriptItemId(input.sessionId, lineUuid, index);
   const current = () => segments.at(-1);
+  const isLatest = (segment: SegmentState) => segment.ordinal === current()?.ordinal;
   const byOrdinal = (ordinal: number) => segments.find((segment) => segment.ordinal === ordinal);
   const update = (next: SegmentState) => {
     const index = segments.findIndex((segment) => segment.ordinal === next.ordinal);
     segments[index] = next;
     return next;
   };
+  const parentOrdinal = (parentUuid: string | null) =>
+    parentUuid === null ? undefined : recentOrdinal.get(parentUuid);
+
+  // Keeps every segment a recent uuid names, so a parent in the window never resolves elsewhere.
+  const pruneSegments = () => {
+    const named = new Set(recentOrdinal.values());
+    const latest = current();
+    for (let index = segments.length - 1; index >= 0; index -= 1) {
+      const segment = segments[index];
+      if (segment !== undefined && segment !== latest && !named.has(segment.ordinal)) {
+        segments.splice(index, 1);
+      }
+    }
+  };
 
   const remember = (uuid: string, ordinal: number | undefined) => {
     lastUuid = uuid;
-    if (ordinal === undefined || recentSegment.has(uuid)) return;
+    if (ordinal === undefined || recentOrdinal.has(uuid)) return;
     recentUuids.push([uuid, ordinal]);
-    recentSegment.set(uuid, ordinal);
+    recentOrdinal.set(uuid, ordinal);
     const evicted = recentUuids.length > RECENT_UUID_LIMIT ? recentUuids.shift() : undefined;
-    if (evicted !== undefined) recentSegment.delete(evicted[0]);
+    if (evicted !== undefined) recentOrdinal.delete(evicted[0]);
   };
 
   // The segment a line continues: its parent's when that is recent, else the latest one.
   const segmentFor = (parentUuid: string | null) => {
-    const ordinal = parentUuid === null ? undefined : recentSegment.get(parentUuid);
+    const ordinal = parentOrdinal(parentUuid);
     const parentSegment = ordinal === undefined ? undefined : byOrdinal(ordinal);
     return parentSegment ?? current();
   };
 
-  // A parent read before that is not in the latest segment abandons it.
+  // A parent read before that is not in the latest segment: the new segment starts from it.
   const branchesFrom = (parentUuid: string | null) => {
     const latest = current();
     if (latest === undefined || parentUuid === null) return false;
-    const ordinal = recentSegment.get(parentUuid);
+    const ordinal = recentOrdinal.get(parentUuid);
     if (ordinal !== undefined) return ordinal !== latest.ordinal;
     return input.known.has(parentUuid) || consumedHere.has(parentUuid);
+  };
+
+  // A pending meta opener's lines are filed under the ordinal its segment will take.
+  const discardPending = () => {
+    if (pendingOpener === null) return;
+    pendingOpener = null;
+    nextOrdinal += 1;
   };
 
   const emitEnd = (
     segment: SegmentState,
     reason: ClaudeTranscriptEndReason,
     timestamp: string,
-    durationMs?: number,
+    durationMs: number | null = segment.endReason === reason ? segment.durationMs : null,
   ) => {
-    const ended = update({ ...segment, endReason: reason });
+    const ended = update({ ...segment, endReason: reason, durationMs });
+    // Claude Code can write a turn's later lines with earlier timestamps than its prompt.
+    const at = Date.parse(timestamp) < Date.parse(ended.startedAt) ? ended.startedAt : timestamp;
     events.push({
       _tag: "SegmentEnded",
       segmentId: ended.segmentId,
       reason,
       lastAssistantUuid: ended.lastAssistantUuid ?? undefined,
-      timestamp,
-      durationMs,
+      timestamp: at,
+      durationMs: durationMs ?? undefined,
     });
     return ended;
   };
@@ -621,6 +663,7 @@ export function foldClaudeTranscriptLines(input: {
       branches: branchesFrom(opener.parentUuid),
       previousUuid: lastUuid,
     },
+    fromPending = false,
   ) => {
     const latest = current();
     if (latest !== undefined && latest.endReason === null) {
@@ -634,18 +677,21 @@ export function foldClaudeTranscriptLines(input: {
         previousUuid: branch.previousUuid,
       });
     }
+    if (!fromPending) discardPending();
     const opened: SegmentState = {
       ordinal: nextOrdinal,
       segmentId: opener.uuid,
       promptId,
+      startedAt: opener.timestamp,
       endReason: null,
+      durationMs: null,
       lastAssistantUuid: null,
-      openerText: prompt?.text ?? "",
+      awaitingTool: false,
     };
     nextOrdinal += 1;
-    segments.push(opened);
-    if (segments.length > RECENT_SEGMENT_LIMIT) segments.shift();
     pendingOpener = null;
+    segments.push(opened);
+    latestOpenerText = prompt?.text ?? "";
     events.push({
       _tag: "SegmentStarted",
       segmentId: opener.uuid,
@@ -710,23 +756,25 @@ export function foldClaudeTranscriptLines(input: {
       opener.promptId,
       prompt(opener, opener.promptId, opener.originKind ?? undefined, true),
       opener,
+      true,
     );
 
-  // A reply or an interrupt opens a pending meta-opened turn unless it continues an older one.
+  // A line opens the pending meta-opened turn when it descends from the opener, or when its
+  // parent is unknown, as where compaction breaks the chain.
   const takesPending = (parentUuid: string | null) => {
     if (pendingOpener === null) return false;
-    const target = segmentFor(parentUuid);
-    return (
-      parentUuid === pendingOpener.uuid ||
-      target === undefined ||
-      target.ordinal === current()?.ordinal
-    );
+    const ordinal = parentOrdinal(parentUuid);
+    return ordinal === undefined || ordinal === nextOrdinal;
   };
+
+  // Ended only by a newer prompt while waiting on a tool, the turn is still running.
+  const isRunning = (segment: SegmentState) =>
+    segment.endReason === null || (segment.endReason === "next-prompt" && segment.awaitingTool);
 
   const conversation = (record: Extract<DecodedRecord, { kind: "conversation" }>) => {
     const { line, blocks, visible } = record;
     const promptId = line.promptId ?? undefined;
-    if (line.isCompactSummary === true) return segmentFor(line.parentUuid);
+    if (line.isCompactSummary === true) return parentOrdinal(line.parentUuid) ?? current()?.ordinal;
     noteFork(line.forkedFrom);
     if (line.type === "assistant") {
       const target =
@@ -734,14 +782,26 @@ export function foldClaudeTranscriptLines(input: {
           ? openPending(pendingOpener)
           : (segmentFor(line.parentUuid) ?? open(line, null, undefined));
       pushItems(target.segmentId, line, "assistant", blocks, line.message);
-      // A late line of an earlier turn keeps that turn's end; the latest turn is running again.
-      const endReason = isClaudeTranscriptTurnEnd(record.entry)
-        ? "turn-end"
-        : target.ordinal === current()?.ordinal
-          ? null
-          : target.endReason;
-      const replied = update({ ...target, endReason: null, lastAssistantUuid: line.uuid });
-      return endReason === null ? replied : emitEnd(replied, endReason, line.timestamp);
+      // Claude Code's own reply after an interrupt leaves the turn interrupted.
+      if (line.message.model === CLAUDE_SYNTHETIC_MODEL && target.endReason === "interrupted") {
+        return emitEnd(target, "interrupted", line.timestamp).ordinal;
+      }
+      // A late line of a superseded turn keeps its end; the latest turn is running again.
+      const endReason = record.isTurnEnd ? "turn-end" : isLatest(target) ? null : target.endReason;
+      const replied = update({
+        ...target,
+        endReason: null,
+        lastAssistantUuid: line.uuid,
+        awaitingTool: line.message.stop_reason === "tool_use",
+      });
+      return endReason === null
+        ? replied.ordinal
+        : emitEnd(
+            replied,
+            endReason,
+            line.timestamp,
+            endReason === target.endReason ? target.durationMs : null,
+          ).ordinal;
     }
     if (line.isMeta === true) {
       // Claude Code can follow a turn's opening meta line with more; the first one opens it.
@@ -751,6 +811,7 @@ export function foldClaudeTranscriptLines(input: {
         promptId !== latest?.promptId &&
         promptId !== pendingOpener?.promptId
       ) {
+        discardPending();
         pendingOpener = {
           uuid: line.uuid,
           parentUuid: line.parentUuid,
@@ -763,8 +824,9 @@ export function foldClaudeTranscriptLines(input: {
           previousUuid: lastUuid,
           branches: branchesFrom(line.parentUuid),
         };
+        return nextOrdinal;
       }
-      return segmentFor(line.parentUuid);
+      return parentOrdinal(line.parentUuid) ?? current()?.ordinal;
     }
     if (record.isInterrupt) {
       const opener = pendingOpener;
@@ -773,16 +835,17 @@ export function foldClaudeTranscriptLines(input: {
           ? openPending(opener)
           : (segmentFor(line.parentUuid) ?? open(line, null, undefined));
       pushItems(target.segmentId, line, "user", blocks);
-      return emitEnd(target, "interrupted", line.timestamp);
+      return emitEnd(update({ ...target, awaitingTool: false }), "interrupted", line.timestamp)
+        .ordinal;
     }
     if (record.isToolResult) {
+      const target = segmentFor(line.parentUuid) ?? open(line, null, undefined);
       // A result carrying a pending meta line's prompt id shows that line continued this turn.
-      const latest = current();
-      if (latest !== undefined && promptId !== undefined && promptId === pendingOpener?.promptId) {
-        update({ ...latest, promptId });
-        pendingOpener = null;
+      if (promptId !== undefined && promptId === pendingOpener?.promptId) {
+        update({ ...target, promptId });
+        discardPending();
       }
-      return continueWith(line, blocks);
+      return continueWith(line, blocks).ordinal;
     }
     // Claude Code's own output for a command or shell run shows no text and repeats its prompt id.
     const latest = current();
@@ -790,14 +853,14 @@ export function foldClaudeTranscriptLines(input: {
       latest === undefined ||
       visible.text.length > 0 ||
       (promptId !== undefined && promptId !== latest.promptId);
-    if (!opensSegment) return continueWith(line, blocks);
+    if (!opensSegment) return continueWith(line, blocks).ordinal;
     const opened = open(
       line,
       promptId ?? null,
       prompt(visible, promptId, line.origin?.kind, false),
     );
     pushItems(opened.segmentId, line, "user", blocks);
-    return opened;
+    return opened.ordinal;
   };
 
   const queued = (record: Extract<DecodedRecord, { kind: "queued" }>) => {
@@ -811,8 +874,8 @@ export function foldClaudeTranscriptLines(input: {
       line.attachment.isMeta === true,
     );
     const target = segmentFor(line.parentUuid);
-    if (target !== undefined && target.endReason === null) {
-      pendingOpener = null;
+    if (target !== undefined && isRunning(target)) {
+      discardPending();
       events.push({
         _tag: "QueuedPrompt",
         segmentId: target.segmentId,
@@ -823,46 +886,47 @@ export function foldClaudeTranscriptLines(input: {
         blocks: blocks.map(({ block }) => block),
         forkedFrom: line.forkedFrom,
       });
-      return target;
+      return target.ordinal;
     }
     // Delivered after the turn ended, it starts the next one within the same prompt id.
     const opened = open(line, current()?.promptId ?? null, queuedPrompt);
     pushItems(opened.segmentId, line, "user", blocks);
-    return opened;
+    return opened.ordinal;
   };
 
   const localCommand = (record: Extract<DecodedRecord, { kind: "localCommand" }>) => {
     const { line, blocks } = record;
     noteFork(line.forkedFrom);
-    if (!isLocalCommandInput(line.content)) return continueWith(line, blocks);
-    const latest = current();
-    // A command chained into a reply that waits on a tool belongs to that turn, which carries on.
+    if (!isLocalCommandInput(line.content)) return continueWith(line, blocks).ordinal;
+    // A command chained to the reply a turn's tool call waits on belongs to it, and it carries on.
+    const target = segmentFor(line.parentUuid);
     if (
-      latest !== undefined &&
-      line.parentUuid !== null &&
-      recentSegment.get(line.parentUuid) === latest.ordinal &&
-      latest.endReason === null &&
-      latest.lastAssistantUuid !== null
+      target !== undefined &&
+      line.parentUuid === target.lastAssistantUuid &&
+      target.awaitingTool &&
+      isRunning(target)
     ) {
-      return continueWith(line, blocks);
+      return continueWith(line, blocks).ordinal;
     }
     const visible = claudeUserText(line.content);
+    const latest = current();
     // Claude Code can record one command both as a user line and as this system record.
-    if (latest?.segmentId === line.parentUuid && latest.openerText === visible.text) return latest;
-    // A command sits outside the conversation, so its parent abandons nothing.
+    if (latest?.segmentId === line.parentUuid && latestOpenerText === visible.text) {
+      return latest.ordinal;
+    }
+    // A command sits outside the conversation, so its parent starts no branch.
     const opened = open(line, null, prompt(visible, undefined, undefined, false), {
       branches: false,
       previousUuid: lastUuid,
     });
     pushItems(opened.segmentId, line, "user", blocks);
     // A command Claude Code runs itself has no reply to wait for.
-    return emitEnd(opened, "turn-end", line.timestamp);
+    return emitEnd(opened, "turn-end", line.timestamp).ordinal;
   };
 
-  const apply = (
-    header: typeof RecordHeader.Type,
-    record: DecodedRecord,
-  ): SegmentState | undefined => {
+  // Returns the ordinal of the segment the line is filed under, for its children to follow.
+  const apply = (header: typeof RecordHeader.Type, record: DecodedRecord): number | undefined => {
+    const parentUuid = header.parentUuid ?? null;
     switch (record.kind) {
       case "conversation":
         return conversation(record);
@@ -871,15 +935,17 @@ export function foldClaudeTranscriptLines(input: {
       case "localCommand":
         return localCommand(record);
       case "turnDuration": {
-        const target = segmentFor(header.parentUuid ?? null);
+        const target = segmentFor(parentUuid);
         if (target === undefined) return undefined;
         // Claude Code times interrupted turns too; the interrupt stays the reason.
-        return emitEnd(
-          target,
-          target.endReason === "interrupted" ? "interrupted" : "turn-duration",
+        const reason = target.endReason === "interrupted" ? "interrupted" : "turn-duration";
+        const ended = emitEnd(
+          update({ ...target, awaitingTool: false }),
+          reason,
           record.line.timestamp,
-          record.line.durationMs,
+          reason === "turn-duration" ? record.line.durationMs : target.durationMs,
         );
+        return ended.ordinal;
       }
       case "compactBoundary":
         events.push({
@@ -891,12 +957,12 @@ export function foldClaudeTranscriptLines(input: {
           preTokens: record.line.compactMetadata.preTokens,
           timestamp: record.line.timestamp,
         });
-        return current();
+        return current()?.ordinal;
       case "event":
         if (record.event !== undefined) events.push(record.event);
         return undefined;
       case "ignored":
-        return segmentFor(header.parentUuid ?? null);
+        return parentOrdinal(parentUuid) ?? current()?.ordinal;
     }
   };
 
@@ -906,16 +972,29 @@ export function foldClaudeTranscriptLines(input: {
     if (header === undefined || header.isSidechain === true) continue;
     const uuid = header.uuid;
     if (uuid !== undefined && (consumedHere.has(uuid) || input.known.has(uuid))) continue;
-    // A stepped-past line's uuid still parents the lines after it.
-    const segment =
-      line._tag === "Record" ? apply(header, line.record) : segmentFor(header.parentUuid ?? null);
+    const parentUuid = header.parentUuid ?? null;
+    // A stepped-past line still parents the lines after it, but a good copy of it is read later.
+    if (line._tag === "Malformed") {
+      if (uuid !== undefined) remember(uuid, parentOrdinal(parentUuid) ?? current()?.ordinal);
+      continue;
+    }
+    const ordinal = apply(header, line.record);
     if (uuid === undefined) continue;
     consumedHere.add(uuid);
     consumedUuids.push(uuid);
-    remember(uuid, segment?.ordinal);
+    remember(uuid, ordinal);
   }
+  pruneSegments();
   return {
-    state: { segments, nextOrdinal, recentUuids, lastUuid, pendingOpener, forkSessionId },
+    state: {
+      segments,
+      nextOrdinal,
+      recentUuids,
+      lastUuid,
+      latestOpenerText,
+      pendingOpener,
+      forkSessionId,
+    },
     events,
     malformed,
     consumedUuids,
