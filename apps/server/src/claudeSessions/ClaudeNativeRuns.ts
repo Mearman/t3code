@@ -29,7 +29,7 @@ import { field } from "../orchestration-v2/unknownField.ts";
 import type { ClaudeTranscriptEvent, ClaudeTranscriptItem } from "./ClaudeTranscriptSegments.ts";
 
 /** Tool input and output are copied up to this many characters; the transcript keeps the rest. */
-export const NATIVE_TOOL_TEXT_MAX_CHARS = 32 * 1024;
+export const NATIVE_TOOL_TEXT_MAX_CHARS = 8 * 1024;
 
 /** Native provider turns carry this id prefix, so T3 Code's own turns are told apart from them. */
 export const NATIVE_PROVIDER_TURN_PREFIX = "claude-turn:";
@@ -543,6 +543,10 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     if (current === undefined) return;
     latestRecord = { ...current.record };
     if (current.record.own) return;
+    for (const tool of current.toolItems.values()) {
+      pushItem(current, tool, DateTime.formatIso(tool.updatedAt));
+    }
+    current.toolItems.clear();
     // An open turn's run is written when it first appears and again when it ends, not on every
     // line, so following a long live turn adds only its items.
     const writeRun =
@@ -626,9 +630,10 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
                 toolName: block.name,
                 input: capped(JSON.stringify(block.input) ?? ""),
               };
+    // Written once, finished, when its result is in the same read; still running only at the read's end.
     current.toolItems.set(block.id, tool);
     current.record.pendingTools = { ...current.record.pendingTools, [block.id]: item.id };
-    pushItem(current, tool, item.timestamp);
+    advance(current, item.timestamp);
   };
 
   const onItem = (current: OpenSegment, item: ClaudeTranscriptItem) => {

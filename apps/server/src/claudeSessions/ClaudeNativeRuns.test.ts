@@ -201,7 +201,7 @@ describe("planClaudeNativeRuns", () => {
       "provider-turn.updated",
       "message.updated",
       "turn-item.updated:user_message",
-      "turn-item.updated:command_execution",
+      // The tool's result is in the same read, so its item is written once, finished.
       "turn-item.updated:command_execution",
       "turn-item.updated:assistant_message",
       "message.updated",

@@ -88,9 +88,11 @@ import {
 } from "./ClaudeTranscriptSegments.ts";
 
 /** Bytes of transcript one read parses and writes while holding the thread's lock. */
-const READ_BUDGET_BYTES = 1024 * 1024;
+const READ_BUDGET_BYTES = 256 * 1024;
 /** Events in one database transaction, so a long transcript never holds the writer for long. */
-const MAX_EVENTS_PER_WRITE = 500;
+const MAX_EVENTS_PER_WRITE = 200;
+/** The read position is saved every this many reads, and whenever reading stops; a re-read writes nothing. */
+const SAVE_EVERY_READS = 32;
 /** A session's entry is read from its head in chunks of this size until its first prompt. */
 const HEAD_CHUNK_BYTES = 64 * 1024;
 /** IN lists are split so a query stays far below SQLite's bound-parameter limit. */
@@ -150,6 +152,9 @@ const SyncCursorState = Schema.Struct({
 });
 const decodeSyncCursorState = Schema.decodeUnknownOption(Schema.fromJsonString(SyncCursorState));
 const encodeSyncCursorState = Schema.encodeSync(Schema.fromJsonString(SyncCursorState));
+const decodeStrings = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 const decodeJsonLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 
@@ -657,34 +662,46 @@ const make = Effect.gen(function* () {
   /**
    * What identifies T3 Code's own turns in this thread: the prompt uuids it recorded, the replies it saw, and the prompt text of runs whose turns recorded no prompt uuid (older builds, or a turn that ended before its first reply).
    */
+  // Reads only T3 Code's own provider turns and runs, so its cost follows T3 Code's turns, not the transcript's.
   const ownTurns = Effect.fn("ClaudeSessionSync.ownTurns")(function* (threadId: ThreadId) {
-    const records = yield* projections.getThreadRecords(threadId, [
-      "runs",
-      "attempts",
-      "providerTurns",
-    ]);
+    const turns = yield* sql<{
+      readonly runId: string | null;
+      readonly nativeId: string | null;
+      readonly promptUuids: string | null;
+    }>`
+      SELECT attempt.run_id AS "runId",
+        json_extract(turn.payload_json, '$.nativeTurnRef.nativeId') AS "nativeId",
+        json_extract(turn.payload_json, '$.nativePromptUuids') AS "promptUuids"
+      FROM orchestration_v2_projection_provider_turns AS turn
+      LEFT JOIN orchestration_v2_projection_run_attempts AS attempt
+        ON attempt.attempt_id = turn.run_attempt_id
+      WHERE turn.thread_id = ${threadId}
+        AND substr(turn.provider_turn_id, 1, ${NATIVE_PROVIDER_TURN_PREFIX.length}) <> ${NATIVE_PROVIDER_TURN_PREFIX}
+    `;
     const promptUuids = new Set<string>();
     const assistantUuids = new Set<string>();
     const recordedRuns = new Set<string>();
-    const runByAttempt = new Map(records.attempts.map((attempt) => [attempt.id, attempt.runId]));
-    for (const turn of records.providerTurns) {
-      if (turn.id.startsWith(NATIVE_PROVIDER_TURN_PREFIX)) continue;
-      const nativeId = turn.nativeTurnRef?.nativeId;
-      if (nativeId != null && !nativeId.startsWith("turn:")) assistantUuids.add(nativeId);
-      for (const uuid of turn.nativePromptUuids ?? []) promptUuids.add(uuid);
-      const runId = turn.runAttemptId === null ? undefined : runByAttempt.get(turn.runAttemptId);
-      if (runId !== undefined && (turn.nativePromptUuids?.length ?? 0) > 0) recordedRuns.add(runId);
+    for (const turn of turns) {
+      if (turn.nativeId !== null && !turn.nativeId.startsWith("turn:")) {
+        assistantUuids.add(turn.nativeId);
+      }
+      const uuids = Option.getOrElse(decodeStrings(turn.promptUuids), () => []);
+      for (const uuid of uuids) promptUuids.add(uuid);
+      if (turn.runId !== null && uuids.length > 0) recordedRuns.add(turn.runId);
     }
-    const unrecorded = records.runs.filter(
-      (run) => !isNativeOriginRun(run) && run.status !== "rolled_back" && !recordedRuns.has(run.id),
-    );
-    const messages = yield* projections.getMessagesById(
-      threadId,
-      unrecorded.map((run) => run.userMessageId),
-    );
+    const runs = yield* sql<{ readonly runId: string; readonly text: string | null }>`
+      SELECT run.run_id AS "runId", json_extract(message.payload_json, '$.text') AS "text"
+      FROM orchestration_v2_projection_runs AS run
+      LEFT JOIN orchestration_v2_projection_messages AS message
+        ON message.message_id = json_extract(run.payload_json, '$.userMessageId')
+      WHERE run.thread_id = ${threadId}
+        AND run.status <> 'rolled_back'
+        AND json_extract(run.payload_json, '$.nativeOrigin') IS NULL
+    `;
     const promptTexts = new Map<string, number>();
-    for (const run of unrecorded) {
-      const text = messages.get(run.userMessageId)?.text.trim() ?? "";
+    for (const run of runs) {
+      if (recordedRuns.has(run.runId)) continue;
+      const text = run.text?.trim() ?? "";
       if (text.length === 0) continue;
       const digest = claudePromptTextDigest(text);
       promptTexts.set(digest, (promptTexts.get(digest) ?? 0) + 1);
@@ -754,20 +771,21 @@ const make = Effect.gen(function* () {
     groups: ReadonlyArray<ReadonlyArray<OrchestrationV2DomainEvent>>,
   ) {
     let batch: Array<OrchestrationV2DomainEvent> = [];
+    let writes = 0;
+    // Live subscribers buffer a bounded backlog, so writes after the first wait for capacity.
+    const flush = Effect.gen(function* () {
+      if (writes++ > 0) yield* capacity.wait;
+      yield* eventSink.write({ events: batch });
+      batch = [];
+    });
     for (const group of groups) {
-      if (batch.length > 0 && batch.length + group.length > MAX_EVENTS_PER_WRITE) {
-        yield* eventSink.write({ events: batch });
-        batch = [];
-      }
+      if (batch.length > 0 && batch.length + group.length > MAX_EVENTS_PER_WRITE) yield* flush;
       for (const event of group) {
         batch.push(event);
-        if (batch.length >= MAX_EVENTS_PER_WRITE) {
-          yield* eventSink.write({ events: batch });
-          batch = [];
-        }
+        if (batch.length >= MAX_EVENTS_PER_WRITE) yield* flush;
       }
     }
-    if (batch.length > 0) yield* eventSink.write({ events: batch });
+    if (batch.length > 0) yield* flush;
   });
 
   const isSyncThread = (thread: OrchestrationV2AppThread) =>
@@ -861,6 +879,54 @@ const make = Effect.gen(function* () {
       }
     }
     if (events.length > 0) yield* eventSink.write({ events });
+  });
+
+  /** The one run-less note a synced thread shows while its history loads, and how loading ended. */
+  const historyNotice = Effect.fn("ClaudeSessionSync.historyNotice")(function* (
+    thread: OrchestrationV2AppThread,
+    target: ClaudeNativeRunTarget,
+    state: { readonly status: "running" | "completed" | "failed"; readonly message: string },
+  ) {
+    const id = TurnItemId.make(`x:${target.idScope}:history`);
+    const existing = yield* projections.getTurnItem({ threadId: target.threadId, itemId: id });
+    if (
+      existing !== null &&
+      existing.type === "system_notice" &&
+      existing.status === state.status &&
+      existing.message === state.message
+    ) {
+      return;
+    }
+    const at = thread.createdAt;
+    yield* eventSink.write({
+      events: [
+        {
+          id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
+          type: "turn-item.updated",
+          threadId: target.threadId,
+          occurredAt: at,
+          payload: {
+            id,
+            threadId: target.threadId,
+            runId: null,
+            nodeId: null,
+            providerThreadId: target.providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 0,
+            status: state.status,
+            title: state.message,
+            startedAt: at,
+            completedAt: state.status === "running" ? null : at,
+            updatedAt: at,
+            type: "system_notice",
+            message: state.message,
+            ...(state.status === "failed" ? { level: "warning" as const } : {}),
+          },
+        },
+      ],
+    });
   });
 
   type IngestStep =
@@ -968,7 +1034,6 @@ const make = Effect.gen(function* () {
       hydrationState: "hydrating",
       updatedAt: yield* DateTime.now,
     };
-    yield* syncState.upsert(next);
     return { _tag: "Read", row: next, atEnd: read.atEnd } satisfies IngestStep;
   });
 
@@ -1011,8 +1076,9 @@ const make = Effect.gen(function* () {
       readonly priority: Priority;
       readonly settled: boolean;
       readonly excludedCwdGlobs: ReadonlyArray<string>;
+      readonly minFreeDiskGiB: number;
     }) {
-      const { store, transcript } = input;
+      const { store, transcript, minFreeDiskGiB } = input;
       const key = { storeKey: store.key, sessionId: transcript.sessionId };
       const row = yield* syncState.get(key);
       if (row?.hydrationState === "deleted") return "deleted" satisfies SyncOutcome;
@@ -1109,11 +1175,31 @@ const make = Effect.gen(function* () {
       };
       const own = yield* ownTurns(threadId);
       const fallbackAt = DateTime.makeUnsafe(transcript.mtimeMs);
+      const notice = isSyncThread(thread) && linked.hydrationState !== "full";
+      if (notice) {
+        const free = yield* capacity.freeDiskBytes;
+        const floor = minFreeDiskGiB * 1024 ** 3;
+        if (free !== undefined && free < floor) {
+          yield* historyNotice(thread, target, {
+            status: "failed",
+            message: `History not loaded: the disk holding T3 Code's data has ${(free / 1024 ** 3).toFixed(1)} GB free, below the ${minFreeDiskGiB} GB the Claude session sync keeps free.`,
+          });
+          return "deferred" satisfies SyncOutcome;
+        }
+        yield* historyNotice(thread, target, {
+          status: "running",
+          message: "Loading this session's history from Claude Code.",
+        });
+      }
       let current: ClaudeSessionSyncState.ClaudeSessionSyncState = linked;
+      // Saved now, so a read cut short is resumed by the next sweep.
+      yield* syncState.upsert({ ...current, hydrationState: "hydrating" });
       for (let step = 0; ; step++) {
         if (step > 0) {
+          if (step % SAVE_EVERY_READS === 0) yield* syncState.upsert(current);
           yield* capacity.wait;
           if (outranked(input.priority)) {
+            yield* syncState.upsert(current);
             yield* request({
               store,
               sessionId: transcript.sessionId,
@@ -1128,11 +1214,20 @@ const make = Effect.gen(function* () {
           ingestOnce({ row: current, target, own, fallbackAt }),
         );
         if (read._tag === "Deleted") return "deleted" satisfies SyncOutcome;
-        if (read._tag === "Deferred") return "deferred" satisfies SyncOutcome;
+        if (read._tag === "Deferred") {
+          yield* syncState.upsert(current);
+          return "deferred" satisfies SyncOutcome;
+        }
         current = read.row;
         if (read.atEnd) break;
       }
       yield* syncState.upsert({ ...current, ...caughtUp, hydrationState: "full" });
+      if (notice) {
+        yield* historyNotice(thread, target, {
+          status: "completed",
+          message: "History read from Claude Code's transcript.",
+        });
+      }
       return "full" satisfies SyncOutcome;
     },
     (effect, input) =>
@@ -1165,6 +1260,7 @@ const make = Effect.gen(function* () {
       priority: next.priority,
       settled: next.priority >= Priority.follow,
       excludedCwdGlobs: settings.claudeSessionSync.excludedCwdGlobs,
+      minFreeDiskGiB: settings.claudeSessionSync.minFreeDiskGiB,
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.gen(function* () {
@@ -1217,9 +1313,9 @@ const make = Effect.gen(function* () {
     );
     const live = new Set(registry.entries.map((entry) => entry.sessionId));
     const rows = new Map(
-      (yield* syncState.listStore(store.key).pipe(Effect.mapError(fail("list sessions")))).map(
-        (row) => [row.sessionId, row],
-      ),
+      (yield* syncState
+        .listStoreSummaries(store.key)
+        .pipe(Effect.mapError(fail("list sessions")))).map((row) => [row.sessionId, row]),
     );
     const transcripts = yield* listTranscripts(store, full).pipe(
       Effect.mapError(fail("list transcripts")),
@@ -1252,6 +1348,7 @@ const make = Effect.gen(function* () {
         priority: Priority.follow,
         settled: !isLive,
         excludedCwdGlobs: options.excludedCwdGlobs,
+        minFreeDiskGiB: options.minFreeDiskGiB,
       }).pipe(
         Effect.catch((error) =>
           Effect.logWarning("Could not sync a Claude session", { error }).pipe(
@@ -1376,6 +1473,7 @@ const make = Effect.gen(function* () {
       priority: Priority.live,
       settled: false,
       excludedCwdGlobs: settings.claudeSessionSync.excludedCwdGlobs,
+      minFreeDiskGiB: settings.claudeSessionSync.minFreeDiskGiB,
     });
   });
 
@@ -1502,6 +1600,8 @@ const make = Effect.gen(function* () {
                   count: failures.length,
                 });
               }
+              // The fill waits for entries; the sweep has just written them.
+              yield* Queue.offer(wake, undefined);
               yield* Effect.sleep(SWEEP_INTERVAL);
             }
           }),

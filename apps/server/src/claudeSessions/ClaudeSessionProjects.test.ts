@@ -1,6 +1,7 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import type { Project } from "@t3tools/contracts";
+import { CommandId, type Project } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -10,7 +11,19 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
+import * as GitManager from "../git/GitManager.ts";
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
+import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ClaudeSessionProjects from "./ClaudeSessionProjects.ts";
 
 const AT = "2026-11-26T10:00:00.000Z";
@@ -234,4 +247,74 @@ describe("ClaudeSessionProjects", () => {
       }),
     ),
   );
+
+  it.effect("creates the shared and per-directory projects through the real project service", () =>
+    withRoot((root) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const kept = path.join(root, "kept");
+        yield* fileSystem.makeDirectory(kept, { recursive: true });
+        yield* Effect.gen(function* () {
+          const resolver = yield* ClaudeSessionProjects.ClaudeSessionProjects;
+          const projects = yield* ProjectService.ProjectService;
+
+          const missing = yield* resolver.resolve({
+            cwd: path.join(root, "gone"),
+            storeKey: STORE,
+          });
+          expect(missing).toBeDefined();
+          if (missing === undefined) return;
+          expect(Option.isSome(yield* projects.getById(missing.projectId))).toBe(true);
+          expect(yield* fileSystem.exists(path.join(root, "gone"))).toBe(false);
+
+          const placed = yield* resolver.resolve({ cwd: kept, storeKey: STORE });
+          expect(placed?.projectId).not.toBe(missing.projectId);
+          if (placed === undefined) return;
+          yield* projects.delete({
+            commandId: CommandId.make("delete-kept"),
+            projectId: placed.projectId,
+          });
+          expect(yield* resolver.resolve({ cwd: kept, storeKey: STORE })).toEqual({
+            projectId: missing.projectId,
+            worktreePath: kept,
+          });
+        }).pipe(Effect.provide(realLayer(root)));
+      }),
+    ),
+  );
 });
+
+const layerGitWorkflow = GitWorkflow.layer.pipe(
+  Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
+  Layer.provide(Layer.mock(GitManager.GitManager)({})),
+);
+
+const layerEnrichment = ProjectEnrichmentService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: () => Effect.succeed(null),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        invalidate: () => Effect.void,
+        resolvePath: () => Effect.succeed(null),
+      }),
+    ),
+  ),
+);
+
+const realLayer = (root: string) =>
+  ClaudeSessionProjects.layer.pipe(
+    Layer.provide(Layer.succeed(ClaudeSessionProjects.ClaudeTemporaryRoots, [])),
+    Layer.provide(Layer.succeed(HostProcess.HomeDirectory, `${root}/home`)),
+    Layer.provideMerge(RuntimeLayer.layerProjectService),
+    Layer.provideMerge(layerEnrichment),
+    Layer.provideMerge(WorkspacePaths.layer),
+    Layer.provideMerge(layerGitWorkflow),
+    Layer.provideMerge(GitVcsDriver.layer.pipe(Layer.provide(VcsProcess.layer))),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(ServerConfig.layerTest(root, root)),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
