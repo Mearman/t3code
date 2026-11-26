@@ -10120,8 +10120,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // A native background subagent keeps working, and delegating, after T3's latest run settles.
   // The shell presents a transcript run as latest; the subagent belongs to the run T3 sent.
-  const backgroundSubagentOutlivesRun = (run: OrchestrationV2Run) =>
-    Effect.gen(function* () {
+  const backgroundSubagentOutlivesRun = Effect.fn("Orchestrator.backgroundSubagentOutlivesRun")(
+    function* (run: OrchestrationV2Run) {
       const shell = yield* projectionStore.getThreadShell(run.threadId);
       if (
         shell === null ||
@@ -10136,11 +10136,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         includePresentedRun: "t3",
       });
       return runs[0]?.id === run.id;
-    }).pipe(
-      Effect.mapError(
-        (cause) => new OrchestratorProjectionError({ threadId: run.threadId, cause }),
+    },
+    (effect, run) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: run.threadId, cause }),
+        ),
       ),
-    );
+  );
 
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
     function* (
