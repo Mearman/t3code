@@ -232,6 +232,12 @@ import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsag
 import * as UsageService from "./usage/UsageService.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
+import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
+import * as ClaudeSessionProjects from "./claudeSessions/ClaudeSessionProjects.ts";
+import * as ClaudeSessionSync from "./claudeSessions/ClaudeSessionSync.ts";
+import * as ClaudeSessionSyncState from "./persistence/ClaudeSessionSyncState.ts";
+import * as ProviderSessionRuntime from "./persistence/ProviderSessionRuntime.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
 import * as WorkflowForge from "./workflows/WorkflowForge.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -680,6 +686,26 @@ const layerThreadSettlementWorker = Layer.effectDiscard(
   ThreadSettlementService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(layerPullRequestService), Layer.provide(ProjectionStoreV2.layer));
 
+const layerClaudeSessionSyncWorker = Layer.effectDiscard(
+  ClaudeSessionSync.ClaudeSessionSync.use((service) => service.start()),
+).pipe(
+  Layer.provide(
+    ClaudeSessionSync.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ClaudeSessionProjects.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+          ClaudeSessionSyncState.layer,
+          RuntimeLayer.layerEventSink,
+          ProjectionStoreV2.layer,
+          IdAllocator.layer,
+          ProviderSessionRuntime.layer,
+          ThreadCommandExecutor.layer,
+        ),
+      ),
+    ),
+  ),
+);
+
 const layerIdleCompactionWorker = Layer.effectDiscard(
   IdleCompactionService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(ProjectionStoreV2.layer));
@@ -740,6 +766,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
+  layerClaudeSessionSyncWorker,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
