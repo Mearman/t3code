@@ -27,6 +27,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { ClaudeSpawnedProcesses } from "../../claudeSessions/ClaudeSpawnedProcesses.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import {
   ClaudeAgentSdkQueryRunner,
@@ -701,6 +702,31 @@ const openFakeCli = (cli: string) =>
   });
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI process", () => {
+  it.effect("counts a spawned CLI as T3 Code's own while it runs", () =>
+    Effect.gen(function* () {
+      const cli = fakeClaudeCli(
+        ['dir=$(dirname "$0")', 'echo $$ > "$dir/pid"', "cat > /dev/null"].join("\n"),
+      );
+      const dir = NodePath.dirname(cli);
+      NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "pid")]);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+      );
+      // The FIFO's read finishes once the CLI has written its pid, so no polling is needed.
+      const reported = Effect.promise(() =>
+        NodeFS.promises.readFile(NodePath.join(dir, "pid"), "utf8"),
+      );
+      const spawned = yield* ClaudeSpawnedProcesses;
+
+      const session = yield* openFakeCli(cli);
+      const pid = Number((yield* reported).trim());
+      const whileRunning = yield* spawned.pids;
+      yield* session.close;
+
+      assert.include(whileRunning, pid);
+    }).pipe(Effect.provide(realQueryRunner)),
+  );
+
   // The leftover child holds a FIFO open; its death produces EOF without polling.
   it.effect("stops what the CLI left running when the session closes", () =>
     Effect.gen(function* () {
