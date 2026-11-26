@@ -440,7 +440,7 @@ function claudeUiOutputEnd(text: string): number {
 
 // Shell payloads can print closing tags verbatim, so a complete envelope is
 // judged by its outer tags; prose after a quoted block stays visible.
-function isClaudeShellOutput(text: string): boolean {
+export function isClaudeShellOutput(text: string): boolean {
   if (text.startsWith("<bash-stderr>")) return text.endsWith("</bash-stderr>");
   if (!text.startsWith("<bash-stdout>")) return false;
   return (
