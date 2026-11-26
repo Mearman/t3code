@@ -115,6 +115,8 @@ export function claudeNativeRunLookups(input: {
       const pending =
         toolUseId === undefined ? undefined : input.state.current?.pendingTools[toolUseId];
       if (pending !== undefined) pendingToolItemIds.add(pending);
+    } else if (event._tag === "QueuedPrompt") {
+      itemIds.add(event.id);
     } else if (event._tag === "CompactBoundary") {
       itemIds.add(`x:${input.sessionId}:${event.lineUuid}`);
     }
@@ -631,6 +633,58 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     }
   };
 
+  // A prompt delivered into a running turn joins it, as a steer joins T3 Code's own runs.
+  const onQueuedPrompt = (
+    current: OpenSegment,
+    queued: Extract<ClaudeTranscriptEvent, { readonly _tag: "QueuedPrompt" }>,
+  ) => {
+    const text =
+      queued.prompt.text.length > 0
+        ? queued.prompt.text
+        : queued.blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+    const messageId = MessageId.make(queued.id);
+    const authored = {
+      createdBy: queued.prompt.hidden ? "system" : "user",
+      creationSource: "provider",
+    } as const;
+    const queuedItem = pushItem(
+      current,
+      {
+        ...itemBase(current, queued.id, queued.timestamp, "completed"),
+        ...authored,
+        type: "user_message",
+        messageId,
+        inputIntent: "steer",
+        text,
+        attachments: [],
+      },
+      queued.timestamp,
+    );
+    if (!queuedItem) return;
+    const ids = claudeNativeRunIds(target.sessionId, current.record.segmentId);
+    current.items.push(
+      event({
+        type: "message.updated",
+        occurredAt: queued.timestamp,
+        runId: ids.runId,
+        nodeId: ids.nodeId,
+        payload: {
+          ...authored,
+          id: messageId,
+          threadId: target.threadId,
+          runId: ids.runId,
+          nodeId: ids.nodeId,
+          role: "user",
+          text,
+          attachments: [],
+          streaming: false,
+          createdAt: at(queued.timestamp),
+          updatedAt: at(queued.timestamp),
+        },
+      }),
+    );
+  };
+
   for (const parsed of input.events) {
     switch (parsed._tag) {
       case "Branch":
@@ -662,7 +716,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         );
         if (prompt !== undefined && prompt.text.length > 0) started.promptText = prompt.text;
         // Claude Code writes some prompts itself, such as task notifications and command output.
-        if (prompt !== undefined && (prompt.originKind ?? "human") === "human") {
+        if (prompt !== undefined && !prompt.hidden && (prompt.originKind ?? "human") === "human") {
           started.createdBy = "user";
         }
         segment = started;
@@ -707,7 +761,14 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         if (parsed.source === "custom") customTitle = parsed.title;
         else if (parsed.title !== null) aiTitle = parsed.title;
         break;
+      case "QueuedPrompt": {
+        const current = resume(parsed.segmentId);
+        if (current === undefined || current.record.own) break;
+        onQueuedPrompt(current, parsed);
+        break;
+      }
       case "DerivedFrom":
+      case "ForkedFrom":
         break;
     }
   }

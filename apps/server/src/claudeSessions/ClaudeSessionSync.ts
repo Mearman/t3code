@@ -33,7 +33,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
-import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -71,7 +70,7 @@ import {
   readClaudeTranscript,
 } from "./ClaudeTranscriptReader.ts";
 import {
-  ClaudeTranscriptParserState,
+  initialClaudeTranscriptParserState,
   parseClaudeTranscriptLines,
 } from "./ClaudeTranscriptSegments.ts";
 
@@ -108,9 +107,9 @@ interface SyncStore {
   readonly providerInstanceId: ProviderInstanceId;
 }
 
-/** The cursor a sync row keeps as JSON: the parser's state and the open run's. */
+/** What a sync row keeps as JSON: the reader's cursor and the open run's state. One that no longer decodes, as after a reader change, restarts from the top, which writes nothing already written. */
 const SyncCursorState = Schema.Struct({
-  parser: ClaudeTranscriptParserState,
+  cursor: ClaudeTranscriptCursor,
   runs: ClaudeNativeRunState,
 });
 const decodeSyncCursorState = Schema.decodeUnknownOption(Schema.fromJsonString(SyncCursorState));
@@ -293,26 +292,22 @@ const make = Effect.gen(function* () {
     }
     const parsed = parseClaudeTranscriptLines({
       sessionId,
-      state: { segment: null, lastUuid: null },
+      state: initialClaudeTranscriptParserState,
       lines,
     });
     let promptTitle: string | undefined;
     let aiTitle: string | undefined;
     let customTitle: string | undefined;
-    if (Result.isSuccess(parsed)) {
-      for (const event of parsed.success.events) {
-        if (event._tag === "SegmentStarted") promptTitle ??= event.prompt?.title;
-        if (event._tag === "Title" && event.source === "ai" && event.title !== null) {
-          aiTitle = event.title;
-        }
-        if (event._tag === "Title" && event.source === "custom") {
-          customTitle = event.title ?? undefined;
-        }
+    for (const event of parsed.events) {
+      if (event._tag === "SegmentStarted") promptTitle ??= event.prompt?.title;
+      if (event._tag === "Title" && event.source === "ai" && event.title !== null) {
+        aiTitle = event.title;
+      }
+      if (event._tag === "Title" && event.source === "custom") {
+        customTitle = event.title ?? undefined;
       }
     }
-    const hasConversation =
-      Result.isSuccess(parsed) &&
-      parsed.success.events.some((event) => event._tag === "SegmentStarted");
+    const hasConversation = parsed.events.some((event) => event._tag === "SegmentStarted");
     return { cwd, startedAt, title: customTitle ?? aiTitle ?? promptTitle, hasConversation };
   });
 
@@ -557,16 +552,19 @@ const make = Effect.gen(function* () {
     // T3 Code's live stream owns a turn it is running; its lines are read once the run settles.
     if (active.length > 0) return { row, atEnd: false, deferred: true };
     const saved = Option.flatMap(Option.fromNullishOr(row.parserState), decodeSyncCursorState);
-    const cursor: ClaudeTranscriptCursor =
-      Option.isSome(saved) && row.guardHash !== null
-        ? { offset: row.byteOffset, guardHash: row.guardHash, state: saved.value.parser }
-        : initialClaudeTranscriptCursor;
+    const cursor = Option.isSome(saved) ? saved.value.cursor : initialClaudeTranscriptCursor;
     const read = yield* readClaudeTranscript({
       filePath: row.filePath,
       sessionId: row.sessionId,
       cursor,
       maxBytes: READ_BUDGET_BYTES,
     });
+    if (read.malformed.length > 0) {
+      yield* Effect.logWarning("Skipped Claude transcript lines that could not be read", {
+        sessionId: row.sessionId,
+        offsets: read.malformed.map((line) => line.offset),
+      });
+    }
     const runState =
       read.rewritten || Option.isNone(saved) ? initialClaudeNativeRunState : saved.value.runs;
     const lookups = claudeNativeRunLookups({
@@ -619,7 +617,7 @@ const make = Effect.gen(function* () {
       byteOffset: read.cursor.offset,
       guardHash: read.cursor.guardHash,
       lastUuid: read.cursor.state.lastUuid,
-      parserState: encodeSyncCursorState({ parser: read.cursor.state, runs: plan.state }),
+      parserState: encodeSyncCursorState({ cursor: read.cursor, runs: plan.state }),
       hydrationState: "full",
       updatedAt: DateTime.nowUnsafe(),
     };
