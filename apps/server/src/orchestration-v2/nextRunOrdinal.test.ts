@@ -21,4 +21,9 @@ describe("nextRunOrdinal", () => {
     // A run written for a turn after the clock's second keeps a new one after it.
     expect(nextRunOrdinal({ thread, runs: runs([second + 5]) }, now)).toBe(second + 6);
   });
+
+  it("takes the next ordinal on a Claude thread with runs of T3 Code's only, as a delegated child has", () => {
+    // The sync never marks a delegated child native, so its queued run keeps the next ordinal.
+    expect(nextRunOrdinal({ thread: {}, runs: runs([1]) }, now)).toBe(2);
+  });
 });
