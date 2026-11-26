@@ -16,14 +16,18 @@ import * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
 
 import {
+  claimClaudeOwnTurnByText,
   claudeNativeItemLineUuid,
+  claudeNativeResultsNeedWholeTurn,
   claudeNativeRunIds,
-  claudeOwnTurnIds,
   claudePromptTextKey,
+  isClaudeOwnTurn,
   NATIVE_TOOL_TEXT_MAX_CHARS,
+  newClaudeNativeTurnCache,
   planClaudeNativeTurn,
   planClaudeRemovedItems,
   REMOVED_TURN_ID,
+  type ClaudeNativeTurnCache,
   type ClaudeOwnTurns,
   type StoredNativeItem,
 } from "./ClaudeNativeRuns.ts";
@@ -31,9 +35,11 @@ import {
   readClaudeTranscriptTurn,
   type ClaudeTranscriptTurnContent,
 } from "./ClaudeTranscriptContent.ts";
-import { ClaudeTranscriptIndex, syncClaudeTranscriptIndex } from "./ClaudeTranscriptIndex.ts";
 import { claudeTranscriptFixture } from "./ClaudeTranscriptTestLines.ts";
-import { claudeTranscriptStructure } from "./ClaudeTranscriptTurns.ts";
+import {
+  ClaudeTranscriptTurnTracker,
+  syncClaudeTranscript,
+} from "./ClaudeTranscriptTurnTracker.ts";
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
 const FALLBACK = DateTime.makeUnsafe("2025-12-31T00:00:00.000Z");
@@ -54,27 +60,41 @@ const noOwnTurns: ClaudeOwnTurns = {
   promptTexts: new Map(),
 };
 
-/** Writes the lines to a transcript file and reads it back through the index, as the sync does. */
+const jsonl = (lines: ReadonlyArray<unknown>) =>
+  lines.map((line) => `${typeof line === "string" ? line : JSON.stringify(line)}\n`).join("");
+
+/** Writes the lines to a transcript file and reads it into a turn tracker, as the sync does. */
 const transcript = (lines: ReadonlyArray<unknown>) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = yield* fileSystem.makeTempDirectoryScoped();
     const filePath = path.join(directory, `${SESSION}.jsonl`);
-    yield* fileSystem.writeFileString(
-      filePath,
-      lines.map((line) => `${typeof line === "string" ? line : JSON.stringify(line)}\n`).join(""),
-    );
-    const index = new ClaudeTranscriptIndex();
-    yield* syncClaudeTranscriptIndex({ filePath, index });
-    const structure = claudeTranscriptStructure(index);
-    const contentOf = (turnId: string) =>
+    yield* fileSystem.writeFileString(filePath, jsonl(lines));
+    const tracker = new ClaudeTranscriptTurnTracker();
+    yield* syncClaudeTranscript({ filePath, tracker });
+    const { index } = tracker;
+    /** The turn's lines `cache` does not hold; a new cache reads the whole turn. */
+    const contentOf = (turnId: string, cache: ClaudeNativeTurnCache = newClaudeNativeTurnCache()) =>
       Effect.gen(function* () {
-        const turn = structure.turns.find((candidate) => candidate.id === turnId);
+        const turn = tracker.turn(turnId);
         if (turn === undefined) return yield* Effect.die(`No turn ${turnId}.`);
-        return yield* readClaudeTranscriptTurn({ filePath, index, idScope: SESSION, turn });
+        return yield* readClaudeTranscriptTurn({
+          filePath,
+          index,
+          idScope: SESSION,
+          turn,
+          known: cache.known,
+        });
       });
-    return { index, structure, contentOf };
+    /** Appends lines, as a terminal does, and syncs the tracker. */
+    const append = (more: ReadonlyArray<unknown>) =>
+      Effect.gen(function* () {
+        const existing = yield* fileSystem.readFileString(filePath);
+        yield* fileSystem.writeFileString(filePath, existing + jsonl(more));
+        return yield* syncClaudeTranscript({ filePath, tracker });
+      });
+    return { tracker, index, contentOf, append };
   });
 
 let nextId = 0;
@@ -84,11 +104,13 @@ const planOf = (
     readonly stored?: boolean;
     readonly storedItems?: ReadonlyMap<string, StoredNativeItem>;
     readonly ordinal?: number;
+    readonly cache?: ClaudeNativeTurnCache;
   } = {},
 ) =>
   planClaudeNativeTurn({
     target,
     content,
+    cache: overrides.cache ?? newClaudeNativeTurnCache(),
     ordinal: overrides.ordinal ?? 1,
     providerTurnOrdinal: overrides.ordinal ?? 1,
     stored: overrides.stored ?? false,
@@ -321,12 +343,12 @@ describe("planClaudeNativeTurn", () => {
   );
 });
 
-describe("claudeOwnTurnIds", () => {
+describe("isClaudeOwnTurn and claimClaudeOwnTurnByText", () => {
   it.effect("finds T3 Code's turns by prompt uuid, prompt id, reply and copied line", () =>
     run(
       Effect.gen(function* () {
         const f = claudeTranscriptFixture();
-        const { index, structure } = yield* transcript([
+        const { index, tracker } = yield* transcript([
           f.prompt("p1", null, "One"),
           f.text("a1", "p1", "1"),
           f.prompt("p2", "a1", "Two", { promptId: "allocated" }),
@@ -344,20 +366,21 @@ describe("claudeOwnTurnIds", () => {
           promptTexts: new Map(),
         };
         const ids = (skipCopied: boolean) =>
-          [
-            ...claudeOwnTurnIds({ structure, index, own, skipCopied, writtenTurnIds: new Set() }),
-          ].toSorted();
+          tracker.turnIds().filter((turnId) => {
+            const turn = tracker.turn(turnId);
+            return turn !== undefined && isClaudeOwnTurn({ turn, index, own, skipCopied });
+          });
         expect(ids(false)).toEqual(["p1", "p2", "p3"]);
         expect(ids(true)).toEqual(["p1", "p2", "p3", "p5"]);
       }),
     ),
   );
 
-  it.effect("matches each older T3 Code turn by text once, never a turn already shown", () =>
+  it.effect("claims each older T3 Code turn by text once, never a turn already shown", () =>
     run(
       Effect.gen(function* () {
         const f = claudeTranscriptFixture();
-        const { index, structure } = yield* transcript([
+        const { index, tracker } = yield* transcript([
           f.prompt("p1", null, "continue"),
           f.text("a1", "p1", "1"),
           f.prompt("p2", "a1", "continue"),
@@ -366,17 +389,97 @@ describe("claudeOwnTurnIds", () => {
           f.text("a3", "p3", "3"),
         ]);
         const own = { ...noOwnTurns, promptTexts: new Map([[claudePromptTextKey("continue"), 1]]) };
-        const owned = (written: ReadonlyArray<string>) => [
-          ...claudeOwnTurnIds({
-            structure,
-            index,
-            own,
-            skipCopied: false,
-            writtenTurnIds: new Set(written),
-          }),
-        ];
-        expect(owned([])).toEqual(["p1"]);
-        expect(owned(["p1"])).toEqual(["p2"]);
+        const claimed = (written: ReadonlyArray<string>) => {
+          const unclaimed = new Map(own.promptTexts);
+          return tracker.turnIds().filter((turnId) =>
+            claimClaudeOwnTurnByText({
+              turnId,
+              index,
+              unclaimed,
+              written: written.includes(turnId),
+            }),
+          );
+        };
+        expect(claimed([])).toEqual(["p1"]);
+        expect(claimed(["p1"])).toEqual(["p2"]);
+      }),
+    ),
+  );
+});
+
+describe("planClaudeNativeTurn across reads", () => {
+  it.effect(
+    "writes only a later read's new lines, and finishes a tool when its result arrives",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const f = claudeTranscriptFixture();
+          const { contentOf, append } = yield* transcript([
+            f.prompt("p1", null, "Go"),
+            f.thinking("a0", "p1"),
+            f.toolUse("a1", "a0", "tool-1", null),
+          ]);
+          const cache = newClaudeNativeTurnCache();
+          const first = planOf(yield* contentOf("p1", cache), { cache });
+          expect(
+            itemsOf(first.events).find((item) => item.id === `x:${SESSION}:a1:0`)?.status,
+          ).toBe("running");
+
+          const update = yield* append([f.result("r1", "a1", "tool-1")]);
+          expect(update.changedTurnIds).toEqual(["p1"]);
+          const content = yield* contentOf("p1", cache);
+          // The prompt, the thinking and the tool line are held, so only the result line is read.
+          expect(content.lines.map((line) => line.lineUuid)).toEqual(["r1"]);
+          expect(content.opener).toBeUndefined();
+          const second = planOf(content, { cache, stored: true });
+          expect(types(second.events)).toEqual([
+            "run.updated",
+            "run-attempt.updated",
+            "node.updated",
+            "provider-turn.updated",
+            "turn-item.updated:command_execution",
+          ]);
+          expect(itemsOf(second.events)[0]).toMatchObject({ status: "completed", output: "done" });
+        }),
+      ),
+  );
+
+  it.effect("interrupts a tool still waiting when its turn ends", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf, append } = yield* transcript([
+          f.prompt("p1", null, "Go"),
+          f.toolUse("a1", "p1", "tool-1", null),
+        ]);
+        const cache = newClaudeNativeTurnCache();
+        planOf(yield* contentOf("p1", cache), { cache });
+        yield* append([f.interrupt("i1", "a1")]);
+        const after = planOf(yield* contentOf("p1", cache), { cache, stored: true });
+        expect(itemsOf(after.events).find((item) => item.id === `x:${SESSION}:a1:0`)?.status).toBe(
+          "interrupted",
+        );
+      }),
+    ),
+  );
+
+  it.effect("needs the whole turn for a result whose tool is held only as a hash", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf, append } = yield* transcript([
+          f.prompt("p1", null, "Go"),
+          f.toolUse("a1", "p1", "tool-1", null),
+        ]);
+        const whole = newClaudeNativeTurnCache();
+        planOf(yield* contentOf("p1", whole), { cache: whole });
+        yield* append([f.result("r1", "a1", "tool-1")]);
+        // A cache seeded from stored hashes holds no open tools.
+        const seeded = newClaudeNativeTurnCache();
+        for (const [lineUuid, hash] of whole.known) seeded.known.set(lineUuid, hash);
+        const content = yield* contentOf("p1", seeded);
+        expect(claudeNativeResultsNeedWholeTurn(content, seeded)).toBe(true);
+        expect(claudeNativeResultsNeedWholeTurn(content, whole)).toBe(false);
       }),
     ),
   );

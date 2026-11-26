@@ -262,4 +262,27 @@ describe("ClaudeSessionSyncStateRepository", () => {
         );
       }).pipe(Effect.provide(layer)),
   );
+
+  it.effect(
+    "keeps each run's line hashes, replaces and forgets them, and drops them with their turn",
+    () =>
+      Effect.gen(function* () {
+        const repository = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
+        const at = { threadId: "claude:s-1", turnId: "p1" };
+        yield* repository.setLineHashes({
+          ...at,
+          hashes: [
+            ["p1", 1],
+            ["a1", 2],
+          ],
+          removed: [],
+        });
+        yield* repository.setLineHashes({ ...at, hashes: [["a1", 3]], removed: ["p1"] });
+        assert.deepStrictEqual([...(yield* repository.lineHashes(at))], [["a1", 3]]);
+
+        yield* repository.setTurnDigest({ ...at, digest: "d1" });
+        yield* repository.deleteTurnDigests({ threadId: at.threadId, turnIds: ["p1"] });
+        assert.strictEqual((yield* repository.lineHashes(at)).size, 0);
+      }).pipe(Effect.provide(layer)),
+  );
 });
