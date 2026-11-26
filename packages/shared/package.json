@@ -694,6 +694,10 @@
     "./mesh/noise": {
       "types": "./src/mesh/noise.ts",
       "import": "./src/mesh/noise.ts"
+    },
+    "./mesh/identity": {
+      "types": "./src/mesh/identity.ts",
+      "import": "./src/mesh/identity.ts"
     }
   },
   "scripts": {
