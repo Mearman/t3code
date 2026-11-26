@@ -214,7 +214,7 @@ export function RevertConfirmHost(props: {
   readonly taskFolderPath: string | null;
   readonly projection: Pick<
     OrchestrationV2ThreadProjection,
-    "checkpoints" | "checkpointScopes"
+    "checkpoints" | "checkpointScopes" | "runs"
   > | null;
   readonly worktreePath: string | null;
   readonly onConfirm: (turnCount: number, messageId: MessageId, restoreFiles: boolean) => void;

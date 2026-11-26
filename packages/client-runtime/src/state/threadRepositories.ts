@@ -1,6 +1,7 @@
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
 import {
+  hasTranscriptRunAfter,
   repositoryRewindCheckpoint,
   TASK_FOLDER_DEFAULT_REPOSITORIES_MAX,
   type TaskFolder,
@@ -10,6 +11,7 @@ import type {
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointFileTotals,
   OrchestrationV2CheckpointScope,
+  OrchestrationV2Run,
   OrchestrationV2ThreadProjection,
   RunId,
   ThreadTurnRepositoryDiff,
@@ -100,12 +102,16 @@ export function repositoryCheckpointScopeIds(
  * The server refuses a file rewind this does not offer.
  */
 export function rewindFileRestore(input: {
-  readonly projection: Pick<OrchestrationV2ThreadProjection, "checkpoints" | "checkpointScopes">;
+  readonly projection: Pick<OrchestrationV2ThreadProjection, "checkpoints" | "checkpointScopes"> & {
+    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "ordinal" | "status" | "nativeOrigin">>;
+  };
   readonly checkpoint: Pick<OrchestrationV2Checkpoint, "status" | "appRunOrdinal"> | undefined;
   readonly taskFolder: Pick<TaskFolder, "projectIsWorktree"> | null | undefined;
 }): "files" | "repositories" | null {
   const { checkpoint, projection } = input;
   if (checkpoint === undefined) return null;
+  // The server refuses to restore files over turns that ran outside T3.
+  if (hasTranscriptRunAfter(projection.runs, checkpoint.appRunOrdinal ?? 0)) return null;
   if (checkpoint.status === "ready") return "files";
   if (checkpoint.status !== "missing" || input.taskFolder?.projectIsWorktree !== false) return null;
   const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
