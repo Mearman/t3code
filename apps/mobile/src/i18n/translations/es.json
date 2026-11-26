@@ -5703,5 +5703,18 @@
   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
   "201490988858b511": "retirada por {by}",
   "46d614fa7b4bf1e5": "Ejecuciones de flujos de trabajo",
-  "f62d17e3b1372e6b": "Bifurcar en una sesión nueva"
+  "f62d17e3b1372e6b": "Bifurcar en una sesión nueva",
+  "0b22fcece71e76cc": "Otras carpetas de Claude cuyas sesiones se muestran, separadas por comas. Cada una tiene su propia instancia de Claude, así que un envío usa el inicio de sesión de esa carpeta.",
+  "1952f4a8c4e5179a": "Leer primero las sesiones recientes (días)",
+  "1bd735a2361cded8": "Mostrar sesiones de Claude Code",
+  "32c95cfa14c87987": "Sesiones de Claude Code",
+  "38eac42344c31eb7": "Las sesiones ejecutadas en una carpeta que coincida con uno de estos patrones, separados por comas, se archivan y no se siguen.",
+  "42ffe53b8bebdc2f": "Carpetas de sesión excluidas",
+  "7422040b91f90ec2": "Restaurar una sesión eliminada",
+  "883bd460708a4d8c": "Leer el historial de las sesiones que nadie ha abierto mientras el equipo está inactivo. Si está desactivado, el historial de una sesión se lee al abrirla.",
+  "898cadc54aa22909": "Introduce el id de una sesión de Claude Code cuyo hilo eliminaste para volver a mostrarla como un hilo nuevo.",
+  "a2925da227d38e1b": "Espacio libre mínimo en disco (GB)",
+  "a863c1fb1edfc155": "Leer en segundo plano las sesiones no abiertas",
+  "e2ba25992774347f": "Carpetas de Claude adicionales",
+  "f7a1136e93716b32": "Mostrar cada sesión de Claude Code de las carpetas de Claude de este equipo como un hilo y seguir las sesiones que ejecuta una terminal."
 }
