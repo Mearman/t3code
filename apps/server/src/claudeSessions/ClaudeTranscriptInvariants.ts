@@ -189,6 +189,14 @@ export function checkClaudeTranscriptEvents(input: {
         noteEmitted(event.id, event.lineUuid, firstByUuid.get(event.lineUuid));
         count("queued prompts into a running turn");
         break;
+      case "CommandOutput": {
+        noteEmitted(event.id, event.lineUuid, firstByUuid.get(event.lineUuid));
+        count("command output lines");
+        const items = segmentItems.get(event.segmentId) ?? [];
+        items.push({ lineUuid: event.lineUuid, role: "user" });
+        segmentItems.set(event.segmentId, items);
+        break;
+      }
       case "SegmentEnded": {
         const ends = endsAfterStart.get(event.segmentId) ?? [];
         ends.push(event);
