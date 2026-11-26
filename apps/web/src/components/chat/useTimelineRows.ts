@@ -1,5 +1,6 @@
 import { useLocale, useMessages } from "gt-react";
 import { useState } from "react";
+import type { RunId } from "@t3tools/contracts";
 import {
   computeStableMessagesTimelineRows,
   handoffRunsSignature,
@@ -82,4 +83,19 @@ export function useStableRows(
   );
   setState({ identity, source: rows, stable });
   return stable.result;
+}
+
+const EMPTY_RUN_ID_SET: ReadonlySet<RunId> = new Set();
+
+/** The same set until its members change, so shared row context does not re-render every row. */
+export function useStableRunIdSet(runIds: ReadonlyArray<RunId>): ReadonlySet<RunId> {
+  const signature = runIds.join("\u0000");
+  const [state, setState] = useState<{
+    readonly signature: string;
+    readonly value: ReadonlySet<RunId>;
+  }>({ signature: "", value: EMPTY_RUN_ID_SET });
+  if (state.signature === signature) return state.value;
+  const value = new Set(runIds);
+  setState({ signature, value });
+  return value;
 }

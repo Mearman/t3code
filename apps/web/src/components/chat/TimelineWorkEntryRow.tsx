@@ -15,6 +15,7 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { Link } from "@tanstack/react-router";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
+import { isHeldSessionFailure } from "@t3tools/client-runtime/state/thread-workflows";
 import {
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
@@ -294,7 +295,7 @@ export function ViewedImagesTimelineRow({
 
 // Offered where another process holds the session: the fork continues in a session of its own.
 function HeldSessionForkAction(props: {
-  readonly onFork: NonNullable<TimelineRowSharedState["onForkFromRun"]>;
+  readonly onFork: NonNullable<TimelineRowSharedState["onForkHeldSession"]>;
   readonly sourceThreadId: ThreadId;
   readonly runId: RunId;
 }) {
@@ -391,7 +392,11 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         : gt("Usage limit reached.")
       : workEntry.label;
     const forkRunId =
-      failureItem.runId === null ? undefined : ctx.heldSessionForkSources.get(failureItem.runId);
+      failureItem.runId !== null &&
+      isHeldSessionFailure(failureItem.failure) &&
+      ctx.heldSessionRefusedRuns.has(failureItem.runId)
+        ? failureItem.runId
+        : undefined;
     const sourceThreadId = workEntry.projectedItem?.sourceThreadId ?? failureItem.threadId;
     const retryRunId =
       failureItem.runId !== null &&
@@ -441,9 +446,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             </Button>
           </div>
         ) : null}
-        {forkRunId !== undefined && ctx.onForkFromRun ? (
+        {forkRunId !== undefined && ctx.onForkHeldSession ? (
           <HeldSessionForkAction
-            onFork={ctx.onForkFromRun}
+            onFork={ctx.onForkHeldSession}
             sourceThreadId={sourceThreadId}
             runId={forkRunId}
           />
