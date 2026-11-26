@@ -501,6 +501,42 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("usage quota rate limit reset recover continue")],
   },
   {
+    id: "claude-session-sync",
+    title: msg("Show Claude Code sessions"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code terminal sessions transcripts import sync history")],
+  },
+  {
+    id: "claude-session-background-fill",
+    title: msg("Read unopened sessions in the background"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code sessions history backfill fill idle")],
+  },
+  {
+    id: "claude-session-free-disk",
+    title: msg("Minimum free disk (GB)"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code sessions disk space storage floor")],
+  },
+  {
+    id: "claude-session-additional-homes",
+    title: msg("Additional Claude homes"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code config dir home accounts sessions")],
+  },
+  {
+    id: "claude-session-excluded-folders",
+    title: msg("Excluded session folders"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code sessions exclude ignore folders directories")],
+  },
+  {
+    id: "claude-session-restore",
+    title: msg("Restore a deleted session"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code sessions undelete restore deleted thread")],
+  },
+  {
     id: "working-shelf",
     title: msg("Working section"),
     to: "/settings/general",

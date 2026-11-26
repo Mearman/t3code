@@ -23,6 +23,7 @@ import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/prefer
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
+import { ClaudeSessionSyncSection } from "./ClaudeSessionSyncSection";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -158,6 +159,13 @@ export function AutoSettleSettingsRows(props: {
             onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
           />
         </SettingsSection>
+      ) : null}
+      {!projectSelected ? (
+        <ClaudeSessionSyncSection
+          options={referenceSettings.claudeSessionSync}
+          disabled={disabledFor("claudeSessionSync")}
+          write={props.write}
+        />
       ) : null}
       <SettingsSection title={gt("Auto-settle")}>
         <SettingsSwitchRow

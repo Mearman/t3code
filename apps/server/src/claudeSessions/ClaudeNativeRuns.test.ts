@@ -479,6 +479,25 @@ describe("planClaudeNativeRuns", () => {
     });
   });
 
+  it("completes a tool whose result came in an earlier read than its use", () => {
+    const head = parse([firstTurn[0], firstTurn[2]]);
+    const first = plan(head.events);
+    const written = stored(first.groups.flat());
+    const tail = parse([firstTurn[1], firstTurn[3]], head.state);
+    const second = plan(tail.events, {
+      state: first.state,
+      storedRuns: written.storedRuns,
+      storedItems: written.storedItems,
+      nextRunOrdinal: 2,
+      nextProviderTurnOrdinal: 2,
+    });
+    expect(stored(second.groups.flat()).items.get(`x:${SESSION}:a1:0`)).toMatchObject({
+      type: "command_execution",
+      output: "passed",
+      status: "completed",
+    });
+  });
+
   it("caps tool output and says how much the transcript still holds", () => {
     const long = "x".repeat(NATIVE_TOOL_TEXT_MAX_CHARS + 10_000);
     const records = [
