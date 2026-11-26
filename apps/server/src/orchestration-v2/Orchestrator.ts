@@ -583,7 +583,7 @@ export class OrchestratorV2 extends Context.Service<OrchestratorV2, Orchestrator
 ) {}
 
 /**
- * Run ordinals can skip values: a queued run moves past newer runs when it starts. On a thread whose history is read back from its provider's native transcript (`historyOrigin` `native`, which the Claude session sync sets on the threads it shows), turns are written as runs ordered by their start second, so a new run takes at least the current second and sorts after every turn that happened before it, even one not yet read back.
+ * Run ordinals can skip values: a queued run moves past newer runs when it starts. On a thread whose history is read back from its provider's native transcript (`historyOrigin` `native`, which the Claude session sync sets on the threads it shows and follows, never on a delegated child), turns are written as runs ordered by their start second, so a new run takes at least the current second and sorts after every turn that happened before it, even one not yet read back.
  */
 export function nextRunOrdinal(
   projection: {
