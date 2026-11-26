@@ -22,6 +22,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Runtime from "effect/Runtime";
+import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient } from "effect/http";
@@ -944,7 +945,7 @@ describe("auth session --require-current-schema", () => {
           "--json",
         ]).pipe(Effect.provide(layerCliRuntime), Effect.flip);
 
-        if (!(error instanceof SqlitePersistence.DatabaseSchemaBehindError)) {
+        if (!Schema.is(SqlitePersistence.DatabaseSchemaBehindError)(error)) {
           return assert.fail(`Expected DatabaseSchemaBehindError, got ${String(error)}`);
         }
         // The desktop app reads the process exit code, which the runtime takes from this field.
