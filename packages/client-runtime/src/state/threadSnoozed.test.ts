@@ -192,6 +192,22 @@ describe("effectiveSnoozed", () => {
     },
   );
 
+  it("stays snoozed through a failure of a run read back from a provider transcript", () => {
+    const failed = {
+      ...makeShell({ snoozedUntil: FUTURE_WAKE }),
+      runtime: { status: "failed", updatedAt: "2026-04-10T11:00:00.000Z" },
+      latestRun: {
+        status: "failed",
+        requestedAt: "2026-04-10T10:00:00.000Z",
+        completedAt: "2026-04-10T11:00:00.000Z",
+      },
+    } satisfies ThreadSnoozeShell;
+    expect(effectiveSnoozed(failed, { now: NOW })).toBe(false);
+    const external = { ...failed, latestRun: { ...failed.latestRun, external: true as const } };
+    expect(effectiveSnoozed(external, { now: NOW })).toBe(true);
+    expect(threadWokeAt(external, { now: NOW })).toBeNull();
+  });
+
   it("stays snoozed while the session keeps working — snooze never pauses the agent", () => {
     expect(
       effectiveSnoozed(makeShell({ snoozedUntil: FUTURE_WAKE, sessionStatus: "running" }), {

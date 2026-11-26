@@ -10,6 +10,7 @@ import {
   hasTranscriptRunAfter,
   latestRootProviderFailure,
   latestT3ExecutedRun,
+  runsByOrigin,
   orchestrationV2WorktreePending,
   runRanAfter,
   usageLimitBlockedRun,
@@ -1311,8 +1312,37 @@ function queuedRunCancellationEvents(
   return events;
 }
 
+/**
+ * The run Stop interrupts: T3's active run, else its latest started run while background work it
+ * left is pending. A run read back from a provider transcript ended outside T3, so it never is.
+ */
+export function stopTargetRun(projection: {
+  readonly runs: ReadonlyArray<OrchestrationV2Run>;
+  readonly providerThreads: Parameters<typeof derivePendingBackgroundWork>[0]["providerThreads"];
+  readonly turnItems: Parameters<typeof derivePendingBackgroundWork>[0]["turnItems"];
+  readonly thread: { readonly activeProviderThreadId: string | null };
+}): OrchestrationV2Run | undefined {
+  const t3Runs = runsByOrigin(projection.runs, "t3");
+  const latestRun = t3Runs.findLast((run) => run.status !== "queued");
+  return (
+    t3Runs.findLast(
+      (run) => run.status === "preparing" || run.status === "starting" || run.status === "running",
+    ) ??
+    (derivePendingBackgroundWork({
+      latestRun,
+      providerThreads: projection.providerThreads,
+      turnItems: projection.turnItems,
+      activeProviderThreadId: projection.thread.activeProviderThreadId,
+      runs: projection.runs,
+    }).length > 0
+      ? latestRun
+      : undefined)
+  );
+}
+
+// Checkpoint capture follows T3's own turns; a transcript run is never captured.
 function latestStartedRun(runs: ReadonlyArray<OrchestrationV2Run>): OrchestrationV2Run | undefined {
-  return runs
+  return runsByOrigin(runs, "t3")
     .filter((run) => run.status !== "queued")
     .reduce<OrchestrationV2Run | undefined>(
       (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
@@ -1324,7 +1354,7 @@ function latestStableRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | null {
   return (
-    projection.runs
+    runsByOrigin(projection.runs, "t3")
       .filter((run) => run.status === "completed" && run.checkpointId !== null)
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null
   );
@@ -7464,7 +7494,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
         projection.thread.providerInstanceId !== source.providerInstanceId ||
-        projection.runs.some(
+        runsByOrigin(projection.runs, "t3").some(
           (run) =>
             run.id !== source.id &&
             run.status !== "queued" &&
@@ -14106,7 +14136,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? undefined
         : projection.providerThreads.find((candidate) => candidate.id === run?.providerThreadId);
     const hasBackgroundWork =
-      run?.id === projection.runs.findLast((candidate) => candidate.status !== "queued")?.id &&
+      run?.id ===
+        runsByOrigin(projection.runs, "t3").findLast((candidate) => candidate.status !== "queued")
+          ?.id &&
       derivePendingBackgroundWork({
         latestRun: run,
         providerThreads: projection.providerThreads,
@@ -14712,21 +14744,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       )
         ? Effect.void
         : Ref.update(effects, (existing) => [...existing, delegatedTasksStopEffect(command)]);
-    const latestRun = projection.runs.findLast((run) => run.status !== "queued");
-    const target =
-      projection.runs.findLast(
-        (run) =>
-          run.status === "preparing" || run.status === "starting" || run.status === "running",
-      ) ??
-      (derivePendingBackgroundWork({
-        latestRun,
-        providerThreads: projection.providerThreads,
-        turnItems: projection.turnItems,
-        activeProviderThreadId: projection.thread.activeProviderThreadId,
-        runs: projection.runs,
-      }).length > 0
-        ? latestRun
-        : undefined);
+    const target = stopTargetRun(projection);
     if (target !== undefined) {
       const interruptEvents = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
       const interruptEffects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);

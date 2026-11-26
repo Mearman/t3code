@@ -14,6 +14,8 @@ interface SettlementRunLike {
   readonly requestedAt?: string | null;
   readonly startedAt?: string | null;
   readonly completedAt?: string | null;
+  /** Read back from a provider transcript: its failure happened outside T3 and wakes nothing. */
+  readonly external?: true;
 }
 
 interface SettlementRuntimeLike {
@@ -123,6 +125,7 @@ function failureEdgeAt(shell: ThreadSnoozeShell): string | null | undefined {
   const runtime = shell.runtime ?? shell.session ?? null;
   if (runtime?.status !== "error" && runtime?.status !== "failed") return undefined;
   const latestRun = shell.latestRun ?? shell.latestTurn ?? null;
+  if (latestRun?.external === true) return undefined;
   if (latestRun?.status === "failed") {
     return latestRun.completedAt ?? null;
   }

@@ -44,15 +44,22 @@ export function resolveBackgroundThreadRequest(
   return { request: null, requestId: null };
 }
 
-/** Suppresses Done announcements for stopped runs, awaited background work, and monitor wakes. */
+/**
+ * Suppresses Done announcements for stopped runs, awaited background work, and monitor wakes, and
+ * every ending of a run read back from a provider transcript, which happened outside T3.
+ */
 export function resolveBackgroundThreadRunStatus(thread: {
-  readonly latestRun: { readonly status: OrchestrationV2RunStatus } | null;
+  readonly latestRun: {
+    readonly status: OrchestrationV2RunStatus;
+    readonly external?: true;
+  } | null;
   readonly pendingBackgroundTasks: SidebarThreadSummary["pendingBackgroundTasks"];
   readonly source: Pick<
     SidebarThreadSummary["source"],
     "latestRunBackgroundWake" | "latestRunStopRequested" | "pendingBackgroundTasks"
   >;
 }): OrchestrationV2RunStatus | null {
+  if (thread.latestRun?.external === true) return null;
   const status = thread.latestRun?.status ?? null;
   if (
     status === "completed" &&

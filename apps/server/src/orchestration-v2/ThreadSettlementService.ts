@@ -204,6 +204,7 @@ export function isSnoozed(
     | "snoozedUntil"
     | "snoozedAt"
     | "latestRunCompletedAt"
+    | "latestRunNativeOrigin"
     | "status"
     | "pendingRuntimeRequest"
     | "pendingGuestMessageCount"
@@ -224,8 +225,10 @@ export function isSnoozed(
     return false;
   }
   const completedAtMs = toMillis(thread.latestRunCompletedAt);
+  // A run read back from a provider transcript failed outside T3; its failure wakes nothing.
   const wokeOnError =
     thread.status === "failed" &&
+    thread.latestRunNativeOrigin !== true &&
     (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs));
   return !wokeOnError;
 }

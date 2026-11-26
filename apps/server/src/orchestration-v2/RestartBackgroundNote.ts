@@ -15,7 +15,11 @@ import {
 import { subagentHoldsCompletion } from "@t3tools/provider-core/server/subagentProjection";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
-import { latestRootProviderFailure, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  latestRootProviderFailure,
+  runRanAfter,
+  runsByOrigin,
+} from "@t3tools/shared/orchestrationV2ThreadError";
 
 type Work = OrchestrationV2RestartCancelledBackgroundWork;
 type Attempt = Pick<OrchestrationV2RunAttempt, "id" | "runId">;
@@ -276,10 +280,9 @@ export function latestStartedRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
   providerThreadId: OrchestrationV2Run["providerThreadId"],
 ): OrchestrationV2Run | undefined {
-  return runs.reduce<OrchestrationV2Run | undefined>(
+  return runsByOrigin(runs, "t3").reduce<OrchestrationV2Run | undefined>(
     (latest, run) =>
       run.providerThreadId === providerThreadId &&
-      !isNativeOriginRun(run) &&
       run.status !== "queued" &&
       run.status !== "rolled_back" &&
       !neverStarted(run) &&
@@ -539,7 +542,10 @@ export function pendingRestartCancelledBackgroundWork(input: {
   if (input.run.providerThreadId === null || input.run.restartContinuationOfRunId !== undefined)
     return [];
   const providerThreadId = input.run.providerThreadId;
-  const sameThread = input.runs.filter((run) => run.providerThreadId === providerThreadId);
+  // A transcript turn on the same provider thread never carried the note or lost the work.
+  const sameThread = runsByOrigin(input.runs, "t3").filter(
+    (run) => run.providerThreadId === providerThreadId,
+  );
   const sources = sameThread.filter(
     (source) =>
       (source.restartCancelledBackgroundWork?.length ?? 0) > 0 && runRanAfter(input.run, source),

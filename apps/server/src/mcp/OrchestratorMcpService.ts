@@ -69,7 +69,7 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { runRanAfter, runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { threadPullRequestUpdatedAtMs } from "@t3tools/shared/threadPullRequests";
@@ -780,7 +780,7 @@ function pageIncludesTerminalTaskResult(input: {
   );
 }
 
-function latestTerminalResultRun(
+export function latestTerminalResultRun(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs">,
   delegatedRun: OrchestrationV2Run | undefined,
   awaitingContinuationRun: OrchestrationV2Run | undefined,
@@ -809,7 +809,8 @@ function latestTerminalResultRun(
     )
       supersede(run.restartContinuationOfRunId);
   }
-  return projection.runs
+  // A task's result is T3's work, as delegatedTaskProgress reads it, never a transcript turn.
+  return runsByOrigin(projection.runs, "t3")
     .filter(
       (run) =>
         ThreadManagementService.isTerminalRunStatus(run.status) &&

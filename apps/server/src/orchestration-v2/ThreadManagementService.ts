@@ -46,6 +46,7 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -1465,9 +1466,10 @@ const make = Effect.gen(function* () {
           ]);
           // The run Force stop acts on: the active one, else the latest that started. Queued
           // follow-ups never ran, so they neither count as targets nor supersede the request.
+          // A transcript run ended outside T3, so it is never the run Force stop acts on.
           const target =
             latestActiveRun(records) ??
-            records.runs
+            runsByOrigin(records.runs, "t3")
               .filter((run) => run.status !== "queued")
               .reduce<OrchestrationV2Run | undefined>(
                 (current, run) =>

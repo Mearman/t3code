@@ -109,6 +109,8 @@ export interface ThreadRunSummary {
     readonly threadId: ThreadId;
     readonly planId: PlanId;
   };
+  /** The run was read back from a provider transcript: it is shown, but nothing announces or alerts on it. */
+  readonly external?: true;
 }
 
 export interface ThreadRuntimeSummary {
@@ -298,6 +300,7 @@ export function presentThreadShell(
                 : null
               : nullableIso(thread.latestRunCompletedAt),
           assistantMessageId: null,
+          ...(thread.latestRunNativeOrigin === true ? { external: true as const } : {}),
         } satisfies ThreadRunSummary);
   const runtime = shellRuntime(thread);
   return {
