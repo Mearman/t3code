@@ -44,7 +44,6 @@ describe("runForkMigrations", () => {
         "fork_claude_session_sync_state",
         "fork_migrations",
         "fork_provider_threads_claude_native_id_idx",
-        "sqlite_autoindex_fork_claude_session_sync_state_1",
       ]);
       // Upstream still validates its own history with the fork schema present.
       assert.deepStrictEqual(yield* runMigrations(), []);
