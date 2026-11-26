@@ -9,6 +9,7 @@ import {
   EnvironmentId,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadProjection,
+  type RunId,
 } from "@t3tools/contracts";
 import { useRef, useState, type ReactNode } from "react";
 
@@ -27,6 +28,7 @@ import { useTimelineFollow } from "./useTimelineFollow";
 // The timeline needs an environment id to key its rows. No environment answers to this one, so a
 // row that would ask the thread's environment for something gets nothing.
 const NO_ENVIRONMENT_ID = EnvironmentId.make("guest");
+const NO_REFUSED_RUNS: ReadonlySet<RunId> = new Set();
 const NO_TURN_DIFFS: ReadonlyArray<never> = [];
 const NO_OPTIMISTIC_MESSAGES: ReadonlyArray<never> = [];
 const ignore = () => {};
@@ -107,6 +109,8 @@ export function ReadOnlyThreadTimeline(props: {
             routeThreadKey={threadKey}
             onOpenThread={ignore}
             supportsConversationRollback={false}
+            heldSessionRefusedRuns={NO_REFUSED_RUNS}
+            onForkHeldSession={null}
             onRevertToTurnCount={ignore}
             isRevertingCheckpoint={false}
             onImageExpand={props.onImageExpand}

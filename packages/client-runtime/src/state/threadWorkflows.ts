@@ -265,6 +265,24 @@ export function isHeldSessionFailure(failure: Pick<OrchestrationV2ProviderFailur
 }
 
 /**
+ * The run an error row's held-session fork starts from: the row's own refused run, offered only
+ * on a row of the thread itself, never one inherited from a fork source.
+ */
+export function heldSessionForkRunId(row: {
+  readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
+  readonly item: {
+    readonly runId: RunId | null;
+    readonly failure: Pick<OrchestrationV2ProviderFailure, "code">;
+  };
+}): RunId | undefined {
+  return row.visibility === "local" &&
+    row.item.runId !== null &&
+    isHeldSessionFailure(row.item.failure)
+    ? row.item.runId
+    : undefined;
+}
+
+/**
  * This thread's runs refused because another process was seen holding its session, sorted. A
  * fork offered on one starts from it: a failed run is never forked natively, so the fork carries
  * what T3 Code recorded, the refused message included, and nothing only the other process wrote.

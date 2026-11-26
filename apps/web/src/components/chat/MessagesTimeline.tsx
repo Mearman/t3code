@@ -32,7 +32,6 @@ import { useStableCallback } from "~/hooks/useStableCallback";
 
 const NOOP_USE_ARTIFACT_TEMPLATE = () => {};
 const EMPTY_PENDING_APPROVALS: ReadonlyArray<PendingApproval> = [];
-const EMPTY_HELD_SESSION_REFUSED_RUNS: ReadonlySet<RunId> = new Set();
 const EMPTY_RESPONDING_REQUEST_IDS: TimelineRowSharedState["respondingRequestIds"] = [];
 
 const NOOP_OPEN_ATTACHMENT = (_attachment: ChatFileAttachment) => {};
@@ -309,11 +308,11 @@ interface MessagesTimelineProps {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
-  heldSessionRefusedRuns?: ReadonlySet<RunId>;
-  onForkHeldSession?: (input: {
-    readonly sourceThreadId: ThreadId;
-    readonly runId: RunId;
-  }) => Promise<void>;
+  /** Required so every timeline decides whether a held session's refusal offers a fork. */
+  heldSessionRefusedRuns: ReadonlySet<RunId>;
+  onForkHeldSession:
+    | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
+    | null;
   supportsConversationRollback: boolean;
   threadStartCheckpointAvailable?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
@@ -417,7 +416,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   parentThreadLink = null,
   workflowOpening = null,
   onForkFromRun,
-  heldSessionRefusedRuns = EMPTY_HELD_SESSION_REFUSED_RUNS,
+  heldSessionRefusedRuns,
   onForkHeldSession,
   supportsConversationRollback,
   threadStartCheckpointAvailable = false,
@@ -1170,7 +1169,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     workflowOpening,
     onForkFromRun,
     heldSessionRefusedRuns,
-    onForkHeldSession: onForkHeldSession ?? null,
+    onForkHeldSession,
     onToggleTurnFold,
     onToggleAttemptFold,
     onToggleWorkGroup,

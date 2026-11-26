@@ -15,7 +15,7 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { Link } from "@tanstack/react-router";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
-import { isHeldSessionFailure } from "@t3tools/client-runtime/state/thread-workflows";
+import { heldSessionForkRunId } from "@t3tools/client-runtime/state/thread-workflows";
 import {
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
@@ -391,11 +391,16 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         ? gt("Usage limit reached. Retry after {resetTime}.", { resetTime })
         : gt("Usage limit reached.")
       : workEntry.label;
+    const ownRefusedRunId =
+      workEntry.projectedItem === undefined
+        ? undefined
+        : heldSessionForkRunId({
+            visibility: workEntry.projectedItem.visibility,
+            item: failureItem,
+          });
     const forkRunId =
-      failureItem.runId !== null &&
-      isHeldSessionFailure(failureItem.failure) &&
-      ctx.heldSessionRefusedRuns.has(failureItem.runId)
-        ? failureItem.runId
+      ownRefusedRunId !== undefined && ctx.heldSessionRefusedRuns.has(ownRefusedRunId)
+        ? ownRefusedRunId
         : undefined;
     const sourceThreadId = workEntry.projectedItem?.sourceThreadId ?? failureItem.threadId;
     const retryRunId =

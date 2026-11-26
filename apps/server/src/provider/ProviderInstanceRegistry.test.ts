@@ -612,9 +612,14 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
           }),
         );
 
-        // Fails if the driver exposes the adapter without the send gate.
+        // Fails if the driver exposes the adapter without the send gate, or stops confirming the
+        // holder by its procStart, which would refuse without offering a fork.
         expect(refusal._tag).toBe("ProviderAdapterThreadInUseError");
         expect(refusal.message).toContain("pid 1");
+        expect(refusal.message).toContain("Fork this conversation");
+        expect(
+          refusal._tag === "ProviderAdapterThreadInUseError" ? refusal.holderObserved : undefined,
+        ).toBe(true);
       }),
     ).pipe(Effect.provide(layerTest)),
   );
