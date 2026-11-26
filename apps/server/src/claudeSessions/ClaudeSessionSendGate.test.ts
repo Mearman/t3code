@@ -405,6 +405,18 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 
+  it.effect("refuses for an unreadable entry without marking a holder as seen", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const { runtime, calls } = makeGate({ hold: { _tag: "unreadable", pid: 200 } });
+
+      const refused = yield* refusals(writes(runtime, providerThread(now), now));
+
+      expect(calls).toEqual([]);
+      for (const [name, refusal] of refused) expectInUse(name, refusal, false);
+    }),
+  );
+
   it.effect("names an Agent SDK holder as possibly T3 Code's own from before a restart", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
