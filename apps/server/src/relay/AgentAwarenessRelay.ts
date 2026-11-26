@@ -1,10 +1,12 @@
 import type { AgentAwarenessThread } from "../orchestration-v2/ProjectionStore.ts";
 import {
   isListedThreadLineage,
+  isNativeOriginRun,
   type EnvironmentId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
   type Project,
+  type RunId,
   type RuntimeRequestId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -64,6 +66,9 @@ export class AgentAwarenessRelay extends Context.Service<
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/relay/AgentAwarenessRelay") {}
+
+// Bounds memory; a run evicted behind this many newer transcript runs can alert again.
+const REMEMBERED_TRANSCRIPT_RUNS = 4096;
 
 function eventThreadId(event: OrchestrationV2DomainEvent): ThreadId {
   return event.threadId;
@@ -328,12 +333,13 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
   readonly thread: Option.Option<AgentAwarenessThread>;
   readonly project: Option.Option<Project>;
   readonly pendingSubagentRequest: SubagentRequestAwareness | null;
+  readonly transcriptRunIds: ReadonlySet<RunId>;
 }): {
   readonly projectId: string | null;
   readonly state: RelayAgentActivityState | null;
   /** The child request behind the state's wait, when the parent isn't waiting itself. */
   readonly subagentWait: SubagentRequestAwareness | null;
-  readonly reason: "snapshot" | "thread-not-found" | "project-not-found";
+  readonly reason: "snapshot" | "transcript-run" | "thread-not-found" | "project-not-found";
 } {
   if (Option.isNone(input.thread)) {
     return {
@@ -363,13 +369,15 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
   const childDrivesWait =
     input.pendingSubagentRequest !== null &&
     state?.phase !== projectThreadAwarenessV2(awarenessInput)?.phase;
+  const transcriptRun = transcriptCompletion(input.thread.value, state, input.transcriptRunIds);
   return {
     projectId: input.thread.value.projectId,
-    state: snoozedCompletion(input.thread.value, state)
-      ? null
-      : sanitizeRelayAgentActivityState(state),
+    state:
+      transcriptRun || snoozedCompletion(input.thread.value, state)
+        ? null
+        : sanitizeRelayAgentActivityState(state),
     subagentWait: childDrivesWait ? input.pendingSubagentRequest : null,
-    reason: "snapshot",
+    reason: transcriptRun ? "transcript-run" : "snapshot",
   };
 }
 
@@ -384,6 +392,19 @@ function snoozedCompletion(
     return false;
   }
   return isSnoozed(thread, completedAt);
+}
+
+// A run read back from a provider transcript ended outside T3, so its end is not news to alert.
+function transcriptCompletion(
+  thread: AgentAwarenessThread,
+  state: { readonly phase: string } | null,
+  transcriptRunIds: ReadonlySet<RunId>,
+): boolean {
+  return (
+    (state?.phase === "completed" || state?.phase === "failed") &&
+    thread.latestRunId != null &&
+    transcriptRunIds.has(thread.latestRunId)
+  );
 }
 
 function terminalWorkSinceStart(thread: AgentAwarenessThread, startedAt: number): boolean {
@@ -480,6 +501,8 @@ export const make = Effect.gen(function* () {
   const publishConfirmDeadlines = new Map<ThreadId, number>();
   // Threads whose confirmation holds a completion, so a thread that settles during the hold still alerts.
   const heldCompletions = new Set<ThreadId>();
+  // Runs seen on the event stream that were read back from a provider transcript, oldest first.
+  const transcriptRunIds = new Set<RunId>();
   let schedulePublishConfirm: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
   const publishRetries = new Map<
     ThreadId,
@@ -602,6 +625,7 @@ export const make = Effect.gen(function* () {
       thread,
       project,
       pendingSubagentRequest: yield* currentSubagentRequestFor(threadId),
+      transcriptRunIds,
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state, snapshot.subagentWait);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
@@ -610,6 +634,13 @@ export const make = Effect.gen(function* () {
       !hasLivePublishedState(publishedStateByThread, threadId)
     ) {
       if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
+    }
+    // A backfill reads many transcript runs; a thread with no card has nothing to clear.
+    if (
+      snapshot.reason === "transcript-run" &&
+      !hasLivePublishedState(publishedStateByThread, threadId)
+    ) {
+      return;
     }
     if (
       publishedStateByThread.get(threadId) === publishIdentity &&
@@ -669,6 +700,7 @@ export const make = Effect.gen(function* () {
               thread: Option.some({ ...thread.value, settledOverride: null }),
               project,
               pendingSubagentRequest: null,
+              transcriptRunIds,
             })
           : null;
       if (unsettled?.state?.phase === "completed") {
@@ -982,6 +1014,16 @@ export const make = Effect.gen(function* () {
       yield* forkParked(
         Stream.runForEach(threads.streamDomainEvents, (event) => {
           const threadId = eventThreadId(event);
+          if (
+            (event.type === "run.created" || event.type === "run.updated") &&
+            isNativeOriginRun(event.payload) &&
+            !transcriptRunIds.has(event.payload.id)
+          ) {
+            transcriptRunIds.add(event.payload.id);
+            if (transcriptRunIds.size > REMEMBERED_TRANSCRIPT_RUNS) {
+              transcriptRunIds.delete(transcriptRunIds.values().next().value!);
+            }
+          }
           if (!shouldPublishAgentAwarenessEvent(event)) {
             return Effect.void;
           }

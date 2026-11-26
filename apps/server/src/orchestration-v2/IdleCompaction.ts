@@ -1,4 +1,8 @@
-import { isListedThreadLineage, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  isNativeOriginRun,
+  type OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
 import { COMPACTION_SUGGESTION_MIN_TOKENS } from "@t3tools/shared/claudeCompaction";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
@@ -59,6 +63,8 @@ export function idleCompactionWindow(
       null,
     );
   if (latestRun?.status !== "completed" || latestRun.completedAt === null) return null;
+  // A transcript-read run means the session is driven outside T3; a /compact would land in it.
+  if (isNativeOriginRun(latestRun)) return null;
   const message = messages.find((candidate) => candidate.id === latestRun.userMessageId);
   // Never compact a compaction, so one idle spell compacts at most once.
   if (message === undefined || message.text.trim().toLowerCase() === "/compact") return null;

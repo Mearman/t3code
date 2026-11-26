@@ -125,6 +125,27 @@ describe("makeRunOutcomeRecorder", () => {
       assert.deepStrictEqual(yield* runSnapshots("p2"), []);
     }),
   );
+
+  it.effect("does not count a run read back from a Claude transcript", () =>
+    Effect.gen(function* () {
+      const record = commitWith(makeRunOutcomeRecorder(() => Effect.succeed(false)));
+      yield* record([
+        runUpdated(1, "p-native", {
+          id: RunId.make("run:metrics:native"),
+          status: "completed",
+          startedAt: at("2026-10-19T12:00:30.000Z"),
+          completedAt: at("2026-10-19T12:10:30.000Z"),
+          nativeOrigin: {
+            kind: "claude_transcript",
+            nativeSessionId: "session-1",
+            promptUuid: "prompt-1",
+          },
+        }),
+      ]);
+
+      assert.deepStrictEqual(yield* runSnapshots("p-native"), []);
+    }),
+  );
 });
 
 describe("EventSink run outcomes", () => {

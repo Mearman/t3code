@@ -510,6 +510,112 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
     }),
   );
 
+  it.effect("does not capture a run read back from a Claude transcript", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const stoppedThreadId = ThreadId.make("thread:checkpoint-capture-native");
+      const stoppedRunId = RunId.make("run:checkpoint-capture-native");
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-native:thread"),
+        type: "thread.created",
+        threadId: stoppedThreadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: stoppedThreadId,
+          projectId,
+          title: "Checkpoint capture of a transcript run",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: stoppedThreadId,
+          },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      const stoppedRun: OrchestrationV2Run = {
+        id: stoppedRunId,
+        threadId: stoppedThreadId,
+        ordinal: 2,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make("message:checkpoint-capture-native"),
+        rootNodeId,
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+        checkpointId: null,
+        contextHandoffId: null,
+        nativeOrigin: {
+          kind: "claude_transcript",
+          nativeSessionId: "session-1",
+          promptUuid: "prompt-1",
+        },
+      };
+      yield* projectionStore.apply({
+        id: EventId.make("event:checkpoint-capture-native:run"),
+        type: "run.updated",
+        threadId: stoppedThreadId,
+        runId: stoppedRunId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: stoppedRun,
+      });
+
+      const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+      const layerCapture = CheckpointCaptureService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              repositoryScopes: () => Effect.succeed([]),
+              materializeBaselineCheckpoint: () => Effect.die("a transcript run has no baseline"),
+              capture: () => Effect.die("a transcript run must not be captured"),
+            }),
+            Layer.mock(EventSink.EventSinkV2)({
+              commitCommand: (input) =>
+                Ref.set(committed, input.events).pipe(Effect.as({ committed: true } as never)),
+            }),
+          ),
+        ),
+      );
+
+      yield* CheckpointCaptureService.CheckpointCaptureServiceV2.pipe(
+        Effect.flatMap((service) =>
+          service.execute({ threadId: stoppedThreadId, runId: stoppedRunId, scopeId }),
+        ),
+        Effect.provide(layerCapture),
+      );
+
+      assert.deepEqual(yield* Ref.get(committed), []);
+      const projected = yield* projectionStore.getCheckpointCaptureContext(stoppedThreadId, {
+        runId: stoppedRunId,
+        scopeId,
+      });
+      assert.equal(projected.run?.status, "completed");
+      assert.isNull(projected.run?.checkpointId ?? null);
+    }),
+  );
+
   // Stop can be accepted while the provider's successful terminal is being written: the run is
   // then `waiting` with a stored request and no result, and capture is what settles it.
   it.effect("ends a waiting run as interrupted when Stop was accepted before capture", () =>
