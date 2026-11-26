@@ -223,7 +223,7 @@ export const resolveHomeOwner = Effect.fn("DesktopHomeOwner.resolveHomeOwner")(
 );
 
 /** Resolves the home's owner, waiting out one that holds the home but has not answered yet. */
-export const awaitHomeOwner = Effect.fn("DesktopHomeOwner.awaitHomeOwner")(function* () {
+const awaitHomeOwner = Effect.fn("DesktopHomeOwner.awaitHomeOwner")(function* () {
   let lastOwner = Option.none<HomeOwner>();
   return yield* Effect.gen(function* () {
     while (true) {

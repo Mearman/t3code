@@ -1,4 +1,3 @@
-import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -7,6 +6,7 @@ import { AuthAdministrativeClientScopes, ORCHESTRATION_PROTOCOL_VERSION } from "
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
@@ -48,11 +48,18 @@ interface Harness {
 }
 
 /** A home whose lock a current server holds, answering for its environment, with a scripted CLI. */
+type AttachedHomeServices =
+  | FileSystem.FileSystem
+  | Path.Path
+  | DesktopEnvironment.DesktopEnvironment
+  | HttpClient.HttpClient
+  | ChildProcessSpawner.ChildProcessSpawner;
+
 const withAttachedHome = <A, E>(
-  run: (harness: Harness) => Effect.Effect<A, E, FileSystem.FileSystem>,
+  run: (harness: Harness) => Effect.Effect<A, E, AttachedHomeServices>,
   options: {
     readonly sessionAccepted?: boolean;
-    readonly onIssue?: (harness: Harness) => void;
+    readonly onIssue?: (harness: Harness) => Effect.Effect<void, never, FileSystem.FileSystem>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -73,7 +80,7 @@ const withAttachedHome = <A, E>(
     const harness: Harness = { home, userdata, commands: [] };
     let issued = 0;
     const spawner = ChildProcessSpawner.make((command) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         const args =
           command._tag === "StandardCommand"
             ? command.args.map((arg) => (typeof arg === "string" ? arg : "<redacted>"))
@@ -81,7 +88,9 @@ const withAttachedHome = <A, E>(
         harness.commands.push(args);
         if (!args.includes("issue")) return handle("");
         issued += 1;
-        options.onIssue?.(harness);
+        if (options.onIssue !== undefined) {
+          yield* options.onIssue(harness).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+        }
         return handle(
           JSON.stringify({ sessionId: `session-${issued}`, token: `token-${issued}` }, null, 2),
         );
@@ -177,10 +186,12 @@ describe("DesktopAttachedServer", () => {
       {
         // The home changes hands while the CLI runs.
         onIssue: ({ userdata }) =>
-          NodeFS.writeFileSync(
-            `${userdata}/server-runtime.json`,
-            JSON.stringify({ ...OWNER_RECORD, ownerId: "owner-2" }),
-          ),
+          Effect.flatMap(FileSystem.FileSystem, (fs) =>
+            fs.writeFileString(
+              `${userdata}/server-runtime.json`,
+              JSON.stringify({ ...OWNER_RECORD, ownerId: "owner-2" }),
+            ),
+          ).pipe(Effect.orDie),
       },
     ),
   );

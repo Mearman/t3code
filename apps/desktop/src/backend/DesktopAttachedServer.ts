@@ -37,6 +37,7 @@ type IssuedSession = typeof IssuedSession.Type;
 const decodeIssuedSession = Schema.decodeUnknownEffect(Schema.fromJsonString(IssuedSession));
 const PersistedSession = Schema.Struct({ sessionId: Schema.String });
 const decodePersistedSession = Schema.decodeUnknownOption(Schema.fromJsonString(PersistedSession));
+const encodePersistedSession = Schema.encodeEffect(Schema.fromJsonString(PersistedSession));
 const SessionState = Schema.Struct({ authenticated: Schema.Boolean });
 
 type AttachedServerRequirements =
@@ -159,9 +160,10 @@ export const makeAttachConfig = Effect.fn("DesktopAttachedServer.makeAttachConfi
     const previous = yield* fileSystem
       .readFileString(persistedSessionPath)
       .pipe(Effect.option, Effect.map(Option.flatMap(decodePersistedSession)));
-    yield* fileSystem
-      .writeFileString(persistedSessionPath, `${JSON.stringify({ sessionId: issued.sessionId })}\n`)
-      .pipe(Effect.ignore);
+    yield* encodePersistedSession({ sessionId: issued.sessionId }).pipe(
+      Effect.flatMap((json) => fileSystem.writeFileString(persistedSessionPath, json)),
+      Effect.ignore,
+    );
     if (Option.isSome(previous) && previous.value.sessionId !== issued.sessionId) {
       yield* revoke(previous.value.sessionId);
     }
