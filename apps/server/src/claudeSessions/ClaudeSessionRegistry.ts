@@ -33,13 +33,6 @@ export class ClaudeSessionRegistryEntryError extends Schema.TaggedError<ClaudeSe
   }
 }
 
-/** Run `ps` with these arguments and environment to get start times comparable with `procStart`. */
-export const CLAUDE_PROCESS_TABLE_COMMAND = {
-  command: "ps",
-  args: ["-A", "-o", "pid=,ppid=,pgid=,lstart="],
-  env: { LC_ALL: "C", TZ: "UTC" },
-} as const;
-
 // Claude Code keeps key files and temporary files beside the entries.
 const ENTRY_FILE_NAME = /^\d+\.json$/;
 
@@ -79,7 +72,7 @@ const collapseSpaces = (value: string) => value.trim().split(/\s+/).join(" ");
 /**
  * The processes that hold a session and were not started by this server, one per session id.
  * An entry counts only while its pid is a process with the recorded start time, so a reused pid
- * does not. `ownRootPids` are the server and the processes it spawned; their descendants are
+ * does not. `processes` must be read with `LC_ALL=C TZ=UTC`, which is how `procStart` is written. `ownRootPids` are the server and the processes it spawned; their descendants are
  * excluded too, because a launcher can run `claude` as a child.
  */
 export function externalClaudeSessionHolders(input: {
