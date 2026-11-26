@@ -67,11 +67,7 @@ const make = Effect.gen(function* () {
   const adapterFailure = (threadId: ThreadId) => (cause: ProviderAdapter.ProviderAdapterV2Error) =>
     fail(
       threadId,
-      cause._tag === "ProviderAdapterSessionStoppedError"
-        ? "session-stopped"
-        : cause._tag === "ProviderAdapterThreadInUseError"
-          ? "session-held"
-          : "request-failed",
+      cause._tag === "ProviderAdapterSessionStoppedError" ? "session-stopped" : "request-failed",
       cause,
     );
 
