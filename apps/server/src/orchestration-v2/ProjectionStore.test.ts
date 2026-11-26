@@ -9510,7 +9510,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           .getThreadRecords(threadId, ["runs"], filter)
           .pipe(Effect.map(({ runs }) => runs.map((run) => run.id)));
 
-      for (const option of ["includeLatestRun", "includeLatestExecutedRun"] as const) {
+      for (const option of [
+        "includeLatestRun",
+        "includeLatestExecutedRun",
+        "includePresentedRun",
+      ] as const) {
         assert.deepEqual(yield* kept({ runStatuses: ["running"], [option]: "any" }), [
           transcriptRun.id,
         ]);

@@ -83,7 +83,8 @@ const cancelBackgroundOnlyTask = (
       | "recorded"
       | "monitor"
       | "refused"
-      | "delegate";
+      | "delegate"
+      | "delegate-after-transcript";
   } = {},
 ) =>
   Effect.scoped(
@@ -548,14 +549,51 @@ const cancelBackgroundOnlyTask = (
           capabilities: new Set(["orchestration"]),
           issuedAt: 1,
         };
-        if (cancelAt === "delegate") {
+        if (cancelAt === "delegate" || cancelAt === "delegate-after-transcript") {
           // The child's run settled while its native subagent still runs, and that subagent delegates.
           const childScope: McpInvocationScope = {
             ...scope,
             thread: { ...scope.thread!, threadId: task.childThreadId! },
           };
+          const t3Run = (yield* orchestrator.getThreadProjection(task.childThreadId!)).runs.find(
+            (run) => run.id === child.turn.runId,
+          )!;
+          if (cancelAt === "delegate-after-transcript") {
+            // The session went on in a terminal; the sync read that turn back as a later run.
+            const transcriptRun = {
+              ...t3Run,
+              id: RunId.make("run:child-transcript-turn"),
+              ordinal: t3Run.ordinal + 1,
+              userMessageId: MessageId.make("message:child-transcript-turn"),
+              activeAttemptId: null,
+              status: "completed" as const,
+              nativeOrigin: {
+                kind: "claude_transcript" as const,
+                nativeSessionId: "session-1",
+                promptUuid: "prompt-1",
+              },
+            };
+            const at = yield* DateTime.now;
+            yield* eventSink.write({
+              events: [
+                {
+                  id: EventId.make("event:child-transcript-turn"),
+                  type: "run.created",
+                  threadId: task.childThreadId!,
+                  runId: transcriptRun.id,
+                  occurredAt: at,
+                  payload: { ...transcriptRun, requestedAt: at, startedAt: at, completedAt: at },
+                },
+              ],
+            });
+          }
           const delegated = yield* service.delegateTask(childScope, { task: "Reply OK." });
           assert.equal(delegated.status, "starting");
+          // The delegation joins T3's run, whose completion cohort wakes the thread.
+          const childTask = (yield* orchestrator.getThreadProjection(
+            task.childThreadId!,
+          )).subagents.find((entry) => entry.origin === "app_owned");
+          assert.equal(childTask?.runId, t3Run.id);
           return undefined;
         }
         const before = yield* service.taskStatus(scope, task.id);
@@ -732,4 +770,8 @@ it.effect("task_cancel stops a remote descendant without reacquiring its parent 
 
 it.effect("a native background subagent delegates after its parent's run completes", () =>
   cancelBackgroundOnlyTask("subagent", { cancelAt: "delegate" }),
+);
+
+it.effect("a native background subagent delegates into T3's run, not a later transcript turn", () =>
+  cancelBackgroundOnlyTask("subagent", { cancelAt: "delegate-after-transcript" }),
 );

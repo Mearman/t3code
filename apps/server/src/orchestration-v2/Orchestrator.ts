@@ -588,7 +588,7 @@ function nextRunOrdinal(projection: Pick<OrchestrationV2ThreadProjection, "runs"
  * Stamp at wake start; queued prompts lack start times and delegated results jump the queue.
  * Auto-drained agent messages continue active work; explicit queue starts reset it.
  */
-function wakeWorkStartedAt(
+export function wakeWorkStartedAt(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "subagents">,
   trigger: Pick<
     OrchestrationV2ConversationMessage,
@@ -618,7 +618,8 @@ function wakeWorkStartedAt(
   ) {
     return {};
   }
-  const previous = projection.runs
+  // The work a wake continues is T3's; a transcript turn started outside it.
+  const previous = runsByOrigin(projection.runs, "t3")
     .flatMap((run) => (run.startedAt === null ? [] : [{ run, startedAt: run.startedAt }]))
     .toSorted(
       (left, right) =>
@@ -10117,17 +10118,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
   });
 
-  // A native background subagent keeps working, and delegating, after the latest run settles.
+  // A native background subagent keeps working, and delegating, after T3's latest run settles.
+  // The shell presents a transcript run as latest; the subagent belongs to the run T3 sent.
   const backgroundSubagentOutlivesRun = (run: OrchestrationV2Run) =>
-    projectionStore.getThreadShell(run.threadId).pipe(
-      Effect.map(
-        (shell) =>
-          shell !== null &&
-          shell.archivedAt === null &&
-          shell.activeRunId === null &&
-          shell.latestRunId === run.id &&
-          hasPendingBackgroundSubagent(shell.pendingBackgroundTasks, run.providerInstanceId),
-      ),
+    Effect.gen(function* () {
+      const shell = yield* projectionStore.getThreadShell(run.threadId);
+      if (
+        shell === null ||
+        shell.archivedAt !== null ||
+        shell.activeRunId !== null ||
+        !hasPendingBackgroundSubagent(shell.pendingBackgroundTasks, run.providerInstanceId)
+      ) {
+        return false;
+      }
+      const { runs } = yield* projectionStore.getThreadRecords(run.threadId, ["runs"], {
+        runStatuses: [],
+        includePresentedRun: "t3",
+      });
+      return runs[0]?.id === run.id;
+    }).pipe(
       Effect.mapError(
         (cause) => new OrchestratorProjectionError({ threadId: run.threadId, cause }),
       ),

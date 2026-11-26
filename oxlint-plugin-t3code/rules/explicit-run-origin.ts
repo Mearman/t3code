@@ -16,6 +16,8 @@ const RUN_PRESERVING_METHODS = new Set([
   "toReversed",
   "reverse",
 ]);
+// Calls whose elements are built from runs: ordering or picking among them still orders runs.
+const RUN_DERIVING_METHODS = new Set(["map", "flatMap"]);
 const PICK_LAST_METHODS = new Set(["findLast", "findLastIndex"]);
 const ORDERING_METHODS = new Set(["toSorted", "sort"]);
 const CALLBACK_METHODS = new Set([
@@ -33,6 +35,11 @@ const RELATIONAL = new Set(["<", ">", "<=", ">="]);
 
 const MESSAGE =
   'Say which runs this orders or picks from: pass the collection through runsByOrigin(runs, "t3") when T3 acts on the result, or runsByOrigin(runs, "any") when it only shows it. A run read back from a provider transcript must never steer T3, and must still be shown.';
+const LATEST_RUN_ID_MESSAGE =
+  "A thread shell's latestRunId is the run it presents, which can be one read back from a provider transcript. To act on T3's latest run, load it with getThreadRecords and includePresentedRun: \"t3\" (or another T3 selector); if this only shows or passes on the presented run, suppress with the reason.";
+// Server code acts on runs; the shell builder itself defines latestRunId.
+const SERVER_FILE = /(?:^|\/)apps\/server\/src\//u;
+const SHELL_BUILDER = /(?:^|\/)apps\/server\/src\/orchestration-v2\/ProjectionStore\.ts$/u;
 const SQL_MESSAGE =
   'This subquery picks one run by order. Add ${runOriginSql(alias, "t3" | "any")} to its conditions so it says whether runs read back from a provider transcript count.';
 
@@ -63,6 +70,7 @@ function memberName(node: Node): string | undefined {
 function runCollection(
   node: Node,
   decided: ReadonlySet<string>,
+  throughDerived = false,
 ): "undecided" | "decided" | undefined {
   const expression = unwrap(node);
   // An empty array, or no collection at all, holds no runs to choose among.
@@ -86,7 +94,7 @@ function runCollection(
       expression.type === "ConditionalExpression"
         ? [expression.consequent, expression.alternate]
         : [expression.left, expression.right];
-    const states = branches.map((branch) => runCollection(branch as Node, decided));
+    const states = branches.map((branch) => runCollection(branch as Node, decided, throughDerived));
     if (states.includes("undecided")) return "undecided";
     return states.every((state) => state === "decided") ? "decided" : undefined;
   }
@@ -94,8 +102,12 @@ function runCollection(
     const callee = unwrap(expression.callee as Node);
     if (callee.type === "Identifier" && callee.name === ORIGIN_SELECTOR) return "decided";
     const method = memberName(callee);
-    if (callee.type === "MemberExpression" && method && RUN_PRESERVING_METHODS.has(method)) {
-      return runCollection(callee.object as Node, decided);
+    if (
+      callee.type === "MemberExpression" &&
+      method &&
+      (RUN_PRESERVING_METHODS.has(method) || (throughDerived && RUN_DERIVING_METHODS.has(method)))
+    ) {
+      return runCollection(callee.object as Node, decided, throughDerived);
     }
   }
   return undefined;
@@ -119,7 +131,27 @@ function some(node: Node, test: (node: Node) => boolean): boolean {
   return children(node).some((child) => some(child, test));
 }
 
-const readsOrdinal = (node: Node) => some(node, (child) => memberName(child) === "ordinal");
+// A run's order: its ordinal or any of its lifecycle times.
+const ORDER_FIELDS = new Set([
+  "ordinal",
+  "requestedAt",
+  "startedAt",
+  "workStartedAt",
+  "completedAt",
+]);
+const readsOrdinal = (node: Node) =>
+  some(node, (child) => {
+    const name = memberName(child);
+    return name !== undefined && ORDER_FIELDS.has(name);
+  });
+const DATE_COMPARISONS = new Set([
+  "isGreaterThan",
+  "isGreaterThanOrEqualTo",
+  "isLessThan",
+  "isLessThanOrEqualTo",
+  "Order",
+  "distance",
+]);
 
 function calls(node: Node, name: string): boolean {
   if (node.type !== "CallExpression") return false;
@@ -129,17 +161,27 @@ function calls(node: Node, name: string): boolean {
 
 const callsRunRanAfter = (node: Node) => calls(node, "runRanAfter");
 
-/** Two runs compared by order: both sides of a relation read an ordinal, or runRanAfter. */
+/** Two runs compared by order: a relation or DateTime comparison whose sides both read one, or runRanAfter. */
 const comparesRunOrder = (body: Node) =>
-  some(
-    body,
-    (node) =>
-      callsRunRanAfter(node) ||
-      (node.type === "BinaryExpression" &&
+  some(body, (node) => {
+    if (callsRunRanAfter(node)) return true;
+    if (node.type === "BinaryExpression") {
+      return (
         RELATIONAL.has(node.operator) &&
         readsOrdinal(node.left as Node) &&
-        readsOrdinal(node.right as Node)),
-  );
+        readsOrdinal(node.right as Node)
+      );
+    }
+    if (node.type !== "CallExpression") return false;
+    const name = memberName(unwrap(node.callee as Node));
+    const args = node.arguments as Node[];
+    return (
+      name !== undefined &&
+      DATE_COMPARISONS.has(name) &&
+      args.length >= 2 &&
+      args.slice(0, 2).every((arg) => readsOrdinal(arg))
+    );
+  });
 
 const isMinusOne = (node: Node | undefined) =>
   node !== undefined &&
@@ -178,6 +220,38 @@ function picksRunWithoutOrigin(text: string): boolean {
   return false;
 }
 
+// A property that names a run, other than the latest run itself, which is the same value passed on.
+const RUN_ID_KEY = /^(?:runId|runIds|\w+RunId|\w+RunIds)$/u;
+
+/**
+ * Whether a `latestRunId` read picks or matches a run: compared with an id, or passed as a run id
+ * (a `runId` or `*RunId` property, or an element of a `runIds` list).
+ */
+function selectsRunById(read: Node): boolean {
+  let node: Node = read;
+  let parent = (node as { parent?: Node }).parent;
+  while (
+    parent !== undefined &&
+    (parent.type === "ChainExpression" || parent.type === "TSNonNullExpression")
+  ) {
+    node = parent;
+    parent = (node as { parent?: Node }).parent;
+  }
+  if (parent === undefined) return false;
+  if (
+    parent.type === "BinaryExpression" &&
+    (parent.operator === "===" || parent.operator === "!==")
+  ) {
+    const other = unwrap((parent.left === node ? parent.right : parent.left) as Node);
+    const name = other.type === "Identifier" ? other.name : memberName(other);
+    return name !== undefined && (name === "id" || RUN_ID_KEY.test(name));
+  }
+  const property =
+    parent.type === "ArrayExpression" ? (parent as { parent?: Node }).parent : parent;
+  if (property?.type !== "Property" || property.key.type !== "Identifier") return false;
+  return property.key.name !== "latestRunId" && RUN_ID_KEY.test(property.key.name);
+}
+
 export default defineRule({
   meta: {
     type: "problem",
@@ -188,6 +262,8 @@ export default defineRule({
   },
   create(context) {
     if (TEST_FILE.test(context.filename) || SELECTOR_MODULE.test(context.filename)) return {};
+    const checksLatestRunId =
+      SERVER_FILE.test(context.filename) && !SHELL_BUILDER.test(context.filename);
     const decided = new Set<string>();
     const collectDecided = (node: Node) => {
       if (
@@ -210,13 +286,15 @@ export default defineRule({
         if (callee.type !== "MemberExpression") return;
         const method = memberName(callee);
         if (method === undefined) return;
-        if (runCollection(callee.object as Node, decided) !== "undecided") return;
         const [first] = node.arguments as Node[];
         const picksLast = PICK_LAST_METHODS.has(method) || (method === "at" && isMinusOne(first));
         const orders =
           ORDERING_METHODS.has(method) &&
           first !== undefined &&
           (readsOrdinal(first) || comparesRunOrder(first));
+        // Ordering or picking reaches through map and flatMap; a callback compares only runs.
+        const state = runCollection(callee.object as Node, decided, picksLast || orders);
+        if (state !== "undecided") return;
         const comparesInCallback =
           CALLBACK_METHODS.has(method) &&
           first !== undefined &&
@@ -225,6 +303,12 @@ export default defineRule({
         if (picksLast || orders || comparesInCallback) context.report({ node, message: MESSAGE });
       },
       MemberExpression(node) {
+        if (checksLatestRunId && memberName(node as Node) === "latestRunId") {
+          if (selectsRunById(node as Node)) {
+            context.report({ node, message: LATEST_RUN_ID_MESSAGE });
+          }
+          return;
+        }
         // runs[runs.length - 1]
         if (!node.computed || runCollection(node.object as Node, decided) !== "undecided") return;
         const index = unwrap(node.property as Node);

@@ -206,6 +206,7 @@ function heldForLimitRecovery(
     return false;
   const resetMs = Date.parse(thread.usageLimitResetAt);
   const recovery = thread.limitRecovery;
+  // oxlint-disable-next-line t3code/explicit-run-origin -- a transcript run presented after the limited run releases the hold, as limit recovery stands down
   if (recovery?.runId === thread.latestRunId && recovery.resetAt === thread.usageLimitResetAt)
     // An auto-resume holds until its continuation replaces the failed run.
     return recovery.autoResume || (recovery.snooze === true && resetMs > now);
