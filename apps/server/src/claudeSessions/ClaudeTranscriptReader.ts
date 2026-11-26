@@ -26,49 +26,35 @@ export function claudeTranscriptSessionId(fileName: string): string | undefined 
 }
 
 /**
- * Where the next read of one transcript resumes. `guardHash` digests the last line consumed, which carries its record's uuid, so the read restarts when that line changed, the file is shorter, or `fileId` shows it is another file.
+ * Where the next read of one transcript resumes. `headHash` digests the file's first bytes and
+ * `tailHash` the bytes just before `offset`, up to `GUARD_WINDOW_BYTES` each; the read restarts
+ * from the top when either differs, the file is shorter, or `fileId` shows it is another file.
+ * A same-length rewrite confined to bytes between the two windows is not detected.
  */
 export const ClaudeTranscriptCursor = Schema.Struct({
   offset: Schema.Number,
-  lastLineOffset: Schema.Number,
-  guardHash: Schema.String,
+  headHash: Schema.String,
+  tailHash: Schema.String,
   fileId: Schema.NullOr(Schema.String),
   state: ClaudeTranscriptParserState,
 });
 export type ClaudeTranscriptCursor = typeof ClaudeTranscriptCursor.Type;
 
+const digest = (bytes: Uint8Array) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+const EMPTY: Uint8Array = new Uint8Array(0);
+
 export const initialClaudeTranscriptCursor: ClaudeTranscriptCursor = {
   offset: 0,
-  lastLineOffset: 0,
-  guardHash: "",
+  headHash: digest(EMPTY),
+  tailHash: digest(EMPTY),
   fileId: null,
   state: initialClaudeTranscriptParserState,
 };
 
 const READ_CHUNK_BYTES = 256 * 1024;
-// A line can be many MiB; the guard digests its length, its first and its last bytes, which hold the record's type and, after the message, its uuid and timestamp.
-const GUARD_SPAN_BYTES = 64 * 1024;
+// Wide enough to span several records, whatever the last ones hold; a line can be many MiB.
+const GUARD_WINDOW_BYTES = 64 * 1024;
 const NEWLINE = 0x0a;
-
-function lineGuard(length: number, head: Uint8Array, tail: Uint8Array): string {
-  return NodeCrypto.createHash("sha256")
-    .update(`${length}:`)
-    .update(head)
-    .update(tail)
-    .digest("hex");
-}
-
-// The parts of a line `lineGuard` reads: all of a short line, or its two ends.
-function guardSpans(length: number) {
-  return length <= 2 * GUARD_SPAN_BYTES
-    ? { headLength: length, tailStart: length }
-    : { headLength: GUARD_SPAN_BYTES, tailStart: length - GUARD_SPAN_BYTES };
-}
-
-function guardOfLine(line: Uint8Array): string {
-  const { headLength, tailStart } = guardSpans(line.length);
-  return lineGuard(line.length, line.subarray(0, headLength), line.subarray(tailStart));
-}
 
 function concatenate(chunks: ReadonlyArray<Uint8Array>, length: number): Uint8Array {
   const only = chunks[0];
@@ -94,7 +80,10 @@ export interface ClaudeTranscriptRead {
 }
 
 /**
- * Reads complete lines after `cursor` and parses them. Stops at the end of the file or once at least `maxBytes` have been consumed; a last line without its newline is left for the next read. A read that fails leaves the caller's cursor where it was.
+ * Reads complete lines after `cursor` and parses them. Stops at the end of the file or once at
+ * least `maxBytes` have been consumed; a last line without its newline is left for the next read.
+ * The new cursor's digests are of the bytes parsed, so a rewrite during the read that reaches
+ * either window shows at the next read. A read that fails leaves the caller's cursor where it was.
  */
 export const readClaudeTranscript = Effect.fn("readClaudeTranscript")(function* (input: {
   readonly filePath: string;
@@ -109,31 +98,51 @@ export const readClaudeTranscript = Effect.fn("readClaudeTranscript")(function* 
   const fileId = `${info.dev}:${Option.getOrUndefined(info.ino)}`;
 
   const readAt = Effect.fnUntraced(function* (offset: number, length: number) {
-    if (length === 0) return new Uint8Array(0);
+    if (length === 0) return EMPTY;
     yield* handle.seek(BigInt(offset), "start");
     const bytes = yield* handle.readAlloc(length);
-    return Option.isSome(bytes) ? bytes.value : new Uint8Array(0);
-  });
-  const guardOnDisk = Effect.fnUntraced(function* (cursor: ClaudeTranscriptCursor) {
-    const length = cursor.offset - cursor.lastLineOffset;
-    const { headLength, tailStart } = guardSpans(length);
-    const head = yield* readAt(cursor.lastLineOffset, headLength);
-    const tail = yield* readAt(cursor.lastLineOffset + tailStart, length - tailStart);
-    return lineGuard(length, head, tail);
+    return Option.isSome(bytes) ? bytes.value : EMPTY;
   });
 
-  const resumes =
-    input.cursor.offset === 0 ||
-    (input.cursor.fileId === fileId &&
-      input.cursor.offset <= size &&
-      (yield* guardOnDisk(input.cursor)) === input.cursor.guardHash);
-  const start = resumes ? input.cursor : initialClaudeTranscriptCursor;
+  const stored = input.cursor;
+  let head = EMPTY;
+  let tail = EMPTY;
+  let resumes = stored.offset === 0;
+  if (!resumes && stored.fileId === fileId && stored.offset <= size) {
+    head = yield* readAt(0, Math.min(GUARD_WINDOW_BYTES, stored.offset));
+    const tailLength = Math.min(GUARD_WINDOW_BYTES, stored.offset);
+    tail = yield* readAt(stored.offset - tailLength, tailLength);
+    resumes = digest(head) === stored.headHash && digest(tail) === stored.tailHash;
+  }
+  const start = resumes ? stored : initialClaudeTranscriptCursor;
+  if (!resumes) {
+    head = EMPTY;
+    tail = EMPTY;
+  }
 
   const decoder = new TextDecoder();
   const lines: Array<ClaudeTranscriptLine> = [];
   let offset = start.offset;
-  let lastLineOffset = start.lastLineOffset;
-  let guardHash = start.guardHash;
+  // Consumed lines, newest last, kept only while they reach into a guard window.
+  const headPieces: Array<Uint8Array> = [head];
+  let headLength = head.length;
+  const tailPieces: Array<Uint8Array> = [tail];
+  let tailLength = tail.length;
+  const consume = (line: Uint8Array) => {
+    if (headLength < GUARD_WINDOW_BYTES) {
+      const piece = line.subarray(0, GUARD_WINDOW_BYTES - headLength);
+      headPieces.push(piece);
+      headLength += piece.length;
+    }
+    tailPieces.push(line);
+    tailLength += line.length;
+    let oldest = tailPieces[0];
+    while (oldest !== undefined && tailLength - oldest.length >= GUARD_WINDOW_BYTES) {
+      tailPieces.shift();
+      tailLength -= oldest.length;
+      oldest = tailPieces[0];
+    }
+  };
   // The unterminated end of the last chunk, kept as pieces so a long line is copied once.
   let pending: Array<Uint8Array> = [];
   let pendingLength = 0;
@@ -154,9 +163,8 @@ export const readClaudeTranscript = Effect.fn("readClaudeTranscript")(function* 
       pending = [];
       pendingLength = 0;
       lines.push({ text: decoder.decode(line.subarray(0, line.length - 1)), offset });
-      lastLineOffset = offset;
       offset += line.length;
-      guardHash = guardOfLine(line);
+      consume(line);
       lineStart = newline + 1;
       newline = bytes.indexOf(NEWLINE, lineStart);
     }
@@ -171,10 +179,17 @@ export const readClaudeTranscript = Effect.fn("readClaudeTranscript")(function* 
     state: start.state,
     lines,
   });
+  const tailBytes = concatenate(tailPieces, tailLength);
   const read: ClaudeTranscriptRead = {
     events: parsed.events,
     malformed: parsed.malformed,
-    cursor: { offset, lastLineOffset, guardHash, fileId, state: parsed.state },
+    cursor: {
+      offset,
+      headHash: digest(concatenate(headPieces, headLength)),
+      tailHash: digest(tailBytes.subarray(Math.max(0, tailBytes.length - GUARD_WINDOW_BYTES))),
+      fileId,
+      state: parsed.state,
+    },
     rewritten: !resumes,
     atEnd,
   };
