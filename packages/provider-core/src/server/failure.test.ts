@@ -326,7 +326,7 @@ it("keeps every curated message without a failure code", () => {
   assert.deepEqual(
     curated.map((tag) => makeProviderFailure({ cause: { _tag: tag, message: `${tag} text` } })),
     curated.map((tag) => ({
-      class: "unknown",
+      class: "unknown" as const,
       message: `${tag} text`,
       code: null,
       retryable: null,
