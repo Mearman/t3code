@@ -531,13 +531,10 @@ export interface ClaudeTranscriptParseResult {
 }
 
 /**
- * Folds decoded lines, in file order, into segment events. A line is skipped only when its uuid
- * was read before: in this call, or named in `known`, which holds the uuids earlier reads
- * consumed. Claude Code writes earlier lines again after compacting, and those are recognised by
- * that identity alone.
- *
- * Claude Code does not write lines in timestamp or chain order, so a line joins the segment its
- * parent is in when that parent is recent, and the latest segment otherwise.
+ * Folds decoded lines into segment events. A line is skipped only when its uuid was read before,
+ * in this call or as named in `known`, which is how lines rewritten after compaction are found.
+ * Lines are not written in timestamp or chain order, so each joins its recent parent's segment,
+ * else the latest one.
  */
 export function foldClaudeTranscriptLines(input: {
   readonly sessionId: string;
@@ -717,9 +714,12 @@ export function foldClaudeTranscriptLines(input: {
 
   // A reply or an interrupt opens a pending meta-opened turn unless it continues an older one.
   const takesPending = (parentUuid: string | null) => {
+    if (pendingOpener === null) return false;
     const target = segmentFor(parentUuid);
     return (
-      pendingOpener !== null && (target === undefined || target.ordinal === current()?.ordinal)
+      parentUuid === pendingOpener.uuid ||
+      target === undefined ||
+      target.ordinal === current()?.ordinal
     );
   };
 
