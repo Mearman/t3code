@@ -20,11 +20,4 @@ export default Effect.gen(function* () {
       PRIMARY KEY (store_key, session_id)
     )
   `;
-  yield* sql`
-    CREATE INDEX IF NOT EXISTS fork_provider_threads_claude_native_id_idx
-    ON orchestration_v2_projection_provider_threads (
-      json_extract(payload_json, '$.nativeThreadRef.nativeId')
-    )
-    WHERE json_extract(payload_json, '$.nativeThreadRef.driver') = 'claudeAgent'
-  `;
 });

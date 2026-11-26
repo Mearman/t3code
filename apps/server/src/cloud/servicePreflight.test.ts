@@ -10,6 +10,7 @@ import {
   BUILD_MIGRATION_HEAD,
   databaseMigrationHead,
 } from "../persistence/databaseMigrationHead.ts";
+import { FORK_MIGRATION_HEAD, forkMigrationManifest } from "../persistence/ForkMigrations.ts";
 import { migrationManifest } from "../persistence/Migrations.ts";
 
 import { runServicePreflight } from "./servicePreflight.ts";
@@ -121,6 +122,49 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
       expect(databaseMigrationHead(path.join(path.dirname(databasePath), "missing.sqlite"))).toBe(
         BUILD_MIGRATION_HEAD,
       );
+    }),
+  );
+
+  it.effect("blocks a database whose fork ledger this build would skip or does not know", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const databasePath = path.join(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-preflight-fork-" }),
+        "state.sqlite",
+      );
+      const db = new NodeSqlite.DatabaseSync(databasePath);
+      db.exec("CREATE TABLE effect_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)");
+      const insert = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of migrationManifest) insert.run(id, name);
+      const preflight = () =>
+        runServicePreflight({ databasePath, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL });
+      const reason = () => {
+        const result = preflight();
+        return result.status === "blocked" ? result.reason : "";
+      };
+      // A database only an upstream build has opened gains the fork schema on start.
+      expect(preflight().status).toBe("ready");
+
+      db.exec("CREATE TABLE fork_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)");
+      const insertFork = db.prepare("INSERT INTO fork_migrations VALUES (?, ?)");
+      for (const [id, name] of forkMigrationManifest) insertFork.run(id, name);
+      expect(preflight().status).toBe("ready");
+
+      const [firstId, firstName] = forkMigrationManifest[0]!;
+      db.prepare("UPDATE fork_migrations SET name = ? WHERE migration_id = ?").run(
+        "OtherForkBuild",
+        firstId,
+      );
+      expect(reason()).toContain(`fork ${firstId}_${firstName} (recorded: OtherForkBuild)`);
+      db.prepare("UPDATE fork_migrations SET name = ? WHERE migration_id = ?").run(
+        firstName,
+        firstId,
+      );
+
+      insertFork.run(FORK_MIGRATION_HEAD + 1, "FromNewerFork");
+      db.close();
+      expect(reason()).toContain(`${FORK_MIGRATION_HEAD + 1}_FromNewerFork (fork)`);
     }),
   );
 });
