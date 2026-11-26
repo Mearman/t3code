@@ -215,6 +215,35 @@ describe("McpAppRequests", () => {
     ),
   );
 
+  it.effect("reports a tool call refused for a held session as a held session", () =>
+    Effect.gen(function* () {
+      const requests = yield* McpAppRequests.McpAppRequests;
+      assert.equal(
+        yield* reason(requests.callTool({ threadId, itemId, name: "refresh", arguments: {} })),
+        "session-held",
+      );
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          item: appItem({ t3McpApp: app }),
+          mcpApps: {
+            ...mcpApps,
+            callTool: (input) =>
+              Effect.fail(
+                new ProviderAdapter.ProviderAdapterThreadInUseError({
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  providerThreadId: input.providerThread.id,
+                  detail: "Another Claude Code process (pid 200) has this session open.",
+                  cause: "held",
+                  holderObserved: true,
+                }),
+              ),
+          },
+        }),
+      ),
+    ),
+  );
+
   it.effect("keeps each app's latest model context, without a live session", () =>
     Effect.gen(function* () {
       const requests = yield* McpAppRequests.McpAppRequests;
