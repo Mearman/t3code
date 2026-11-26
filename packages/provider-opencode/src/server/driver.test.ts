@@ -6,12 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  ProviderInstanceId,
-  ProviderSessionId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import type { OpenCodeSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -1364,14 +1359,14 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
             runBackgroundWork: scenario.demand,
             settings: scenario.intervalOff
               ? {
-                  ...DEFAULT_SERVER_SETTINGS,
+                  ...TestProviderHost.TEST_SERVER_SETTINGS,
                   backgroundActivity: {
-                    ...DEFAULT_SERVER_SETTINGS.backgroundActivity,
+                    ...TestProviderHost.TEST_SERVER_SETTINGS.backgroundActivity,
                     profile: "custom",
                     overrides: { providerHealthRefreshInterval: Duration.zero },
                   },
                 }
-              : DEFAULT_SERVER_SETTINGS,
+              : TestProviderHost.TEST_SERVER_SETTINGS,
           }),
         ),
         Effect.provideService(HttpClient.HttpClient, server),

@@ -13,6 +13,15 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+/**
+ * Default server settings for provider tests. Provider update checks are off: they run the real
+ * `npm view` against the registry, in a fiber that can outlive the host's temporary directory.
+ */
+export const TEST_SERVER_SETTINGS: ServerSettings = {
+  ...DEFAULT_SERVER_SETTINGS,
+  enableProviderUpdateChecks: false,
+};
+
 export interface TestProviderHostOptions {
   readonly cwd?: string;
   readonly settings?: ServerSettings;
@@ -45,7 +54,7 @@ export const layer = (
       for (const directory of [stateDir, providerStatusCacheDir, attachmentsDir]) {
         yield* fileSystem.makeDirectory(directory, { recursive: true }).pipe(Effect.orDie);
       }
-      const settings = yield* Ref.make(options.settings ?? DEFAULT_SERVER_SETTINGS);
+      const settings = yield* Ref.make(options.settings ?? TEST_SERVER_SETTINGS);
       const credentials = new Map<string, Uint8Array>();
       const host = ProviderHost.ProviderHost.of({
         compatibility: options.compatibility ?? noCompatibilityPolicy,
