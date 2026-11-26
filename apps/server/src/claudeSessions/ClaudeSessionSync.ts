@@ -47,6 +47,7 @@ import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { field } from "../orchestration-v2/unknownField.ts";
+import { deriveTitle } from "../project/AgentSessionScanner.ts";
 import * as ClaudeSessionSyncState from "../persistence/ClaudeSessionSyncState.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import {
@@ -58,37 +59,39 @@ import { forkParked } from "../serverActivation.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
 import { matchesCwdGlob } from "./claudeCwdGlobs.ts";
 import {
+  claudeNativeItemLineUuid,
   claudeNativeRunIds,
-  claudeNativeRunLookups,
-  ClaudeNativeRunState,
-  claudePromptTextDigest,
-  initialClaudeNativeRunState,
-  isSettledItemStatus,
+  claudeOwnTurnIds,
+  claudePromptTextKey,
   NATIVE_PROVIDER_TURN_PREFIX,
   parseTranscriptTime,
-  planClaudeNativeRuns,
+  planClaudeNativeTurn,
+  planClaudeRemovedItems,
+  REMOVED_TURN_ID,
   type ClaudeNativeRunTarget,
   type ClaudeOwnTurns,
-  type StoredNativeRun,
+  type StoredNativeItem,
 } from "./ClaudeNativeRuns.ts";
 import * as ClaudeSessionProjects from "./ClaudeSessionProjects.ts";
 import * as ClaudeLiveSessions from "./ClaudeLiveSessions.ts";
 import { resolveClaudeSessionStores } from "./ClaudeSessionStore.ts";
 import * as ClaudeSyncCapacity from "./ClaudeSyncCapacity.ts";
+import { readClaudeTranscriptTurn } from "./ClaudeTranscriptContent.ts";
 import {
-  ClaudeTranscriptCursor,
   claudeTranscriptSessionId,
-  initialClaudeTranscriptCursor,
-  readClaudeTranscript,
-} from "./ClaudeTranscriptReader.ts";
+  ClaudeTranscriptIndex,
+  syncClaudeTranscriptIndex,
+} from "./ClaudeTranscriptIndex.ts";
+import { CLAUDE_SYNTHETIC_MODEL, decodeClaudeTranscriptLine } from "./ClaudeTranscriptLine.ts";
 import {
-  initialClaudeTranscriptParserState,
-  parseClaudeTranscriptLines,
-  type ClaudeTranscriptLine,
-} from "./ClaudeTranscriptSegments.ts";
+  claudeTranscriptStructure,
+  type ClaudeTranscriptStructure,
+} from "./ClaudeTranscriptTurns.ts";
 
-/** Bytes of transcript one read parses and writes while holding the thread's lock. */
+/** Bytes of transcript lines one step reads and writes while holding the thread's lock. */
 const READ_BUDGET_BYTES = 64 * 1024;
+/** Index memory kept for sessions neither live nor queued; the least recently used go first. */
+const INDEX_MEMORY_BUDGET_BYTES = 256 * 1024 ** 2;
 /** Events in one database transaction, so a long transcript never holds the writer for long. */
 const MAX_EVENTS_PER_WRITE = 200;
 /** A session's entry is read from its head in chunks of this size until its first prompt. */
@@ -163,22 +166,6 @@ class Fifo<A> {
   }
 }
 
-/** What a sync row keeps as JSON. One that no longer decodes restarts from the top, which writes nothing already written. */
-const SyncCursorState = Schema.Struct({
-  /** Claude's latest titles, and the one the sync last gave the thread; a rename in T3 Code is kept. */
-  titles: Schema.optional(
-    Schema.Struct({
-      ai: Schema.optional(Schema.String),
-      custom: Schema.optional(Schema.NullOr(Schema.String)),
-      applied: Schema.optional(Schema.String),
-    }),
-  ),
-  cursor: ClaudeTranscriptCursor,
-  runs: ClaudeNativeRunState,
-});
-type SyncTitles = NonNullable<(typeof SyncCursorState.Type)["titles"]>;
-const decodeSyncCursorState = Schema.decodeUnknownOption(Schema.fromJsonString(SyncCursorState));
-const encodeSyncCursorState = Schema.encodeSync(Schema.fromJsonString(SyncCursorState));
 const decodeStrings = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
@@ -451,12 +438,9 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Reads a transcript from the top until its first prompt and the facts its entry needs: working directory, start time, title and model. Stops at the first prompt once those are known, else at the end of the file.
+   * Reads a transcript from the top until its first prompt and the facts its entry needs: working directory, start time, title and model. Stops at the first prompt once those are known, else at the end of the file. A line longer than a chunk is held as pieces and joined once, when its newline arrives.
    */
-  const scanHead = Effect.fn("ClaudeSessionSync.scanHead")(function* (
-    filePath: string,
-    sessionId: string,
-  ) {
+  const scanHead = Effect.fn("ClaudeSessionSync.scanHead")(function* (filePath: string) {
     let cwd: string | undefined;
     let startedAt: DateTime.Utc | undefined;
     let model: string | undefined;
@@ -464,64 +448,57 @@ const make = Effect.gen(function* () {
     let aiTitle: string | undefined;
     let customTitle: string | undefined;
     let hasConversation = false;
-    let state = initialClaudeTranscriptParserState;
+    const decoder = new TextDecoder();
+    const readLine = (bytes: Uint8Array) => {
+      const text = decoder.decode(bytes);
+      const record = decodeJsonLine(text);
+      if (Option.isSome(record)) {
+        const lineCwd = field(record.value, "cwd");
+        if (cwd === undefined && typeof lineCwd === "string") cwd = lineCwd;
+        const timestamp = field(record.value, "timestamp");
+        if (startedAt === undefined && typeof timestamp === "string") {
+          startedAt = parseTranscriptTime(timestamp);
+        }
+      }
+      const decoded = decodeClaudeTranscriptLine(text);
+      if (decoded._tag !== "Record" || decoded.header.isSidechain === true) return;
+      const { record: line } = decoded;
+      if (line.kind === "title") {
+        if (line.source === "ai") aiTitle = line.title ?? aiTitle;
+        else customTitle = line.title;
+      } else if (line.kind === "conversation" && line.line.type === "assistant") {
+        const reported = line.line.message.model;
+        if (model === undefined && reported !== undefined && reported !== CLAUDE_SYNTHETIC_MODEL) {
+          model = modelSlug(reported);
+        }
+      } else if (
+        line.kind === "conversation" &&
+        line.line.isMeta !== true &&
+        line.line.isCompactSummary !== true &&
+        line.visible.text.length > 0
+      ) {
+        hasConversation = true;
+        promptTitle ??= deriveTitle("claudeAgent", line.visible.titleText);
+      } else if (line.kind === "localCommand" && line.input !== undefined) {
+        hasConversation = true;
+      }
+    };
     yield* Effect.scoped(
       Effect.gen(function* () {
         const handle = yield* fileSystem.open(filePath, { flag: "r" });
-        const decoder = new TextDecoder();
-        // Chunks of a line not yet ended; they are joined once, when its newline arrives.
         let pending: Array<Uint8Array> = [];
-        let offset = 0;
         for (;;) {
           const chunk = yield* handle.readAlloc(HEAD_CHUNK_BYTES);
           if (Option.isNone(chunk)) return;
-          if (chunk.value.indexOf(0x0a) === -1) {
-            pending.push(chunk.value);
-            continue;
-          }
-          const joined =
-            pending.length === 0 ? chunk.value : Buffer.concat([...pending, chunk.value]);
-          pending = [];
-          const lines: Array<ClaudeTranscriptLine> = [];
+          const bytes = chunk.value;
           let start = 0;
-          for (let end = joined.indexOf(0x0a); end !== -1; end = joined.indexOf(0x0a, start)) {
-            const text = decoder.decode(joined.subarray(start, end));
-            lines.push({ text, offset: offset + start });
-            const record = decodeJsonLine(text);
-            if (Option.isSome(record)) {
-              const lineCwd = field(record.value, "cwd");
-              if (cwd === undefined && typeof lineCwd === "string") cwd = lineCwd;
-              const timestamp = field(record.value, "timestamp");
-              if (startedAt === undefined && typeof timestamp === "string") {
-                startedAt = parseTranscriptTime(timestamp);
-              }
-              const lineModel = field(field(record.value, "message"), "model");
-              if (
-                model === undefined &&
-                field(record.value, "type") === "assistant" &&
-                field(record.value, "isSidechain") !== true &&
-                typeof lineModel === "string" &&
-                lineModel !== "<synthetic>"
-              ) {
-                model = modelSlug(lineModel);
-              }
-            }
+          for (let end = bytes.indexOf(0x0a); end !== -1; end = bytes.indexOf(0x0a, start)) {
+            const piece = bytes.subarray(start, end);
+            readLine(pending.length === 0 ? piece : Buffer.concat([...pending, piece]));
+            pending = [];
             start = end + 1;
           }
-          offset += start;
-          if (start < joined.length) pending = [joined.slice(start)];
-          const parsed = parseClaudeTranscriptLines({ sessionId, state, lines, known: new Set() });
-          state = parsed.state;
-          for (const event of parsed.events) {
-            if (event._tag === "SegmentStarted") {
-              hasConversation = true;
-              promptTitle ??= event.prompt?.title;
-            } else if (event._tag === "Title" && event.source === "ai" && event.title !== null) {
-              aiTitle = event.title;
-            } else if (event._tag === "Title" && event.source === "custom") {
-              customTitle = event.title ?? undefined;
-            }
-          }
+          if (start < bytes.length) pending.push(bytes.subarray(start));
           if (hasConversation && cwd !== undefined && model !== undefined) return;
           yield* Effect.yieldNow;
         }
@@ -563,7 +540,7 @@ const make = Effect.gen(function* () {
   }) {
     const { store, transcript } = input;
     const { sessionId } = transcript;
-    const head = yield* scanHead(transcript.filePath, sessionId);
+    const head = yield* scanHead(transcript.filePath);
     if (!head.hasConversation)
       return { _tag: "Skipped", cwd: head.cwd ?? null, excluded: false } satisfies EntryOutcome;
     if (isExcluded(input.excludedCwdGlobs, head.cwd ?? null)) {
@@ -765,72 +742,52 @@ const make = Effect.gen(function* () {
         AND run.status <> 'rolled_back'
         AND json_extract(run.payload_json, '$.nativeOrigin') IS NULL
     `;
-    const promptTexts = new Map<string, number>();
+    const promptTexts = new Map<number, number>();
     for (const run of runs) {
       if (recordedRuns.has(run.runId)) continue;
-      const text = run.text?.trim() ?? "";
-      if (text.length === 0) continue;
-      const digest = claudePromptTextDigest(text);
-      promptTexts.set(digest, (promptTexts.get(digest) ?? 0) + 1);
+      // Compared with what the transcript recorded of the same text, so it is not trimmed.
+      if (run.text === null || run.text.trim().length === 0) continue;
+      const key = claudePromptTextKey(run.text);
+      promptTexts.set(key, (promptTexts.get(key) ?? 0) + 1);
     }
     return { promptUuids, assistantUuids, promptTexts } satisfies ClaudeOwnTurns;
   });
 
-  const storedRunsFor = Effect.fn("ClaudeSessionSync.storedRunsFor")(function* (
-    sessionId: string,
-    segmentIds: ReadonlyArray<string>,
+  /** The ordinals of the run the sync wrote for a turn, or undefined when it wrote none. */
+  const storedRunFor = Effect.fn("ClaudeSessionSync.storedRunFor")(function* (
+    idScope: string,
+    turnId: string,
   ) {
-    const ids = segmentIds.map((segmentId) => claudeNativeRunIds(sessionId, segmentId));
-    const runs = yield* inChunks(
-      ids.map((id) => id.runId),
+    const ids = claudeNativeRunIds(idScope, turnId);
+    const [run] = yield* sql<{ readonly ordinal: number }>`
+      SELECT ordinal FROM orchestration_v2_projection_runs WHERE run_id = ${ids.runId}
+    `;
+    const [turn] = yield* sql<{ readonly ordinal: number }>`
+      SELECT ordinal FROM orchestration_v2_projection_provider_turns
+      WHERE provider_turn_id = ${ids.providerTurnId}
+    `;
+    return run === undefined || turn === undefined
+      ? undefined
+      : { ordinal: run.ordinal, providerTurnOrdinal: turn.ordinal };
+  });
+
+  const storedItemsById = Effect.fn("ClaudeSessionSync.storedItemsById")(function* (
+    itemIds: ReadonlyArray<string>,
+  ) {
+    const rows = yield* inChunks(
+      itemIds,
       (chunk) => sql<{
-        readonly runId: string;
+        readonly id: string;
+        readonly runId: string | null;
         readonly ordinal: number;
         readonly status: string;
-        readonly requestedAt: string;
-        readonly completedAt: string | null;
       }>`
-        SELECT run_id AS "runId", ordinal, status, requested_at AS "requestedAt",
-          completed_at AS "completedAt"
-        FROM orchestration_v2_projection_runs
-        WHERE run_id IN ${sql.in(chunk)}
+        SELECT turn_item_id AS "id", run_id AS "runId", ordinal, status
+        FROM orchestration_v2_projection_turn_items
+        WHERE turn_item_id IN ${sql.in(chunk)}
       `,
     );
-    const turns = yield* inChunks(
-      ids.map((id) => id.providerTurnId),
-      (chunk) => sql<{
-        readonly providerTurnId: string;
-        readonly ordinal: number;
-        readonly lastAssistantUuid: string | null;
-        readonly model: string | null;
-      }>`
-        SELECT provider_turn_id AS "providerTurnId", ordinal,
-          json_extract(payload_json, '$.nativeTurnRef.nativeId') AS "lastAssistantUuid",
-          json_extract(payload_json, '$.model') AS "model"
-        FROM orchestration_v2_projection_provider_turns
-        WHERE provider_turn_id IN ${sql.in(chunk)}
-      `,
-    );
-    const runById = new Map(runs.map((run) => [run.runId, run]));
-    const turnById = new Map(turns.map((turn) => [turn.providerTurnId, turn]));
-    const stored = new Map<string, StoredNativeRun>();
-    segmentIds.forEach((segmentId, index) => {
-      const id = ids[index];
-      const run = id === undefined ? undefined : runById.get(id.runId);
-      const turn = id === undefined ? undefined : turnById.get(id.providerTurnId);
-      // Native runs are always written finished, so a run without completedAt is not one of them.
-      if (run === undefined || turn === undefined || run.completedAt === null) return;
-      stored.set(segmentId, {
-        ordinal: run.ordinal,
-        providerTurnOrdinal: turn.ordinal,
-        requestedAt: run.requestedAt,
-        completedAt: run.completedAt,
-        interrupted: run.status === "interrupted",
-        ...(turn.lastAssistantUuid === null ? {} : { lastAssistantUuid: turn.lastAssistantUuid }),
-        ...(turn.model === null ? {} : { model: turn.model }),
-      });
-    });
-    return stored;
+    return new Map<string, StoredNativeItem>(rows.map((row) => [row.id, row]));
   });
 
   /** Writes groups in bounded transactions; a group larger than the bound continues in the next. */
@@ -859,34 +816,34 @@ const make = Effect.gen(function* () {
 
   const updateThreadAfterRead = Effect.fn("ClaudeSessionSync.updateThreadAfterRead")(function* (
     target: ClaudeNativeRunTarget,
-    plan: ReturnType<typeof planClaudeNativeRuns>,
-    previousTitles: SyncTitles,
+    structure: ClaudeTranscriptStructure,
+    written: {
+      readonly firstRunOrdinal: number | undefined;
+      readonly lastRunOrdinal: number | undefined;
+      readonly lastActivityAt: DateTime.Utc | undefined;
+    },
+    appliedTitle: string | null,
   ) {
-    const titles: SyncTitles = {
-      ...previousTitles,
-      ...(plan.aiTitle === undefined ? {} : { ai: plan.aiTitle }),
-      ...(plan.customTitle === undefined ? {} : { custom: plan.customTitle }),
-    };
     const thread = yield* projections.findThread(target.threadId);
-    if (thread === null) return titles;
+    if (thread === null) return appliedTitle;
     // Times come from the transcript, so reading an old session never makes it look just updated.
-    const activity = plan.lastActivityAt;
+    const activity = written.lastActivityAt;
     const later = (current: DateTime.Utc) =>
       activity !== undefined && DateTime.toEpochMillis(activity) > DateTime.toEpochMillis(current)
         ? activity
         : current;
     const events: Array<OrchestrationV2DomainEvent> = [];
-    if (plan.lastRunOrdinal !== undefined && plan.firstRunOrdinal !== undefined) {
+    if (written.lastRunOrdinal !== undefined && written.firstRunOrdinal !== undefined) {
       const records = yield* projections.getThreadRecords(target.threadId, ["providerThreads"]);
       const providerThread = records.providerThreads.find(
         (candidate) => candidate.id === target.providerThreadId,
       );
       if (providerThread !== undefined) {
         const firstRunOrdinal = Math.min(
-          providerThread.firstRunOrdinal ?? plan.firstRunOrdinal,
-          plan.firstRunOrdinal,
+          providerThread.firstRunOrdinal ?? written.firstRunOrdinal,
+          written.firstRunOrdinal,
         );
-        const lastRunOrdinal = Math.max(providerThread.lastRunOrdinal ?? 0, plan.lastRunOrdinal);
+        const lastRunOrdinal = Math.max(providerThread.lastRunOrdinal ?? 0, written.lastRunOrdinal);
         if (
           firstRunOrdinal !== providerThread.firstRunOrdinal ||
           lastRunOrdinal !== providerThread.lastRunOrdinal
@@ -905,8 +862,8 @@ const make = Effect.gen(function* () {
       }
     }
     // Only threads the sync made take Claude's titles, and only while nobody renamed it in T3 Code.
-    const title = titles.custom ?? titles.ai;
-    const untouched = titles.applied === undefined || thread.title === titles.applied;
+    const title = structure.customTitle ?? structure.aiTitle;
+    const untouched = appliedTitle === null || thread.title === appliedTitle;
     if (title !== undefined && isSyncThread(thread) && untouched && thread.title !== title) {
       const updatedAt = later(thread.updatedAt);
       events.push({
@@ -919,12 +876,15 @@ const make = Effect.gen(function* () {
       });
     }
     // A session forked from another starts with a note saying which; it is run-less, so it sorts first.
-    if (plan.forkedFromSessionId !== undefined && isSyncThread(thread)) {
+    const forkedFrom =
+      structure.forkedFromSessionId ??
+      structure.derivedFrom.find((session) => session.via === "fork")?.sessionId;
+    if (forkedFrom !== undefined && isSyncThread(thread)) {
       const noticeId = TurnItemId.make(`x:${target.idScope}:forked-from`);
       if (
         (yield* projections.getTurnItem({ threadId: target.threadId, itemId: noticeId })) === null
       ) {
-        const message = `Forked from Claude session ${plan.forkedFromSessionId}.`;
+        const message = `Forked from Claude session ${forkedFrom}.`;
         events.push({
           id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
           type: "turn-item.updated",
@@ -952,8 +912,7 @@ const make = Effect.gen(function* () {
       }
     }
     if (events.length > 0) yield* eventSink.write({ events });
-    const appliedTitle = isSyncThread(thread) && untouched ? title : undefined;
-    return appliedTitle === undefined ? titles : { ...titles, applied: appliedTitle };
+    return isSyncThread(thread) && untouched && title !== undefined ? title : appliedTitle;
   });
 
   /** The one run-less note a synced thread shows while its history loads, and how loading ended. */
@@ -1004,27 +963,106 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * A session's transcript index, held in memory between steps so a live or opened session reads only what its file gains. Sessions neither live nor queued are let go, least recently used first, once all held indexes exceed `INDEX_MEMORY_BUDGET_BYTES`; letting one go only costs reading its file again.
+   */
+  interface HeldIndex {
+    readonly storeKey: string;
+    readonly sessionId: string;
+    readonly index: ClaudeTranscriptIndex;
+    filePath: string;
+    structure: { readonly version: number; readonly value: ClaudeTranscriptStructure } | undefined;
+    digests: { readonly threadId: ThreadId; readonly byTurn: Map<string, string> } | undefined;
+    own: { readonly version: number; readonly turnIds: ReadonlySet<string> } | undefined;
+    bytes: number;
+    malformedLogged: number;
+  }
+  const heldIndexes = new Map<string, HeldIndex>();
+
+  const holdIndex = (storeKey: string, transcript: Transcript): HeldIndex => {
+    const key = requestKey(storeKey, transcript.sessionId);
+    const known = heldIndexes.get(key);
+    // Re-inserted, so the map's order is least recently used first.
+    heldIndexes.delete(key);
+    const held: HeldIndex = known ?? {
+      storeKey,
+      sessionId: transcript.sessionId,
+      index: new ClaudeTranscriptIndex(),
+      filePath: transcript.filePath,
+      structure: undefined,
+      digests: undefined,
+      own: undefined,
+      bytes: 0,
+      malformedLogged: 0,
+    };
+    if (held.filePath !== transcript.filePath) {
+      held.index.reset();
+      held.filePath = transcript.filePath;
+      held.malformedLogged = 0;
+    }
+    heldIndexes.set(key, held);
+    return held;
+  };
+
+  /** The session's turns, derived again only when its index changed. */
+  const structureOf = Effect.fn("ClaudeSessionSync.structureOf")(function* (held: HeldIndex) {
+    const { index } = held;
+    const malformed = index.malformedOffsets;
+    if (malformed.length > held.malformedLogged) {
+      yield* Effect.logWarning("Skipped Claude transcript lines that could not be read", {
+        sessionId: held.sessionId,
+        offsets: malformed.slice(held.malformedLogged),
+      });
+      held.malformedLogged = malformed.length;
+    }
+    if (held.structure?.version === index.version) return held.structure.value;
+    yield* Effect.yieldNow;
+    const value = claudeTranscriptStructure(index);
+    held.structure = { version: index.version, value };
+    const footprint = index.footprint();
+    held.bytes = footprint.columnBytes + 2 * footprint.stringCharacters;
+    yield* Effect.yieldNow;
+    return value;
+  });
+
+  const releaseIndexes = () => {
+    let total = 0;
+    for (const held of heldIndexes.values()) total += held.bytes;
+    for (const [key, held] of heldIndexes) {
+      if (total <= INDEX_MEMORY_BUDGET_BYTES) return;
+      if (queued.has(key) || live.get(held.storeKey)?.has(held.sessionId) === true) continue;
+      heldIndexes.delete(key);
+      total -= held.bytes;
+    }
+  };
+
   type IngestStep =
     | {
         readonly _tag: "Read";
         readonly row: ClaudeSessionSyncState.ClaudeSessionSyncState;
         readonly atEnd: boolean;
       }
+    | { readonly _tag: "Changed" }
     | { readonly _tag: "Deferred" }
     | { readonly _tag: "Deleted" };
 
-  /** One bounded read of a transcript into its thread, under the thread's lock. */
+  /**
+   * One bounded pass over a session's turns under the thread's lock: each turn whose digest differs from the one stored is read and written, until the read budget is spent. A turn the sync wrote that no longer exists, or is now T3 Code's own, has its run rolled back once every turn is written.
+   */
   const ingestOnce = Effect.fn("ClaudeSessionSync.ingestOnce")(function* (input: {
     readonly row: ClaudeSessionSyncState.ClaudeSessionSyncState;
     readonly target: ClaudeNativeRunTarget;
-    readonly own: ClaudeOwnTurns;
+    readonly held: HeldIndex;
+    readonly structure: ClaudeTranscriptStructure;
     readonly fallbackAt: DateTime.Utc;
   }) {
-    const { row, target } = input;
+    const { row, target, held, structure } = input;
+    const { index } = held;
     // Deletion can land between steps; nothing is written into a deleted thread.
     const thread = yield* projections.findThread(target.threadId);
     if (thread === null || thread.deletedAt !== null) {
       yield* markState(row, "deleted");
+      yield* syncState.deleteTurnDigests({ threadId: target.threadId });
       return { _tag: "Deleted" } satisfies IngestStep;
     }
     const active = yield* sql<{ readonly found: number }>`
@@ -1034,102 +1072,202 @@ const make = Effect.gen(function* () {
     `;
     // T3 Code's live stream owns a turn it is running; its settling asks for a read again.
     if (active.length > 0) return { _tag: "Deferred" } satisfies IngestStep;
-    const saved = Option.flatMap(Option.fromNullishOr(row.parserState), decodeSyncCursorState);
-    const cursor = Option.isSome(saved) ? saved.value.cursor : initialClaudeTranscriptCursor;
-    // Event ids only need to be unique; one random token per read and a counter make them so.
+
+    if (held.digests?.threadId !== target.threadId) {
+      held.digests = {
+        threadId: target.threadId,
+        byTurn: new Map(yield* syncState.turnDigests(target.threadId)),
+      };
+    }
+    const digests = held.digests.byTurn;
+    if (held.own?.version !== index.version) {
+      held.own = {
+        version: index.version,
+        turnIds: claudeOwnTurnIds({
+          structure,
+          index,
+          own: yield* ownTurns(target.providerThreadId),
+          skipCopied: target.skipCopied,
+          writtenTurnIds: new Set(digests.keys()),
+        }),
+      };
+    }
+    const ownIds = held.own.turnIds;
+
+    // Event ids only need to be unique; one random token per pass and a counter make them so.
     const readToken = yield* random.uuidV4();
     let nextEvent = 0;
-    const sessionKey = { storeKey: row.storeKey, sessionId: row.sessionId };
-    const read = yield* readClaudeTranscript({
-      filePath: row.filePath,
-      sessionId: target.idScope,
-      cursor,
-      maxBytes: READ_BUDGET_BYTES,
-      knownUuids: (uuids) => syncState.knownUuids(sessionKey, uuids),
-    }).pipe(withHost);
-    if (read.malformed.length > 0) {
-      yield* Effect.logWarning("Skipped Claude transcript lines that could not be read", {
-        sessionId: row.sessionId,
-        offsets: read.malformed.map((line) => line.offset),
-      });
-    }
-    const runState =
-      read.rewritten || Option.isNone(saved) ? initialClaudeNativeRunState : saved.value.runs;
-    const lookups = claudeNativeRunLookups({
-      sessionId: target.idScope,
-      state: runState,
-      events: read.events,
+    const eventId = () => EventId.make(`event:claude-sync:${readToken}:${nextEvent++}`);
+    let next: { run: number; turn: number } | undefined;
+    const allocate = Effect.gen(function* () {
+      if (next === undefined) {
+        const [run] = yield* sql<{ readonly next: number }>`
+          SELECT COALESCE(MAX(ordinal), 0) + 1 AS "next" FROM orchestration_v2_projection_runs
+          WHERE thread_id = ${target.threadId}
+        `;
+        const [turn] = yield* sql<{ readonly next: number }>`
+          SELECT COALESCE(MAX(ordinal), 0) + 1 AS "next"
+          FROM orchestration_v2_projection_provider_turns
+          WHERE provider_thread_id = ${target.providerThreadId}
+        `;
+        next = { run: run?.next ?? 1, turn: turn?.next ?? 1 };
+      }
+      const allocated = { ordinal: next.run++, providerTurnOrdinal: next.turn++ };
+      return allocated;
     });
-    const storedRuns = yield* storedRunsFor(target.idScope, [...lookups.segmentIds]);
-    const storedItemRows = yield* inChunks(
-      [...lookups.itemIds],
-      (chunk) => sql<{
-        readonly id: string;
-        readonly status: string;
-        readonly runId: string | null;
-      }>`
-        SELECT turn_item_id AS "id", status, run_id AS "runId"
-        FROM orchestration_v2_projection_turn_items
-        WHERE turn_item_id IN ${sql.in(chunk)}
-      `,
-    );
-    const storedToolItems = new Map<string, OrchestrationV2TurnItem>();
-    for (const itemId of lookups.pendingToolItemIds) {
-      const stored = yield* projections.getTurnItem({
+
+    let firstRunOrdinal: number | undefined;
+    let lastRunOrdinal: number | undefined;
+    let lastActivityAt: DateTime.Utc | undefined;
+    let bytes = 0;
+    let atEnd = true;
+    // Lines of the turns the sync shows, built only when a rewritten run lost items.
+    let shownLines: ReadonlySet<string> | undefined;
+    const removed: Array<OrchestrationV2TurnItem> = [];
+
+    for (const turn of structure.turns) {
+      if (ownIds.has(turn.id) || digests.get(turn.id) === turn.digest) continue;
+      if (bytes >= READ_BUDGET_BYTES) {
+        atEnd = false;
+        break;
+      }
+      const content = yield* readClaudeTranscriptTurn({
+        filePath: held.filePath,
+        index,
+        idScope: target.idScope,
+        turn,
+      }).pipe(
+        withHost,
+        Effect.asSome,
+        Effect.catchTag("ClaudeTranscriptChangedError", () => Effect.succeedNone),
+      );
+      if (Option.isNone(content)) {
+        index.reset();
+        return { _tag: "Changed" } satisfies IngestStep;
+      }
+      const unreadable = content.value.items.flatMap((item) =>
+        item._tag === "Unreadable" ? [item.offset] : [],
+      );
+      if (unreadable.length > 0) {
+        yield* Effect.logWarning("Skipped Claude transcript lines that could not be read", {
+          sessionId: row.sessionId,
+          offsets: unreadable,
+        });
+      }
+      const ids = claudeNativeRunIds(target.idScope, turn.id);
+      const stored = yield* storedRunFor(target.idScope, turn.id);
+      const ordinals = stored ?? (yield* allocate);
+      const itemIds = new Set([ids.promptItemId, ...content.value.items.map((item) => item.id)]);
+      const plan = planClaudeNativeTurn({
+        target,
+        content: content.value,
+        ...ordinals,
+        stored: stored !== undefined,
+        storedItems: yield* storedItemsById([...itemIds]),
+        eventId,
+        modelSlug,
+        fallbackAt: input.fallbackAt,
+      });
+      yield* writeGroups([plan.events]);
+      if (stored !== undefined) {
+        // Items the run held before whose lines are now elsewhere move with them; the rest leave it.
+        const leftovers = yield* sql<{ readonly id: string }>`
+          SELECT turn_item_id AS "id" FROM orchestration_v2_projection_turn_items
+          WHERE run_id = ${ids.runId}
+        `;
+        for (const { id } of leftovers) {
+          if (itemIds.has(id)) continue;
+          shownLines ??= new Set(
+            structure.turns.flatMap((shown) => (ownIds.has(shown.id) ? [] : shown.lineUuids)),
+          );
+          const lineUuid = claudeNativeItemLineUuid(target.idScope, id);
+          if (lineUuid !== undefined && shownLines.has(lineUuid)) continue;
+          const item = yield* projections.getTurnItem({
+            threadId: target.threadId,
+            itemId: TurnItemId.make(id),
+          });
+          if (item !== null) removed.push(item);
+        }
+      }
+      // Recorded only once the run's events are written, so an interrupted write is written again.
+      yield* syncState.setTurnDigest({
         threadId: target.threadId,
-        itemId: TurnItemId.make(itemId),
+        turnId: turn.id,
+        digest: turn.digest,
       });
-      if (stored !== null) storedToolItems.set(itemId, stored);
+      digests.set(turn.id, turn.digest);
+      firstRunOrdinal = Math.min(firstRunOrdinal ?? ordinals.ordinal, ordinals.ordinal);
+      lastRunOrdinal = Math.max(lastRunOrdinal ?? 0, ordinals.ordinal);
+      if (
+        lastActivityAt === undefined ||
+        DateTime.toEpochMillis(plan.lastActivityAt) > DateTime.toEpochMillis(lastActivityAt)
+      ) {
+        lastActivityAt = plan.lastActivityAt;
+      }
+      for (const uuid of turn.lineUuids) {
+        const entry = index.entryOf(uuid);
+        if (entry !== undefined) bytes += index.location(entry).length + 1;
+      }
     }
-    const [nextRun] = yield* sql<{ readonly next: number }>`
-      SELECT COALESCE(MAX(ordinal), 0) + 1 AS "next" FROM orchestration_v2_projection_runs
-      WHERE thread_id = ${target.threadId}
-    `;
-    const [nextTurn] = yield* sql<{ readonly next: number }>`
-      SELECT COALESCE(MAX(ordinal), 0) + 1 AS "next" FROM orchestration_v2_projection_provider_turns
-      WHERE provider_thread_id = ${target.providerThreadId}
-    `;
-    const plan = planClaudeNativeRuns({
+
+    if (removed.length > 0) {
+      const removedRun = yield* storedRunFor(target.idScope, REMOVED_TURN_ID);
+      const ordinals = removedRun ?? (yield* allocate);
+      yield* writeGroups([
+        planClaudeRemovedItems({
+          target,
+          items: removed,
+          created: removedRun !== undefined,
+          ...ordinals,
+          at: thread.createdAt,
+          eventId,
+        }),
+      ]);
+    }
+    if (atEnd) {
+      const shown = new Set(
+        structure.turns.flatMap((turn) => (ownIds.has(turn.id) ? [] : [turn.id])),
+      );
+      const stale = [...digests.keys()].filter((turnId) => !shown.has(turnId));
+      for (const turnId of stale) {
+        const run = yield* projections.getRun(
+          target.threadId,
+          claudeNativeRunIds(target.idScope, turnId).runId,
+        );
+        if (run === undefined || run.status === "rolled_back") continue;
+        yield* eventSink.write({
+          events: [
+            {
+              id: eventId(),
+              type: "run.updated",
+              threadId: target.threadId,
+              runId: run.id,
+              ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+              occurredAt: run.completedAt ?? run.requestedAt,
+              payload: { ...run, status: "rolled_back" },
+            },
+          ],
+        });
+      }
+      if (stale.length > 0) {
+        yield* syncState.deleteTurnDigests({ threadId: target.threadId, turnIds: stale });
+        for (const turnId of stale) digests.delete(turnId);
+      }
+    }
+    const appliedTitle = yield* updateThreadAfterRead(
       target,
-      state: runState,
-      events: read.events,
-      own: input.own,
-      storedRuns,
-      storedItems: new Map(
-        storedItemRows.map((item) => [
-          item.id,
-          { settled: isSettledItemStatus(item.status), runId: item.runId },
-        ]),
-      ),
-      storedToolItems,
-      nextRunOrdinal: nextRun?.next ?? 1,
-      nextProviderTurnOrdinal: nextTurn?.next ?? 1,
-      eventId: () => EventId.make(`event:claude-sync:${readToken}:${nextEvent++}`),
-      modelSlug,
-      fallbackAt: input.fallbackAt,
-    });
-    yield* writeGroups(plan.groups);
-    const titles = yield* updateThreadAfterRead(
-      target,
-      plan,
-      Option.isSome(saved) ? (saved.value.titles ?? {}) : {},
+      structure,
+      { firstRunOrdinal, lastRunOrdinal, lastActivityAt },
+      row.appliedTitle,
     );
-    const next: ClaudeSessionSyncState.ClaudeSessionSyncState = {
+    const updated: ClaudeSessionSyncState.ClaudeSessionSyncState = {
       ...row,
-      byteOffset: read.cursor.offset,
-      guardHash: read.cursor.tailHash,
-      lastUuid: read.cursor.state.lastUuid,
-      parserState: encodeSyncCursorState({ titles, cursor: read.cursor, runs: plan.state }),
+      appliedTitle,
       hydrationState: "hydrating",
       updatedAt: yield* DateTime.now,
     };
-    // The consumed uuids and the position they belong to are saved together.
-    yield* syncState.commitRead({
-      state: next,
-      consumedUuids: read.consumedUuids,
-      fromTop: read.rewritten || cursor.offset === 0,
-    });
-    return { _tag: "Read", row: next, atEnd: read.atEnd } satisfies IngestStep;
+    yield* syncState.upsert(updated);
+    return { _tag: "Read", row: updated, atEnd } satisfies IngestStep;
   });
 
   type StepOutcome =
@@ -1161,15 +1299,12 @@ const make = Effect.gen(function* () {
       const base: ClaudeSessionSyncState.ClaudeSessionSyncState = {
         ...(row ?? {
           ...key,
-          byteOffset: 0,
-          guardHash: null,
-          lastUuid: null,
           threadId: null,
           providerThreadId: null,
           accountUuids: [],
           hydrationState: "pending",
           cwd: null,
-          parserState: null,
+          appliedTitle: null,
           fileSize: 0,
           fileMtimeMs: 0,
         }),
@@ -1296,16 +1431,24 @@ const make = Effect.gen(function* () {
           message: "Loading this session's history from Claude Code.",
         });
       }
+      // The file is indexed and its turns derived outside the thread's lock, which only writes wait on.
+      const held = holdIndex(store.key, transcript);
+      yield* syncClaudeTranscriptIndex({ filePath: held.filePath, index: held.index }).pipe(
+        withHost,
+      );
+      const structure = yield* structureOf(held);
       const read = yield* threadCommands.withLock(
         threadId,
         ingestOnce({
           row: linked,
           target,
-          own: yield* ownTurns(providerThreadId),
+          held,
+          structure,
           fallbackAt: DateTime.makeUnsafe(transcript.mtimeMs),
         }),
       );
       if (read._tag === "Deleted") return "deleted" satisfies StepOutcome;
+      if (read._tag === "Changed") return "more" satisfies StepOutcome;
       if (read._tag === "Deferred") {
         yield* syncState.upsert(linked);
         return "deferred" satisfies StepOutcome;
@@ -1416,6 +1559,8 @@ const make = Effect.gen(function* () {
     } else {
       seen.set(key, signature(transcript));
     }
+    if (outcome === "deleted") heldIndexes.delete(key);
+    releaseIndexes();
   });
 
   const fillNext = Effect.fn("ClaudeSessionSync.fillNext")(function* () {
@@ -1599,7 +1744,12 @@ const make = Effect.gen(function* () {
     const store = stores.find((candidate) => candidate.key === row.storeKey);
     if (store === undefined) return;
     const key = requestKey(store.key, row.sessionId);
-    if (forget) seen.delete(key);
+    if (forget) {
+      seen.delete(key);
+      // A settled T3 Code run can change which turns are its own.
+      const held = heldIndexes.get(key);
+      if (held !== undefined) held.own = undefined;
+    }
     knownPaths.set(key, row.filePath);
     yield* request({ store, sessionId: row.sessionId, filePath: row.filePath, lane: "urgent" });
   });
@@ -1631,10 +1781,7 @@ const make = Effect.gen(function* () {
       providerThreadId: created.providerThreadId,
       cwd: created.cwd,
       hydrationState: "entry",
-      byteOffset: 0,
-      guardHash: null,
-      lastUuid: null,
-      parserState: null,
+      appliedTitle: null,
       fileSize: transcript.size,
       fileMtimeMs: transcript.mtimeMs,
       updatedAt: yield* DateTime.now,

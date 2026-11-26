@@ -15,16 +15,13 @@ const key = { storeKey: "/home/me/.claude/projects:/home/me/.claude/sessions", s
 const state: ClaudeSessionSyncState.ClaudeSessionSyncState = {
   ...key,
   fileIdentity: "16777220:4242",
-  byteOffset: 0,
-  guardHash: null,
-  lastUuid: null,
   threadId: null,
   providerThreadId: null,
   accountUuids: [],
   hydrationState: "pending",
   filePath: "/home/me/.claude/projects/-work/s-1.jsonl",
   cwd: "/work",
-  parserState: null,
+  appliedTitle: null,
   fileSize: 0,
   fileMtimeMs: 0,
   updatedAt: DateTime.makeUnsafe("2026-11-26T12:00:00.000Z"),
@@ -54,7 +51,7 @@ const insertProviderThread = (input: {
   });
 
 describe("ClaudeSessionSyncStateRepository", () => {
-  it.effect("stores a session's read position and replaces it on the next write", () =>
+  it.effect("stores a session's state and replaces it on the next write", () =>
     Effect.gen(function* () {
       const repository = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
       assert.isUndefined(yield* repository.get(key));
@@ -66,14 +63,11 @@ describe("ClaudeSessionSyncStateRepository", () => {
         ...state,
         // A replaced file keeps the path but not the inode.
         fileIdentity: "16777220:4343",
-        byteOffset: 8192,
-        guardHash: "sha256:abc",
-        lastUuid: "line-9",
         threadId: ThreadId.make("claude:s-1"),
         providerThreadId: ProviderThreadId.make("provider-thread:s-1"),
         accountUuids: ["account-1", "account-2"],
         hydrationState: "full",
-        parserState: '{"segment":null,"lastUuid":"line-9"}',
+        appliedTitle: "From Claude",
         fileSize: 8192,
         fileMtimeMs: 1_795_000_000_000,
         updatedAt: DateTime.makeUnsafe("2026-11-26T12:05:00.000Z"),
@@ -241,5 +235,31 @@ describe("ClaudeSessionSyncStateRepository", () => {
         plan.map((detail) => detail.detail).join("\n"),
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "keeps each written turn's digest per thread, and forgets the turns it is told to",
+    () =>
+      Effect.gen(function* () {
+        const repository = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
+        const thread = "claude:s-1";
+        yield* repository.setTurnDigest({ threadId: thread, turnId: "p1", digest: "d1" });
+        yield* repository.setTurnDigest({ threadId: thread, turnId: "p2", digest: "d2" });
+        yield* repository.setTurnDigest({ threadId: thread, turnId: "p1", digest: "d1b" });
+        yield* repository.setTurnDigest({ threadId: "claude:s-2", turnId: "p1", digest: "other" });
+        assert.deepStrictEqual([...(yield* repository.turnDigests(thread))].toSorted(), [
+          ["p1", "d1b"],
+          ["p2", "d2"],
+        ]);
+
+        yield* repository.deleteTurnDigests({ threadId: thread, turnIds: ["p2"] });
+        assert.deepStrictEqual([...(yield* repository.turnDigests(thread))], [["p1", "d1b"]]);
+        yield* repository.deleteTurnDigests({ threadId: thread });
+        assert.strictEqual((yield* repository.turnDigests(thread)).size, 0);
+        assert.deepStrictEqual(
+          [...(yield* repository.turnDigests("claude:s-2"))],
+          [["p1", "other"]],
+        );
+      }).pipe(Effect.provide(layer)),
   );
 });

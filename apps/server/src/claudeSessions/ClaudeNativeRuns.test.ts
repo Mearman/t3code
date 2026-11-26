@@ -1,103 +1,42 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   EventId,
   ProviderInstanceId,
   ProviderThreadId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import type * as Scope from "effect/Scope";
 
 import {
-  claudePromptTextDigest,
-  initialClaudeNativeRunState,
-  NATIVE_PROVIDER_TURN_PREFIX,
+  claudeNativeItemLineUuid,
+  claudeNativeRunIds,
+  claudeOwnTurnIds,
+  claudePromptTextKey,
   NATIVE_TOOL_TEXT_MAX_CHARS,
-  planClaudeNativeRuns,
-  type ClaudeNativeRunPlanInput,
-  type StoredNativeRun,
+  planClaudeNativeTurn,
+  planClaudeRemovedItems,
+  REMOVED_TURN_ID,
+  type ClaudeOwnTurns,
+  type StoredNativeItem,
 } from "./ClaudeNativeRuns.ts";
 import {
-  initialClaudeTranscriptParserState,
-  parseClaudeTranscriptLines,
-} from "./ClaudeTranscriptSegments.ts";
+  readClaudeTranscriptTurn,
+  type ClaudeTranscriptTurnContent,
+} from "./ClaudeTranscriptContent.ts";
+import { ClaudeTranscriptIndex, syncClaudeTranscriptIndex } from "./ClaudeTranscriptIndex.ts";
+import { claudeTranscriptFixture } from "./ClaudeTranscriptTestLines.ts";
+import { claudeTranscriptStructure } from "./ClaudeTranscriptTurns.ts";
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
-const AT = "2026-01-01T00:00:00.000Z";
-const LATER = "2026-01-01T00:00:05.000Z";
 const FALLBACK = DateTime.makeUnsafe("2025-12-31T00:00:00.000Z");
-
-const user = (
-  uuid: string,
-  parentUuid: string | null,
-  content: unknown,
-  extra: Record<string, unknown> = {},
-) => ({
-  type: "user",
-  uuid,
-  parentUuid,
-  timestamp: AT,
-  sessionId: SESSION,
-  isSidechain: false,
-  message: { role: "user", content },
-  ...extra,
-});
-
-const assistant = (
-  uuid: string,
-  parentUuid: string,
-  block: unknown,
-  stopReason: string | null,
-  extra: Record<string, unknown> = {},
-) => ({
-  type: "assistant",
-  uuid,
-  parentUuid,
-  timestamp: LATER,
-  sessionId: SESSION,
-  isSidechain: false,
-  message: {
-    id: `msg-${uuid}`,
-    model: "claude-test",
-    role: "assistant",
-    content: [block],
-    stop_reason: stopReason,
-  },
-  ...extra,
-});
-
-const text = (value: string) => ({ type: "text", text: value });
-
-const firstTurn = [
-  user("p1", null, "Run the tests", { promptId: "prompt-1", origin: { kind: "human" } }),
-  assistant(
-    "a1",
-    "p1",
-    { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "vp test" } },
-    "tool_use",
-  ),
-  user("r1", "a1", [{ type: "tool_result", tool_use_id: "tool-1", content: "passed" }], {
-    promptId: "prompt-1",
-  }),
-  assistant("a2", "r1", text("All tests pass."), "end_turn"),
-];
-
-const secondTurn = [
-  user("p2", "a2", "Thanks", { promptId: "prompt-2", origin: { kind: "human" } }),
-  assistant("a3", "p2", text("You're welcome."), "end_turn"),
-];
-
-function parse(records: ReadonlyArray<unknown>, state = initialClaudeTranscriptParserState) {
-  const result = parseClaudeTranscriptLines({
-    sessionId: SESSION,
-    state,
-    lines: records.map((record, index) => ({ text: JSON.stringify(record), offset: index })),
-    known: new Set(),
-  });
-  expect(result.malformed).toEqual([]);
-  return result;
-}
 
 const target = {
   sessionId: SESSION,
@@ -109,429 +48,392 @@ const target = {
   skipCopied: false,
 };
 
-const noOwnTurns = {
-  promptUuids: new Set<string>(),
-  assistantUuids: new Set<string>(),
-  promptTexts: new Map<string, number>(),
+const noOwnTurns: ClaudeOwnTurns = {
+  promptUuids: new Set(),
+  assistantUuids: new Set(),
+  promptTexts: new Map(),
 };
 
+/** Writes the lines to a transcript file and reads it back through the index, as the sync does. */
+const transcript = (lines: ReadonlyArray<unknown>) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fileSystem.makeTempDirectoryScoped();
+    const filePath = path.join(directory, `${SESSION}.jsonl`);
+    yield* fileSystem.writeFileString(
+      filePath,
+      lines.map((line) => `${typeof line === "string" ? line : JSON.stringify(line)}\n`).join(""),
+    );
+    const index = new ClaudeTranscriptIndex();
+    yield* syncClaudeTranscriptIndex({ filePath, index });
+    const structure = claudeTranscriptStructure(index);
+    const contentOf = (turnId: string) =>
+      Effect.gen(function* () {
+        const turn = structure.turns.find((candidate) => candidate.id === turnId);
+        if (turn === undefined) return yield* Effect.die(`No turn ${turnId}.`);
+        return yield* readClaudeTranscriptTurn({ filePath, index, idScope: SESSION, turn });
+      });
+    return { index, structure, contentOf };
+  });
+
 let nextId = 0;
-function plan(
-  events: ReturnType<typeof parse>["events"],
-  overrides: Partial<ClaudeNativeRunPlanInput> = {},
-) {
-  return planClaudeNativeRuns({
+const planOf = (
+  content: ClaudeTranscriptTurnContent,
+  overrides: {
+    readonly stored?: boolean;
+    readonly storedItems?: ReadonlyMap<string, StoredNativeItem>;
+    readonly ordinal?: number;
+  } = {},
+) =>
+  planClaudeNativeTurn({
     target,
-    state: initialClaudeNativeRunState,
-    events,
-    own: noOwnTurns,
-    storedRuns: new Map(),
-    storedItems: new Map(),
-    storedToolItems: new Map(),
-    nextRunOrdinal: 1,
-    nextProviderTurnOrdinal: 1,
+    content,
+    ordinal: overrides.ordinal ?? 1,
+    providerTurnOrdinal: overrides.ordinal ?? 1,
+    stored: overrides.stored ?? false,
+    storedItems: overrides.storedItems ?? new Map(),
     eventId: () => EventId.make(`event-${nextId++}`),
     modelSlug: (reported) => `slug:${reported}`,
     fallbackAt: FALLBACK,
-    ...overrides,
   });
-}
-
-/** What the projection holds after a plan's events are written. */
-function stored(events: ReadonlyArray<OrchestrationV2DomainEvent>) {
-  const runs = new Map<string, StoredNativeRun>();
-  const turns = new Map<string, { ordinal: number; last?: string; model?: string }>();
-  const items = new Map<string, OrchestrationV2TurnItem>();
-  for (const event of events) {
-    if (event.type === "provider-turn.updated") {
-      const last = event.payload.nativeTurnRef?.nativeId;
-      turns.set(event.payload.id.slice(NATIVE_PROVIDER_TURN_PREFIX.length + SESSION.length + 1), {
-        ordinal: event.payload.ordinal,
-        ...(last === null || last === undefined ? {} : { last }),
-        ...(event.payload.model === undefined ? {} : { model: event.payload.model }),
-      });
-    } else if (event.type === "turn-item.updated") {
-      items.set(event.payload.id, event.payload);
-    }
-  }
-  for (const event of events) {
-    if (event.type !== "run.created" && event.type !== "run.updated") continue;
-    const run = event.payload;
-    const segmentId = run.nativeOrigin?.promptUuid ?? "";
-    const turn = turns.get(segmentId);
-    runs.set(segmentId, {
-      ordinal: run.ordinal,
-      providerTurnOrdinal: turn?.ordinal ?? 0,
-      requestedAt: DateTime.formatIso(run.requestedAt),
-      completedAt: run.completedAt === null ? "" : DateTime.formatIso(run.completedAt),
-      interrupted: run.status === "interrupted",
-      ...(turn?.last === undefined ? {} : { lastAssistantUuid: turn.last }),
-      ...(turn?.model === undefined ? {} : { model: turn.model }),
-    });
-  }
-  return {
-    storedRuns: runs,
-    storedItems: new Map(
-      [...items].map(([id, item]) => [
-        id,
-        {
-          settled: ["completed", "failed", "interrupted", "cancelled"].includes(item.status),
-          runId: item.runId,
-        },
-      ]),
-    ),
-    items,
-  };
-}
 
 const types = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
   events.map((event) =>
     event.type === "turn-item.updated" ? `${event.type}:${event.payload.type}` : event.type,
   );
 
-const runsOf = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
-  events.flatMap((event) => (event.type === "run.created" ? [event.payload] : []));
+const itemsOf = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
+  events.flatMap((event) => (event.type === "turn-item.updated" ? [event.payload] : []));
 
-describe("planClaudeNativeRuns", () => {
-  it("writes each terminal prompt as a finished run marked as read from the transcript", () => {
-    const result = plan(parse(firstTurn).events);
+/** What the projection holds of these items, as the next plan reads it. */
+const storedFrom = (items: ReadonlyArray<OrchestrationV2TurnItem>) =>
+  new Map<string, StoredNativeItem>(
+    items.map((item) => [
+      item.id,
+      { runId: item.runId, ordinal: item.ordinal, status: item.status },
+    ]),
+  );
 
-    expect(result.groups).toHaveLength(1);
-    const [group = []] = result.groups;
-    expect(types(group)).toEqual([
+const run = <A, E>(body: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Scope.Scope>) =>
+  body.pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+
+describe("planClaudeNativeTurn", () => {
+  it.effect("writes a terminal turn as a finished run marked as read from the transcript", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "Run the tests", { origin: { kind: "human" } }),
+          f.toolUse("a1", "p1", "tool-1"),
+          f.result("r1", "a1", "tool-1"),
+          f.text("a2", "r1", "All tests pass."),
+        ]);
+        const plan = planOf(yield* contentOf("p1"));
+
+        expect(types(plan.events)).toEqual([
+          "run.created",
+          "run-attempt.created",
+          "node.updated",
+          "provider-turn.updated",
+          "message.updated",
+          "turn-item.updated:user_message",
+          "turn-item.updated:command_execution",
+          "turn-item.updated:assistant_message",
+          "message.updated",
+        ]);
+        const [created] = plan.events;
+        expect(created?.type === "run.created" && created.payload).toMatchObject({
+          id: claudeNativeRunIds(SESSION, "p1").runId,
+          status: "completed",
+          modelSelection: { model: "slug:claude-test" },
+          nativeOrigin: {
+            kind: "claude_transcript",
+            nativeSessionId: SESSION,
+            promptUuid: "p1",
+            turnOrigin: "human",
+          },
+        });
+        const turn = plan.events.find((event) => event.type === "provider-turn.updated");
+        expect(turn?.type === "provider-turn.updated" && turn.payload.nativeTurnRef).toEqual({
+          driver: "claudeAgent",
+          nativeId: "a2",
+          strength: "weak",
+        });
+        const items = itemsOf(plan.events);
+        expect(items.map((item) => [item.id, item.ordinal, item.status])).toEqual([
+          [`x:${SESSION}:p1`, 0, "completed"],
+          [`x:${SESSION}:a1:0`, 1, "completed"],
+          [`x:${SESSION}:a2:0`, 2, "completed"],
+        ]);
+        expect(items[0]).toMatchObject({ createdBy: "user", text: "Run the tests" });
+        expect(items[1]).toMatchObject({ output: "done" });
+      }),
+    ),
+  );
+
+  it.effect("writes only the run again when every item is stored as it is", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "Hello"),
+          f.thinking("a1", "p1"),
+          f.text("a2", "a1", "Hi"),
+        ]);
+        const content = yield* contentOf("p1");
+        const first = planOf(content);
+        const again = planOf(content, {
+          stored: true,
+          storedItems: storedFrom(itemsOf(first.events)),
+        });
+
+        expect(types(again.events)).toEqual([
+          "run.updated",
+          "run-attempt.updated",
+          "node.updated",
+          "provider-turn.updated",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("moves an item stored in another run to the run its line now belongs to", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "Hello"),
+          f.text("a1", "p1", "Hi"),
+        ]);
+        const content = yield* contentOf("p1");
+        const elsewhere = claudeNativeRunIds(SESSION, "p0").runId;
+        const plan = planOf(content, {
+          stored: true,
+          storedItems: new Map([
+            [`x:${SESSION}:a1:0`, { runId: elsewhere, ordinal: 1, status: "completed" }],
+          ]),
+        });
+        expect(itemsOf(plan.events).map((item) => [item.id, item.runId])).toContainEqual([
+          `x:${SESSION}:a1:0`,
+          claudeNativeRunIds(SESSION, "p1").runId,
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("completes a tool whose result line comes before its use in the file", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "Go"),
+          f.result("r1", "a1", "tool-1"),
+          f.toolUse("a1", "p1", "tool-1"),
+          f.text("a2", "r1", "Done"),
+        ]);
+        const tool = itemsOf(planOf(yield* contentOf("p1")).events).find(
+          (item) => item.id === `x:${SESSION}:a1:0`,
+        );
+        expect(tool).toMatchObject({ status: "completed", output: "done" });
+      }),
+    ),
+  );
+
+  it.effect("leaves a tool running in the last open turn, and interrupted in an ended one", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "First"),
+          f.toolUse("a1", "p1", "tool-1"),
+          f.interrupt("i1", "a1"),
+          f.prompt("p2", "i1", "Second"),
+          f.toolUse("a2", "p2", "tool-2"),
+        ]);
+        const first = planOf(yield* contentOf("p1"));
+        expect(first.events[0]?.type === "run.created" && first.events[0].payload.status).toBe(
+          "interrupted",
+        );
+        expect(itemsOf(first.events).find((item) => item.id === `x:${SESSION}:a1:0`)?.status).toBe(
+          "interrupted",
+        );
+        const second = planOf(yield* contentOf("p2"), { ordinal: 2 });
+        expect(itemsOf(second.events).find((item) => item.id === `x:${SESSION}:a2:0`)?.status).toBe(
+          "running",
+        );
+      }),
+    ),
+  );
+
+  it.effect("adds a prompt delivered into a running turn to that turn's run as a steer", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "First"),
+          f.toolUse("a1", "p1", "t1", null),
+          f.result("r1", "a1", "t1"),
+          f.queued("q1", "r1", "Also"),
+          f.text("a3", "q1", "Both done"),
+        ]);
+        const steer = itemsOf(planOf(yield* contentOf("p1")).events).find(
+          (item) => item.id === `x:${SESSION}:q1`,
+        );
+        expect(steer).toMatchObject({ type: "user_message", inputIntent: "steer", text: "Also" });
+      }),
+    ),
+  );
+
+  it.effect("stands in the previous time for a line whose timestamp is not one", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "Hello"),
+          f.text("a1", "p1", "Hi", "end_turn", { timestamp: "not a time" }),
+        ]);
+        const plan = planOf(yield* contentOf("p1"));
+        const reply = itemsOf(plan.events).find((item) => item.id === `x:${SESSION}:a1:0`);
+        expect(reply === undefined ? undefined : DateTime.formatIso(reply.updatedAt)).toBe(
+          f.iso(0),
+        );
+      }),
+    ),
+  );
+
+  it.effect("caps tool output and says how much the transcript still holds", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const long = "o".repeat(NATIVE_TOOL_TEXT_MAX_CHARS + 10);
+        const { contentOf } = yield* transcript([
+          f.prompt("p1", null, "Go"),
+          f.toolUse("a1", "p1", "tool-1"),
+          f.user("r1", "a1", [{ type: "tool_result", tool_use_id: "tool-1", content: long }]),
+          f.text("a2", "r1", "Done"),
+        ]);
+        const tool = itemsOf(planOf(yield* contentOf("p1")).events).find(
+          (item) => item.id === `x:${SESSION}:a1:0`,
+        );
+        const output = tool?.type === "command_execution" ? tool.output : undefined;
+        expect(typeof output === "string" && output.endsWith("[10 more characters in the Claude transcript]")).toBe(true);
+      }),
+    ),
+  );
+});
+
+describe("claudeOwnTurnIds", () => {
+  it.effect("finds T3 Code's turns by prompt uuid, prompt id, reply and copied line", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { index, structure } = yield* transcript([
+          f.prompt("p1", null, "One"),
+          f.text("a1", "p1", "1"),
+          f.prompt("p2", "a1", "Two", { promptId: "allocated" }),
+          f.text("a2", "p2", "2"),
+          f.prompt("p3", "a2", "Three"),
+          f.text("a3", "p3", "3"),
+          f.prompt("p4", "a3", "Four"),
+          f.text("a4", "p4", "4"),
+          f.prompt("p5", "a4", "Five", { forkedFrom: { sessionId: "parent", messageUuid: "m" } }),
+          f.text("a5", "p5", "5"),
+        ]);
+        const own = {
+          promptUuids: new Set(["p1", "allocated"]),
+          assistantUuids: new Set(["a3"]),
+          promptTexts: new Map(),
+        };
+        const ids = (skipCopied: boolean) =>
+          [
+            ...claudeOwnTurnIds({ structure, index, own, skipCopied, writtenTurnIds: new Set() }),
+          ].toSorted();
+        expect(ids(false)).toEqual(["p1", "p2", "p3"]);
+        expect(ids(true)).toEqual(["p1", "p2", "p3", "p5"]);
+      }),
+    ),
+  );
+
+  it.effect("matches each older T3 Code turn by text once, never a turn already shown", () =>
+    run(
+      Effect.gen(function* () {
+        const f = claudeTranscriptFixture();
+        const { index, structure } = yield* transcript([
+          f.prompt("p1", null, "continue"),
+          f.text("a1", "p1", "1"),
+          f.prompt("p2", "a1", "continue"),
+          f.text("a2", "p2", "2"),
+          f.prompt("p3", "a2", "continue"),
+          f.text("a3", "p3", "3"),
+        ]);
+        const own = { ...noOwnTurns, promptTexts: new Map([[claudePromptTextKey("continue"), 1]]) };
+        const owned = (written: ReadonlyArray<string>) => [
+          ...claudeOwnTurnIds({
+            structure,
+            index,
+            own,
+            skipCopied: false,
+            writtenTurnIds: new Set(written),
+          }),
+        ];
+        expect(owned([])).toEqual(["p1"]);
+        expect(owned(["p1"])).toEqual(["p2"]);
+      }),
+    ),
+  );
+});
+
+describe("planClaudeRemovedItems", () => {
+  it("moves items into one rolled-back run, writing that run only the first time", () => {
+    const item: OrchestrationV2TurnItem = {
+      id: TurnItemId.make(`x:${SESSION}:gone:0`),
+      threadId: target.threadId,
+      runId: claudeNativeRunIds(SESSION, "p1").runId,
+      nodeId: claudeNativeRunIds(SESSION, "p1").nodeId,
+      providerThreadId: target.providerThreadId,
+      providerTurnId: claudeNativeRunIds(SESSION, "p1").providerTurnId,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 3,
+      status: "completed",
+      title: null,
+      startedAt: FALLBACK,
+      completedAt: FALLBACK,
+      updatedAt: FALLBACK,
+      type: "reasoning",
+      text: "Hmm",
+      streaming: false,
+    };
+    const plan = (created: boolean) =>
+      planClaudeRemovedItems({
+        target,
+        items: [item],
+        created,
+        ordinal: 9,
+        providerTurnOrdinal: 9,
+        at: FALLBACK,
+        eventId: () => EventId.make(`event-${nextId++}`),
+      });
+    const first = plan(false);
+    expect(types(first)).toEqual([
       "run.created",
       "run-attempt.created",
       "node.updated",
       "provider-turn.updated",
-      "message.updated",
-      "turn-item.updated:user_message",
-      // The tool's result is in the same read, so its item is written once, finished.
-      "turn-item.updated:command_execution",
-      "turn-item.updated:assistant_message",
-      "message.updated",
+      "turn-item.updated:reasoning",
     ]);
-    const [run] = runsOf(group);
-    expect(run).toMatchObject({
-      ordinal: 1,
-      status: "completed",
-      providerThreadId: target.providerThreadId,
-      nativeOrigin: {
-        kind: "claude_transcript",
-        nativeSessionId: SESSION,
-        promptUuid: "p1",
-        turnOrigin: "human",
-      },
-    });
-    const turn = group.find((event) => event.type === "provider-turn.updated");
-    expect(turn?.type === "provider-turn.updated" && turn.payload.nativeTurnRef).toMatchObject({
-      nativeId: "a2",
-      strength: "weak",
-    });
-    expect(stored(group).items.get(`x:${SESSION}:a1:0`)).toMatchObject({
-      type: "command_execution",
-      input: "vp test",
-      output: "passed",
-      status: "completed",
-    });
-    expect(result.lastRunOrdinal).toBe(1);
-    expect(result.lastActivityAt).toEqual(DateTime.makeUnsafe(LATER));
-  });
-
-  it("runs on the model the transcript records, not the thread's", () => {
-    const [run] = runsOf(plan(parse(firstTurn).events).groups.flat());
-    expect(run?.modelSelection).toEqual({
-      instanceId: target.providerInstanceId,
-      model: "slug:claude-test",
-    });
-  });
-
-  it("writes nothing when lines already written are read again", () => {
-    const parsed = parse([...firstTurn, ...secondTurn]);
-    const first = plan(parsed.events);
-    const written = stored(first.groups.flat());
-
-    const again = plan(parsed.events, {
-      storedRuns: written.storedRuns,
-      storedItems: written.storedItems,
-      nextRunOrdinal: 3,
-      nextProviderTurnOrdinal: 3,
-    });
-
-    expect(again.groups).toEqual([]);
-  });
-
-  it("leaves turns T3 Code ran to its own runs, matched by prompt id, line uuid or reply", () => {
-    const events = parse([...firstTurn, ...secondTurn]).events;
-    for (const own of [
-      { ...noOwnTurns, promptUuids: new Set(["prompt-1"]) },
-      { ...noOwnTurns, promptUuids: new Set(["p1"]) },
-      { ...noOwnTurns, assistantUuids: new Set(["a2"]) },
-    ]) {
-      const runs = runsOf(plan(events, { own }).groups.flat());
-      expect(runs.map((run) => [run.ordinal, run.nativeOrigin?.promptUuid])).toEqual([[1, "p2"]]);
-    }
-  });
-
-  it("matches a T3 Code turn that recorded no uuid by its prompt text, once per such turn", () => {
-    const repeated = [
-      ...firstTurn,
-      user("p2", "a2", "Run the tests", { promptId: "prompt-2", origin: { kind: "human" } }),
-      assistant("a3", "p2", text("Passed again."), "end_turn"),
-    ];
-    const own = {
-      ...noOwnTurns,
-      promptTexts: new Map([[claudePromptTextDigest("Run the tests"), 1]]),
-    };
-    const first = plan(parse(repeated).events, { own });
-
-    // The first prompt with that text is T3 Code's; the terminal sent the second.
-    expect(runsOf(first.groups.flat()).map((run) => run.nativeOrigin?.promptUuid)).toEqual(["p2"]);
-    expect(first.state.ownTextsMatched).toEqual({ [claudePromptTextDigest("Run the tests")]: 1 });
-
-    // A later read that starts after the matched turn does not match the text again.
-    const later = parse([
-      user("p3", "a3", "Run the tests", { promptId: "prompt-3" }),
-      assistant("a4", "p3", text("Yes."), "end_turn"),
-    ]);
-    const next = plan(later.events, {
-      own,
-      state: first.state,
-      nextRunOrdinal: 2,
-      nextProviderTurnOrdinal: 2,
-    });
-    expect(runsOf(next.groups.flat()).map((run) => run.nativeOrigin?.promptUuid)).toEqual(["p3"]);
-  });
-
-  it("completes a tool item when a later read finds its result, without rewriting the open run", () => {
-    const head = parse(firstTurn.slice(0, 2));
-    const first = plan(head.events);
-    const written = stored(first.groups.flat());
-    const tail = parse(firstTurn.slice(2), head.state);
-
-    const second = plan(tail.events, {
-      state: first.state,
-      storedRuns: written.storedRuns,
-      storedItems: written.storedItems,
-      storedToolItems: written.items,
-      nextRunOrdinal: 2,
-      nextProviderTurnOrdinal: 2,
-    });
-
-    const events = second.groups.flat();
-    // The read ends the turn, so its run is written once with its final state.
-    expect(types(events)).toEqual([
-      "run.updated",
-      "run-attempt.updated",
-      "node.updated",
-      "provider-turn.updated",
-      "turn-item.updated:command_execution",
-      "turn-item.updated:assistant_message",
-      "message.updated",
-    ]);
-    expect(stored(events).items.get(`x:${SESSION}:a1:0`)).toMatchObject({
-      output: "passed",
-      status: "completed",
-    });
-    expect(second.state.current?.pendingTools).toEqual({});
-  });
-
-  it("adds only items while a turn stays open, and writes its run again when it ends", () => {
-    const opening = [firstTurn[0], assistant("a1", "p1", text("Working"), null)];
-    const head = parse(opening);
-    const first = plan(head.events);
-    const written = stored(first.groups.flat());
-    const more = parse(
-      [assistant("a5", "a1", { type: "thinking", thinking: "More", signature: "s" }, null)],
-      head.state,
-    );
-
-    const open = plan(more.events, {
-      state: first.state,
-      storedRuns: written.storedRuns,
-      storedItems: written.storedItems,
-      nextRunOrdinal: 2,
-      nextProviderTurnOrdinal: 2,
-    });
-    expect(types(open.groups.flat())).toEqual(["turn-item.updated:reasoning"]);
-    expect(open.lastRunOrdinal).toBeUndefined();
-
-    const end = parse([assistant("a6", "a5", text("Done"), "end_turn")], more.state);
-    const ended = plan(end.events, {
-      state: open.state,
-      storedRuns: written.storedRuns,
-      storedItems: new Map([...written.storedItems, ...stored(open.groups.flat()).storedItems]),
-      nextRunOrdinal: 2,
-      nextProviderTurnOrdinal: 2,
-    });
-    const events = ended.groups.flat();
-    expect(types(events)[0]).toBe("run.updated");
-    const turn = events.find((event) => event.type === "provider-turn.updated");
-    expect(turn?.type === "provider-turn.updated" && turn.payload).toMatchObject({
-      ordinal: 1,
-      model: "slug:claude-test",
-      nativeTurnRef: { nativeId: "a6" },
-    });
-  });
-
-  it("stands in the previous time for a line whose timestamp is not one", () => {
-    const records = [
-      firstTurn[0],
-      { ...assistant("a1", "p1", text("Odd time"), "end_turn"), timestamp: "not a time" },
-    ];
-    const result = plan(parse(records).events);
-    const reply = stored(result.groups.flat()).items.get(`x:${SESSION}:a1:0`);
-    expect(reply?.updatedAt).toEqual(DateTime.makeUnsafe(AT));
-
-    const noValidTime = plan(parse([{ ...firstTurn[0], timestamp: "" }]).events);
-    expect(runsOf(noValidTime.groups.flat())[0]?.requestedAt).toEqual(FALLBACK);
-  });
-
-  it("does not write again what a T3 Code fork copied from its parent, and reports the source", () => {
-    const copied = { forkedFrom: { sessionId: "parent-session", messageUuid: "m1" } };
-    const records = [
-      user("p1", null, "Copied prompt", { promptId: "prompt-1", ...copied }),
-      assistant("a1", "p1", text("Copied reply"), "end_turn", copied),
-      ...secondTurn,
-    ];
-
-    const fork = plan(parse(records).events, { target: { ...target, skipCopied: true } });
-    expect(runsOf(fork.groups.flat()).map((run) => run.nativeOrigin?.promptUuid)).toEqual(["p2"]);
-    expect(fork.forkedFromSessionId).toBe("parent-session");
-
-    // A session shown in its own thread keeps its copied history.
-    const own = plan(parse(records).events);
-    expect(runsOf(own.groups.flat()).map((run) => run.nativeOrigin?.promptUuid)).toEqual([
-      "p1",
-      "p2",
+    expect(first[0]?.type === "run.created" && first[0].payload.status).toBe("rolled_back");
+    expect(itemsOf(plan(true)).map((moved) => moved.runId)).toEqual([
+      claudeNativeRunIds(SESSION, REMOVED_TURN_ID).runId,
     ]);
   });
+});
 
-  it("adds a prompt delivered into a running turn to that turn's run as a steer", () => {
-    const records = [
-      firstTurn[0],
-      firstTurn[1],
-      {
-        type: "attachment",
-        uuid: "q1",
-        parentUuid: "a1",
-        timestamp: LATER,
-        isSidechain: false,
-        attachment: {
-          type: "queued_command",
-          prompt: "Also check lint",
-          commandMode: "prompt",
-          origin: { kind: "human" },
-        },
-      },
-      ...firstTurn.slice(2),
-    ];
-    const events = plan(parse(records).events).groups.flat();
-
-    expect(events.filter((event) => event.type === "run.created")).toHaveLength(1);
-    expect(stored(events).items.get(`x:${SESSION}:q1`)).toMatchObject({
-      type: "user_message",
-      inputIntent: "steer",
-      text: "Also check lint",
-      createdBy: "user",
-      runId: `claude-run:${SESSION}:p1`,
-    });
-  });
-
-  it("adds an item to an earlier segment's run when the parser names that segment", () => {
-    const parsed = parse([...firstTurn, ...secondTurn]);
-    const first = plan(parsed.events);
-    const written = stored(first.groups.flat());
-    const late = plan(
-      [
-        {
-          _tag: "Item",
-          segmentId: "p1",
-          item: {
-            id: `x:${SESSION}:late:0`,
-            lineUuid: "late",
-            blockIndex: 0,
-            role: "assistant",
-            timestamp: LATER,
-            block: { type: "text", text: "A late part of the first reply.", citations: null },
-            model: "claude-test",
-            messageId: "msg-late",
-            forkedFrom: undefined,
-          },
-        },
-      ],
-      {
-        state: first.state,
-        storedRuns: written.storedRuns,
-        storedItems: written.storedItems,
-        nextRunOrdinal: 3,
-        nextProviderTurnOrdinal: 3,
-      },
-    );
-    const item = stored(late.groups.flat()).items.get(`x:${SESSION}:late:0`);
-    expect(item).toMatchObject({ type: "assistant_message", runId: `claude-run:${SESSION}:p1` });
-    expect(late.groups.flat().filter((event) => event.type === "run.created")).toEqual([]);
-  });
-
-  it("completes a tool whose result came before its use", () => {
-    const records = [firstTurn[0], firstTurn[2], firstTurn[1], firstTurn[3]];
-    const tool = stored(plan(parse(records).events).groups.flat()).items.get(`x:${SESSION}:a1:0`);
-    expect(tool).toMatchObject({
-      type: "command_execution",
-      output: "passed",
-      status: "completed",
-    });
-  });
-
-  it("completes a tool whose result came in an earlier read than its use", () => {
-    const head = parse([firstTurn[0], firstTurn[2]]);
-    const first = plan(head.events);
-    const written = stored(first.groups.flat());
-    const tail = parse([firstTurn[1], firstTurn[3]], head.state);
-    const second = plan(tail.events, {
-      state: first.state,
-      storedRuns: written.storedRuns,
-      storedItems: written.storedItems,
-      nextRunOrdinal: 2,
-      nextProviderTurnOrdinal: 2,
-    });
-    expect(stored(second.groups.flat()).items.get(`x:${SESSION}:a1:0`)).toMatchObject({
-      type: "command_execution",
-      output: "passed",
-      status: "completed",
-    });
-  });
-
-  it("moves an item to another run when its line is filed under a different turn", () => {
-    const parsed = parse([...firstTurn, ...secondTurn]);
-    const written = stored(plan(parsed.events).groups.flat());
-    const replyId = `x:${SESSION}:a3:0`;
-    expect(written.items.get(replyId)?.runId).toBe(`claude-run:${SESSION}:p2`);
-    // The same reply, now filed under the first turn, as a parser does once its parent arrives.
-    const moved = parsed.events.map((event) =>
-      event._tag === "Item" && event.item.id === replyId ? { ...event, segmentId: "p1" } : event,
-    );
-    const again = plan(moved, {
-      storedRuns: written.storedRuns,
-      storedItems: written.storedItems,
-      nextRunOrdinal: 3,
-      nextProviderTurnOrdinal: 3,
-    });
-    const items = stored(again.groups.flat()).items;
-    expect([...items.keys()]).toEqual([replyId]);
-    expect(items.get(replyId)?.runId).toBe(`claude-run:${SESSION}:p1`);
-  });
-
-  it("caps tool output and says how much the transcript still holds", () => {
-    const long = "x".repeat(NATIVE_TOOL_TEXT_MAX_CHARS + 10_000);
-    const records = [
-      firstTurn[0],
-      firstTurn[1],
-      user("r1", "a1", [{ type: "tool_result", tool_use_id: "tool-1", content: long }]),
-    ];
-    const tool = stored(plan(parse(records).events).groups.flat()).items.get(`x:${SESSION}:a1:0`);
-    const output = tool?.type === "command_execution" ? (tool.output ?? "") : "";
-    expect(output).toBe(
-      `${"x".repeat(NATIVE_TOOL_TEXT_MAX_CHARS)}\n[10000 more characters in the Claude transcript]`,
-    );
+describe("claudeNativeItemLineUuid", () => {
+  it("reads the line uuid of a block's or a line's item id, and nothing of another scope", () => {
+    expect(claudeNativeItemLineUuid(SESSION, `x:${SESSION}:a1:2`)).toBe("a1");
+    expect(claudeNativeItemLineUuid(SESSION, `x:${SESSION}:p1`)).toBe("p1");
+    expect(claudeNativeItemLineUuid(SESSION, "x:other:p1")).toBeUndefined();
   });
 });
