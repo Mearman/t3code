@@ -68,6 +68,19 @@ const readForkLedger = Effect.gen(function* () {
   return rows.map((row) => ({ id: row.migration_id, name: row.name }));
 });
 
+// Fails before anything is written, upstream's migrations included, when the fork's recorded history would skip one of its migrations.
+const assertForkHistoryCanRun = Effect.gen(function* () {
+  const recorded = yield* readForkLedger;
+  const skipped = skippedForkMigrations(recorded ?? []);
+  if (skipped.length > 0) {
+    return yield* new Migrator.MigrationError({
+      kind: "BadState",
+      message: `This database's fork migration history would skip required schema migrations: ${skipped.join(", ")}. It was probably written by a different build of this fork. Start the build that wrote it.`,
+    });
+  }
+  return recorded;
+});
+
 const ledgerBehind = (recorded: ReadonlyArray<{ readonly id: number }> | undefined) =>
   recorded === undefined || Math.max(0, ...recorded.map(({ id }) => id)) < FORK_MIGRATION_HEAD;
 
@@ -84,14 +97,7 @@ const run = Migrator.make({});
  */
 export const runForkMigrations = Effect.fn("runForkMigrations")(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const recorded = yield* readForkLedger;
-  const skipped = skippedForkMigrations(recorded ?? []);
-  if (skipped.length > 0) {
-    return yield* new Migrator.MigrationError({
-      kind: "BadState",
-      message: `This database's fork migration history would skip required schema migrations: ${skipped.join(", ")}. It was probably written by a different build of this fork. Start the build that wrote it.`,
-    });
-  }
+  const recorded = yield* assertForkHistoryCanRun;
   const executed = ledgerBehind(recorded)
     ? yield* run({
         loader: Migrator.fromRecord(
@@ -119,10 +125,14 @@ export const runForkMigrations = Effect.fn("runForkMigrations")(function* () {
 });
 
 /**
- * Runs upstream's migrations, then the fork's. When upstream has migrations to run, fork indexes on upstream tables are dropped first so they cannot block or be lost by an upstream schema change; `runForkMigrations` recreates them. Returns the fork migrations it ran.
+ * Runs upstream's migrations, then the fork's. A fork history that would skip a fork migration
+ * fails before anything is written. When upstream has migrations to run, fork indexes on upstream
+ * tables are dropped first so they cannot block or be lost by an upstream schema change;
+ * `runForkMigrations` recreates them. Returns the fork migrations it ran.
  */
 export const runUpstreamThenForkMigrations = Effect.fn("runUpstreamThenForkMigrations")(
   function* () {
+    yield* assertForkHistoryCanRun;
     if (yield* hasPendingMigrations()) {
       const sql = yield* SqlClient.SqlClient;
       for (const { name } of forkIndexesOnUpstreamTables) {

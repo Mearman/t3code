@@ -157,6 +157,27 @@ describe("runForkMigrations", () => {
     }).pipe(Effect.provide(memory)),
   );
 
+  it.effect(
+    "refuses a fork history it would skip before upstream migrations or the index change",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: latestUpstreamId - 1 });
+        yield* runForkMigrations();
+        const [firstId] = forkMigrationManifest[0]!;
+        yield* sql`UPDATE fork_migrations SET name = 'OtherForkBuild' WHERE migration_id = ${firstId}`;
+
+        const exit = yield* Effect.exit(runUpstreamThenForkMigrations());
+
+        assert.isTrue(Exit.isFailure(exit));
+        assert.strictEqual(
+          Math.max(...(yield* ledger("effect_sql_migrations")).map(([id]) => id)),
+          latestUpstreamId - 1,
+        );
+        assert.include(yield* schemaNames, forkIndex);
+      }).pipe(Effect.provide(memory)),
+  );
+
   it.effect("runs at startup after upstream migrations", () =>
     Effect.gen(function* () {
       assert.isFalse(yield* hasPendingForkMigrations());
