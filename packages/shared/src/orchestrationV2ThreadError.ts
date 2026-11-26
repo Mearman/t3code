@@ -60,14 +60,45 @@ export function threadErrorSummary(
 }
 
 /**
+ * Which runs a selection reads. `"t3"` is the runs T3 executed, for every decision T3 acts on
+ * (queue holds and starts, usage limits, resume, Stop, restart continuations, results). `"any"`
+ * adds the runs read back from a provider transcript (`nativeOrigin`), for what a thread shows.
+ */
+export type RunOrigin = "t3" | "any";
+
+/**
+ * The runs `origin` reads, in their original order. The `t3code/explicit-run-origin` lint rule
+ * requires every run collection that is ordered or searched for a latest run to pass through here.
+ */
+export function runsByOrigin<Run extends { readonly nativeOrigin?: unknown }>(
+  runs: ReadonlyArray<Run>,
+  origin: RunOrigin,
+): ReadonlyArray<Run> {
+  return origin === "any" ? runs : runs.filter((run) => run.nativeOrigin === undefined);
+}
+
+/**
  * The run T3 last executed: the latest executed run, ignoring runs read back from a provider
- * transcript (`nativeOrigin`). Every decision T3 acts on (queue holds and starts, usage limits,
- * resume, Stop, worktree setup) reads this; presentation reads `latestExecutedRun`.
+ * transcript. Every decision T3 acts on reads this; presentation reads `latestExecutedRun`.
  */
 export function latestT3ExecutedRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): OrchestrationV2Run | null {
-  return latestExecutedRun(runs.filter((run) => run.nativeOrigin === undefined));
+  return latestExecutedRun(runsByOrigin(runs, "t3"));
+}
+
+/**
+ * Whether a run read back from a provider transcript stands after run ordinal `appRunOrdinal`. T3
+ * has no snapshot of what such a turn changed, so a rewind past it can rewind only the conversation.
+ */
+export function hasTranscriptRunAfter(
+  runs: ReadonlyArray<Pick<OrchestrationV2Run, "nativeOrigin" | "ordinal" | "status">>,
+  appRunOrdinal: number,
+): boolean {
+  return runs.some(
+    (run) =>
+      run.ordinal > appRunOrdinal && run.status !== "rolled_back" && run.nativeOrigin !== undefined,
+  );
 }
 
 export function latestExecutedRun(

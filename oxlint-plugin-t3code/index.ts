@@ -1,5 +1,6 @@
 import { definePlugin } from "@oxlint/plugins";
 
+import explicitRunOrigin from "./rules/explicit-run-origin.ts";
 import maxSettingsDescriptionLength from "./rules/max-settings-description-length.ts";
 import namespaceNodeImports from "./rules/namespace-node-imports.ts";
 import noDomTestEnvironment from "./rules/no-dom-test-environment.ts";
@@ -42,6 +43,7 @@ export default definePlugin({
     name: "t3code",
   },
   rules: {
+    "explicit-run-origin": explicitRunOrigin,
     "max-settings-description-length": maxSettingsDescriptionLength,
     "namespace-node-imports": namespaceNodeImports,
     "no-dom-test-environment": noDomTestEnvironment,
