@@ -51,9 +51,8 @@ export class ClaudeProcessTableError extends Schema.TaggedError<ClaudeProcessTab
  * Builds a reader that runs `ps` in the C locale and UTC, the form a registry entry's `procStart`
  * is written in, and fails with the reason when it cannot.
  */
-export const makeClaudeProcessTableReader = Effect.gen(function* () {
-  const runner = yield* ProcessRunner.make();
-  return runner
+export const makeClaudeProcessTableReader = Effect.map(ProcessRunner.make(), (runner) =>
+  runner
     .run({
       command: "ps",
       args: ["-A", "-o", "pid=,ppid=,pgid=,lstart="],
@@ -67,8 +66,8 @@ export const makeClaudeProcessTableReader = Effect.gen(function* () {
           ? Effect.succeed(parseClaudeProcessTable(result.stdout))
           : Effect.fail(new ClaudeProcessTableError({ reason: `ps exited with ${result.code}` })),
       ),
-    );
-});
+    ),
+);
 
 export function indexClaudeProcessTable(rows: ReadonlyArray<ClaudeProcessRow>) {
   return {
