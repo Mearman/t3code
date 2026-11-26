@@ -80,6 +80,8 @@ const backgroundGitProcesses = Semaphore.makeUnsafe(2);
 // the last fetch; on busy repositories that alone outlasts the 30s default.
 const FETCH_REMOTE_TIMEOUT_MS = Duration.toMillis(Duration.minutes(5));
 const WORKTREE_INDEX_REFRESH_TIMEOUT_MS = Duration.toMillis(Duration.minutes(5));
+// The longest a new worktree waits for its checkout second to end; see refreshNewWorktreeIndex.
+const INDEX_SECOND_WAIT_LIMIT_MS = Duration.toMillis(Duration.seconds(2));
 const WORKTREE_REMOVE_TIMEOUT_MS = Duration.toMillis(Duration.minutes(5));
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const REF_SNAPSHOT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -6482,7 +6484,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   // A checkout stamps most files in the second it writes the index, and Git re-reads every file
   // stamped in the index's own second or later ("racily clean") on each status, diff and add.
-  // T3's own git calls never rewrite a worktree's index, so refresh it once.
+  // T3's own git calls never rewrite a worktree's index, so refresh it once, after that second.
   const refreshNewWorktreeIndex = Effect.fn("refreshNewWorktreeIndex")(function* (
     worktreePath: string,
   ) {
@@ -6494,76 +6496,50 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         "index",
       ])).trim(),
     );
-    const indexSecond = fileSystem.stat(indexPath).pipe(
-      Effect.map(({ mtime }) => Option.map(mtime, (date) => Math.floor(date.getTime() / 1000))),
-      Effect.orElseSucceed(() => Option.none<number>()),
-    );
-    // Older Git (such as 2.30) skips the write when racy entries merely check out clean.
+    const mtimeMillis = (file: string) =>
+      fileSystem.stat(file).pipe(
+        Effect.map(({ mtime }) => Option.map(mtime, (date) => date.getTime())),
+        Effect.orElseSucceed(() => Option.none<number>()),
+      );
+    const checkout = yield* mtimeMillis(indexPath);
+    if (Option.isSome(checkout)) {
+      const checkoutSecond = Math.floor(checkout.value / 1000);
+      // The time the filesystem stamps now, read from a file it stamps beside the index.
+      const stampedNow = Effect.acquireUseRelease(
+        random.uuidV4().pipe(
+          Effect.map((id) => `${indexPath}.t3-probe-${id}`),
+          Effect.tap((probe) => fileSystem.writeFileString(probe, "")),
+        ),
+        mtimeMillis,
+        (probe) => fileSystem.remove(probe).pipe(Effect.ignore),
+      ).pipe(Effect.orElseSucceed(() => Option.none<number>()));
+      const fileClock = yield* GitVcsDriver.FileTimestampClock;
+      // A refresh still in the checkout's second leaves its index just as racy. Two seconds covers
+      // the rest of that second at any timestamp resolution down to FAT's two seconds; a filesystem
+      // still stamping it after that does not follow this clock, so refresh without waiting more.
+      let waited = 0;
+      let now = yield* stampedNow;
+      while (Option.isSome(now) && now.value < (checkoutSecond + 1) * 1000) {
+        const wait = Math.min(
+          (checkoutSecond + 1) * 1000 - now.value,
+          INDEX_SECOND_WAIT_LIMIT_MS - waited,
+        );
+        if (wait <= 0) break;
+        yield* fileClock.sleep(Duration.millis(wait));
+        waited += wait;
+        now = yield* stampedNow;
+      }
+    }
+    // Older Git (such as 2.30) skips the write when racy entries merely check out clean. Git
+    // compares racy entries' contents and smudges any it finds changed as it writes the index
+    // (read-cache.c ce_smudge_racily_clean_entry), so an edit made in that second stays visible.
     // A refresh re-reads every checked-out file, so allow five minutes outside shared permits.
-    const refresh = runGit(
+    yield* runGit(
       "GitVcsDriver.createWorktree.refreshIndex",
       worktreePath,
       ["update-index", "-q", "--refresh", "--force-write-index"],
       { timeoutMs: WORKTREE_INDEX_REFRESH_TIMEOUT_MS },
     );
-    const checkoutSecond = yield* indexSecond;
-    yield* refresh;
-    const refreshedSecond = yield* indexSecond;
-    if (
-      Option.isNone(checkoutSecond) ||
-      Option.isNone(refreshedSecond) ||
-      refreshedSecond.value > checkoutSecond.value
-    ) {
-      return;
-    }
-    // The refresh finished within the checkout's second, so its index is just as racy. Wait that
-    // second out (file timestamps can trail the clock by a kernel tick) and refresh again. Two
-    // seconds or more means this clock does not match the file timestamps, as on a share stamped
-    // by another machine, so it cannot say when that second ends.
-    const checkoutTime = checkoutSecond.value;
-    const delay = (checkoutTime + 1) * 1000 + 50 - (yield* Clock.currentTimeMillis);
-    if (delay >= 2_000) return;
-    if (delay <= 0) return yield* refresh;
-    // Waiting would hold up the agent, and rewriting the index later would take index.lock under
-    // its Git. Git trusts the stat of entries stamped before the index's second (is_racy_stat), so
-    // once a content check finds no change stat cannot see, move a pinned link's mtime past the
-    // checkout second; that inode is the index unless Git has replaced it since.
-    const nextSecond = checkoutTime + 1;
-    const pinned = Effect.acquireRelease(
-      random.uuidV4().pipe(
-        Effect.map((id) => `${indexPath}.t3-refresh-${id}`),
-        Effect.tap((pinPath) => fileSystem.link(indexPath, pinPath)),
-      ),
-      (pinPath) => fileSystem.remove(pinPath).pipe(Effect.ignore),
-    );
-    const secondOf = (info: FileSystem.File.Info) =>
-      Option.map(info.mtime, (date) => Math.floor(date.getTime() / 1000));
-    yield* Effect.gen(function* () {
-      yield* Effect.sleep(Duration.millis(delay));
-      const pinPath = yield* pinned;
-      // A Git that rewrote the index since then made a new inode stamped later; leave that alone.
-      const pinnedSecond = secondOf(yield* fileSystem.stat(pinPath));
-      if (Option.isNone(pinnedSecond) || pinnedSecond.value !== checkoutTime) return;
-      // diff-files compares a racy entry's contents and never writes the index (diff-lib.c).
-      const changed = yield* executeGit(
-        "GitVcsDriver.createWorktree.checkRacyEntries",
-        worktreePath,
-        ["diff-files", "--name-only", "-z", "--ignore-submodules=all"],
-        { timeoutMs: WORKTREE_INDEX_REFRESH_TIMEOUT_MS, env: { GIT_INDEX_FILE: pinPath } },
-      );
-      if (changed.stdoutTruncated) return;
-      const sameStat = yield* Effect.forEach(
-        changed.stdout.split("\0").filter((file) => file.length > 0),
-        (file) =>
-          fileSystem.stat(path.join(worktreePath, file)).pipe(
-            // A file that is gone no longer matches its entry's stat.
-            Effect.map((info) => Option.exists(secondOf(info), (second) => second <= checkoutTime)),
-            Effect.orElseSucceed(() => false),
-          ),
-      );
-      if (sameStat.some((matches) => matches)) return;
-      yield* fileSystem.utimes(pinPath, nextSecond, nextSecond);
-    }).pipe(Effect.scoped, Effect.ignore({ log: "Debug" }), Effect.forkIn(serviceScope));
   });
 
   // Git writes the lock reason during registration, before checkout or user hooks can run.
@@ -6963,7 +6939,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
 
     // Before the worktree is returned: a refresh holds index.lock, so running it in the
-    // background would race the setup script's and the agent's own git commands.
+    // background would race the setup script's, the agent's and T3's own git commands.
     yield* refreshNewWorktreeIndex(worktreePath).pipe(
       Effect.catch((cause) =>
         Effect.logWarning(
