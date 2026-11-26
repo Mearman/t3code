@@ -583,23 +583,19 @@ export class OrchestratorV2 extends Context.Service<OrchestratorV2, Orchestrator
 ) {}
 
 /**
- * Run ordinals can skip values: a queued run moves past newer runs when it starts. On a thread the Claude session sync writes into, whose terminal turns it writes as runs ordered by their start second, a new run takes at least the current second, so it sorts after every turn that happened before it, even one the sync has not written yet. Such a thread holds a run read back from a transcript, or has no run yet and a provider thread naming a Claude session, as an entry whose history has not loaded.
+ * Run ordinals can skip values: a queued run moves past newer runs when it starts. On a thread whose history is read back from its provider's native transcript (`historyOrigin` `native`, which the Claude session sync sets on the threads it shows), turns are written as runs ordered by their start second, so a new run takes at least the current second and sorts after every turn that happened before it, even one not yet read back.
  */
 export function nextRunOrdinal(
   projection: {
-    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "ordinal" | "nativeOrigin">>;
-    readonly providerThreads: ReadonlyArray<Pick<OrchestrationV2ProviderThread, "nativeThreadRef">>;
+    readonly thread: Pick<OrchestrationV2AppThread, "historyOrigin">;
+    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "ordinal">>;
   },
   now: DateTime.Utc,
 ): number {
   const next = projection.runs.reduce((max, run) => Math.max(max, run.ordinal), 0) + 1;
-  const synced =
-    projection.runs.some((run) => run.nativeOrigin !== undefined) ||
-    (projection.runs.length === 0 &&
-      projection.providerThreads.some(
-        (providerThread) => providerThread.nativeThreadRef?.driver === "claudeAgent",
-      ));
-  return synced ? Math.max(next, Math.floor(DateTime.toEpochMillis(now) / 1000)) : next;
+  return projection.thread.historyOrigin === "native"
+    ? Math.max(next, Math.floor(DateTime.toEpochMillis(now) / 1000))
+    : next;
 }
 
 /**
