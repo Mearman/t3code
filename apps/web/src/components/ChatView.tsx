@@ -2,6 +2,7 @@ import { m } from "../i18n/messages";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useGT, useMessages } from "gt-react";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
+import { useStableRunIdSet } from "./chat/useTimelineRows";
 import {
   draftRuntimeModeLimitsInstance,
   draftSupportedRuntimeModes,
@@ -111,7 +112,7 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   getUserQueuedThreadRuns,
-  heldSessionForkSources,
+  heldSessionRefusedRunIds,
   threadCanSteer,
   threadSupportsProviderHandoff,
 } from "@t3tools/client-runtime/state/thread-workflows";
@@ -3064,8 +3065,9 @@ export default function ChatView(props: ChatViewProps) {
   const openSurfaceInMainView = useOpenSurfaceInMainView(activeThreadRef);
   const sendSideChatStable = useStableCallback(sideChat.open);
   // A value rather than a closure, so the timeline's remembered rows never hold a projection.
-  const heldSessionForkRunSources =
-    serverProjection === null ? undefined : heldSessionForkSources(serverProjection);
+  const heldSessionRefusedRuns = useStableRunIdSet(
+    serverProjection === null ? [] : heldSessionRefusedRunIds(serverProjection),
+  );
   const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
     useTimelineRewind({
       environmentId,
@@ -3735,14 +3737,10 @@ export default function ChatView(props: ChatViewProps) {
                   announceTurnStatus={!isProviderSubagent}
                   onOpenToolDiff={parentPanel?.openToolDiff ?? onOpenToolDiffStable}
                   // A fork would promote the side chat.
-                  {...(embedded
-                    ? {}
-                    : {
-                        onForkFromRun: onForkFromRunStable,
-                        ...(heldSessionForkRunSources === undefined
-                          ? {}
-                          : { heldSessionForkSources: heldSessionForkRunSources }),
-                      })}
+                  {...(embedded ? {} : { onForkFromRun: onForkFromRunStable })}
+                  // Promoting is the way forward when another process holds the session.
+                  heldSessionRefusedRuns={heldSessionRefusedRuns}
+                  onForkHeldSession={onForkFromRunStable}
                   onOpenThread={onOpenRelatedThreadStable}
                   parentThreadLink={parentThreadLink}
                   workflowOpening={workflowOpening}
