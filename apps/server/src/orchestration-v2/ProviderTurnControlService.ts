@@ -483,8 +483,20 @@ export const layer: Layer.Layer<
               },
             })
             .pipe(
+              // Both queue the message after the turn, so a refused steer is not retried; the
+              // follow-up's own start reports why another process holds the session.
               Effect.catchTags({
                 ProviderAdapterSteerDeclinedError: (cause) =>
+                  Effect.fail(
+                    new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "steer",
+                      providerTurnId: input.providerTurnId,
+                      steerDeclined: true,
+                      cause,
+                    }),
+                  ),
+                ProviderAdapterThreadInUseError: (cause) =>
                   Effect.fail(
                     new ProviderTurnControlError({
                       threadId: input.threadId,
