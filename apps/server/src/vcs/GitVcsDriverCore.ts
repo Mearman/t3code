@@ -6526,8 +6526,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     if (delay <= 0) return yield* refresh;
     // Waiting would hold up the agent, and rewriting the index later would take index.lock under
     // its Git. Git trusts the stat of entries stamped before the index's second (is_racy_stat), so
-    // move a pinned link's mtime past the checkout second; that inode is the index unless Git has
-    // replaced it since.
+    // once a content check finds no change stat cannot see, move a pinned link's mtime past the
+    // checkout second; that inode is the index unless Git has replaced it since.
     const nextSecond = checkoutTime + 1;
     const pinned = Effect.acquireRelease(
       random.uuidV4().pipe(
@@ -6544,6 +6544,24 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       // A Git that rewrote the index since then made a new inode stamped later; leave that alone.
       const pinnedSecond = secondOf(yield* fileSystem.stat(pinPath));
       if (Option.isNone(pinnedSecond) || pinnedSecond.value !== checkoutTime) return;
+      // diff-files compares a racy entry's contents and never writes the index (diff-lib.c).
+      const changed = yield* executeGit(
+        "GitVcsDriver.createWorktree.checkRacyEntries",
+        worktreePath,
+        ["diff-files", "--name-only", "-z", "--ignore-submodules=all"],
+        { timeoutMs: WORKTREE_INDEX_REFRESH_TIMEOUT_MS, env: { GIT_INDEX_FILE: pinPath } },
+      );
+      if (changed.stdoutTruncated) return;
+      const sameStat = yield* Effect.forEach(
+        changed.stdout.split("\0").filter((file) => file.length > 0),
+        (file) =>
+          fileSystem.stat(path.join(worktreePath, file)).pipe(
+            // A file that is gone no longer matches its entry's stat.
+            Effect.map((info) => Option.exists(secondOf(info), (second) => second <= checkoutTime)),
+            Effect.orElseSucceed(() => false),
+          ),
+      );
+      if (sameStat.some((matches) => matches)) return;
       yield* fileSystem.utimes(pinPath, nextSecond, nextSecond);
     }).pipe(Effect.scoped, Effect.ignore({ log: "Debug" }), Effect.forkIn(serviceScope));
   });
