@@ -235,6 +235,7 @@ import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
 import * as ClaudeSessionProjects from "./claudeSessions/ClaudeSessionProjects.ts";
 import * as ClaudeSessionSync from "./claudeSessions/ClaudeSessionSync.ts";
+import * as ClaudeSyncCapacity from "./claudeSessions/ClaudeSyncCapacity.ts";
 import * as ClaudeSessionSyncState from "./persistence/ClaudeSessionSyncState.ts";
 import * as ProviderSessionRuntime from "./persistence/ProviderSessionRuntime.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -695,6 +696,7 @@ const layerClaudeSessionSyncWorker = Layer.effectDiscard(
         Layer.mergeAll(
           ClaudeSessionProjects.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
           ClaudeSessionSyncState.layer,
+          ClaudeSyncCapacity.layer,
           RuntimeLayer.layerEventSink,
           ProjectionStoreV2.layer,
           IdAllocator.layer,

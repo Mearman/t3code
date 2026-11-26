@@ -1,5 +1,5 @@
-// @effect-diagnostics nodeBuiltinImport:off - node:os is the only source of the load average the background fill yields to.
-import * as NodeOS from "node:os";
+// @effect-diagnostics nodeBuiltinImport:off - node:crypto digests a store key into a thread id suffix.
+import * as NodeCrypto from "node:crypto";
 
 import {
   ClaudeSettings,
@@ -8,6 +8,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   EventId,
+  isNativeOriginRun,
   isRuntimeModeAbove,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
@@ -22,8 +23,10 @@ import {
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
@@ -34,7 +37,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -47,23 +49,32 @@ import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecuto
 import { field } from "../orchestration-v2/unknownField.ts";
 import * as ClaudeSessionSyncState from "../persistence/ClaudeSessionSyncState.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
+import {
+  BUNDLED_CLAUDE_MODEL_CATALOG,
+  resolveClaudeReportedModelSlug,
+} from "../provider/ClaudeModelCatalog.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
+import { matchesCwdGlob } from "./claudeCwdGlobs.ts";
 import {
   claudeNativeRunIds,
   claudeNativeRunLookups,
   ClaudeNativeRunState,
+  claudePromptTextDigest,
   initialClaudeNativeRunState,
   isSettledItemStatus,
   NATIVE_PROVIDER_TURN_PREFIX,
+  parseTranscriptTime,
   planClaudeNativeRuns,
   type ClaudeNativeRunTarget,
+  type ClaudeOwnTurns,
   type StoredNativeRun,
 } from "./ClaudeNativeRuns.ts";
 import * as ClaudeSessionProjects from "./ClaudeSessionProjects.ts";
 import { readClaudeSessionRegistry } from "./ClaudeSessionRegistry.ts";
 import { resolveClaudeSessionStores } from "./ClaudeSessionStore.ts";
+import * as ClaudeSyncCapacity from "./ClaudeSyncCapacity.ts";
 import {
   ClaudeTranscriptCursor,
   claudeTranscriptSessionId,
@@ -73,21 +84,28 @@ import {
 import {
   initialClaudeTranscriptParserState,
   parseClaudeTranscriptLines,
+  type ClaudeTranscriptLine,
 } from "./ClaudeTranscriptSegments.ts";
 
 /** Bytes of transcript one read parses and writes while holding the thread's lock. */
 const READ_BUDGET_BYTES = 1024 * 1024;
 /** Events in one database transaction, so a long transcript never holds the writer for long. */
 const MAX_EVENTS_PER_WRITE = 500;
-/** The head of a transcript read for a session's entry: its directory, start time and title. */
-const ENTRY_HEAD_BYTES = 64 * 1024;
+/** A session's entry is read from its head in chunks of this size until its first prompt. */
+const HEAD_CHUNK_BYTES = 64 * 1024;
 /** IN lists are split so a query stays far below SQLite's bound-parameter limit. */
 const LOOKUP_CHUNK = 500;
+/** A quick sweep lists only project directories that changed; every sixth one stats every file. */
 const SWEEP_INTERVAL = "5 minutes";
-const WATCH_SETTLE = "250 millis";
-const FILL_PACE = "1 second";
-const FILL_LOAD_BACKOFF = "30 seconds";
+const FULL_SWEEP_EVERY = 6;
+/** Live sessions' transcripts are polled this often; the registry is re-read every fifth poll. */
+const LIVE_POLL_INTERVAL = "1 second";
+const REGISTRY_EVERY = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Lower runs first: an opened thread, a live terminal session, a followed session, the fill. */
+const Priority = { open: 0, live: 1, follow: 2, fill: 3 } as const;
+type Priority = (typeof Priority)[keyof typeof Priority];
 
 export class ClaudeSessionSyncError extends Schema.TaggedError<ClaudeSessionSyncError>()(
   "ClaudeSessionSyncError",
@@ -106,18 +124,32 @@ interface SyncStore {
   readonly projectsDir: string;
   readonly sessionsDir: string;
   readonly providerInstanceId: ProviderInstanceId;
+  /** Every instance whose home reaches this store, so a thread any of them drives is this store's. */
+  readonly instanceIds: ReadonlyArray<ProviderInstanceId>;
 }
 
-/** What a sync row keeps as JSON: the reader's cursor and the open run's state. One that no longer decodes, as after a reader change, restarts from the top, which writes nothing already written. */
+interface Transcript {
+  readonly sessionId: string;
+  readonly filePath: string;
+  readonly fileIdentity: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
+interface HydrationRequest {
+  readonly store: SyncStore;
+  readonly sessionId: string;
+  readonly filePath: string | undefined;
+  readonly priority: Priority;
+}
+
+/** What a sync row keeps as JSON. One that no longer decodes restarts from the top, which writes nothing already written. */
 const SyncCursorState = Schema.Struct({
   cursor: ClaudeTranscriptCursor,
   runs: ClaudeNativeRunState,
 });
 const decodeSyncCursorState = Schema.decodeUnknownOption(Schema.fromJsonString(SyncCursorState));
 const encodeSyncCursorState = Schema.encodeSync(Schema.fromJsonString(SyncCursorState));
-const decodePromptUuids = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Array(Schema.String)),
-);
 const decodeJsonLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 
@@ -131,23 +163,45 @@ const fileIdentityOf = (info: FileSystem.File.Info, filePath: string) =>
     onSome: (ino) => `${info.dev}:${ino}`,
   });
 
+const storeDigest = (storeKey: string) =>
+  NodeCrypto.createHash("sha256").update(storeKey).digest("hex").slice(0, 8);
+
+const modelSlug = (reported: string) =>
+  resolveClaudeReportedModelSlug(BUNDLED_CLAUDE_MODEL_CATALOG, reported);
+
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "starting", "running", "waiting"] as const;
+const SETTLED_RUN_STATUSES: ReadonlySet<string> = new Set([
+  "completed",
+  "interrupted",
+  "failed",
+  "cancelled",
+]);
 
 export class ClaudeSessionSync extends Context.Service<
   ClaudeSessionSync,
   {
-    /** Runs discovery, live follow, the periodic sweep and the background fill while the setting is on. */
+    /** Runs discovery, live follow, hydration and, when switched on, the background fill. */
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
     /**
-     * One sweep of every configured store: an entry per session, full history where it is due. A session that fails is skipped and returned, so the rest still sync.
+     * One sweep of every configured store: an entry for each new session, and a hydration request for each live, followed or interrupted one. `full` stats every transcript and looks again at sessions without a thread; otherwise only changed project directories are listed. A session that fails is skipped and returned, so the rest still sync.
      */
-    readonly sweep: Effect.Effect<ReadonlyArray<ClaudeSessionSyncError>, ClaudeSessionSyncError>;
-    /** Reads what was appended to one transcript, as a file watch does. */
+    readonly sweep: (options?: {
+      readonly full?: boolean;
+    }) => Effect.Effect<ReadonlyArray<ClaudeSessionSyncError>, ClaudeSessionSyncError>;
+    /** Requests a read of every live session whose transcript changed since it was last read. */
+    readonly pollLive: Effect.Effect<void, ClaudeSessionSyncError>;
+    /** Runs every pending hydration request, highest priority first; returns the sessions that failed. */
+    readonly drain: Effect.Effect<ReadonlyArray<ClaudeSessionSyncError>>;
+    /** Reads what was appended to one transcript now, as live follow does. */
     readonly followFile: (filePath: string) => Effect.Effect<void, ClaudeSessionSyncError>;
-    /** Reads the full history of a session T3 Code holds only an entry for. */
+    /** Requests the full history of the session a thread shows, ahead of everything else. */
     readonly hydrateThread: (threadId: ThreadId) => Effect.Effect<void, ClaudeSessionSyncError>;
-    /** Hydrates the newest session that has only an entry; false once none is left. */
+    /** Requests a read after a run T3 Code executed settles, so its lines are passed over and later terminal ones shown. */
+    readonly runSettled: (threadId: ThreadId) => Effect.Effect<void, ClaudeSessionSyncError>;
+    /** Hydrates the most recently changed session that has only an entry; false once none is left. */
     readonly fillOne: Effect.Effect<boolean, ClaudeSessionSyncError>;
+    /** Shows a session whose thread the user deleted again, as a new thread; false when it was not deleted. */
+    readonly restoreSession: (threadId: ThreadId) => Effect.Effect<boolean, ClaudeSessionSyncError>;
   }
 >()("t3/claudeSessions/ClaudeSessionSync") {}
 
@@ -162,16 +216,18 @@ const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const placements = yield* ClaudeSessionProjects.ClaudeSessionProjects;
+  const capacity = yield* ClaudeSyncCapacity.ClaudeSyncCapacity;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const hostEnvironment = yield* HostProcess.Environment;
+  const homeDirectory = yield* HostProcess.HomeDirectory;
   const sessionLocks = yield* KeyedLock.make<string>();
   const ceiling = settingsService.managedPolicy?.limits?.maxRuntimeMode;
   const runtimeMode =
     ceiling !== undefined && isRuntimeModeAbove(DEFAULT_RUNTIME_MODE, ceiling)
       ? ceiling
       : DEFAULT_RUNTIME_MODE;
-  const model = DEFAULT_MODEL_BY_PROVIDER[CLAUDE_PROVIDER] ?? DEFAULT_MODEL;
+  const defaultModel = DEFAULT_MODEL_BY_PROVIDER[CLAUDE_PROVIDER] ?? DEFAULT_MODEL;
 
   // Helpers shared with other modules read the file system as a service; this one supplies its own.
   const withHost = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -187,7 +243,15 @@ const make = Effect.gen(function* () {
       cause,
     });
 
-  const resolveStores = Effect.fn("ClaudeSessionSync.resolveStores")(
+  const settingsKey = (settings: ServerSettings) =>
+    JSON.stringify([
+      settings.claudeSessionSync,
+      Object.entries(settings.providerInstances).filter(
+        ([, instance]) => instance.driver === CLAUDE_PROVIDER,
+      ),
+    ]);
+
+  const resolveStoresUncached = Effect.fn("ClaudeSessionSync.resolveStores")(
     function* (settings: ServerSettings) {
       const instances = Object.entries(settings.providerInstances)
         .filter(([, instance]) => instance.driver === CLAUDE_PROVIDER)
@@ -212,145 +276,284 @@ const make = Effect.gen(function* () {
           instanceId: id,
         });
       }
+      // Extra homes belong to the default instance, or the first enabled one.
+      const owner =
+        homes.find(({ instanceId }) => instanceId === CLAUDE_PROVIDER)?.instanceId ??
+        homes[0]?.instanceId;
+      if (owner !== undefined) {
+        for (const home of settings.claudeSessionSync.additionalHomes) {
+          homes.push({
+            home: path.resolve(expandHomePath(home, homeDirectory)),
+            instanceId: owner,
+          });
+        }
+      }
       const stores = yield* resolveClaudeSessionStores(homes.map(({ home }) => home));
       return stores.flatMap((store): Array<SyncStore> => {
-        const owner = homes.find(({ home }) => home === store.homes[0]);
-        return owner === undefined
+        const reaching = homes.filter(({ home }) => store.homes.includes(home));
+        const first = reaching[0];
+        return first === undefined
           ? []
           : [
               {
                 key: `${store.projectsDir}\0${store.sessionsDir}`,
                 projectsDir: store.projectsDir,
                 sessionsDir: store.sessionsDir,
-                providerInstanceId: owner.instanceId,
+                providerInstanceId: first.instanceId,
+                instanceIds: [...new Set(reaching.map(({ instanceId }) => instanceId))],
               },
             ];
       });
     },
-    (effect) =>
-      effect.pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.mapError(fail("resolve the Claude stores")),
-      ),
+    (effect) => withHost(effect).pipe(Effect.mapError(fail("resolve the Claude stores"))),
   );
 
-  /** Main-chain transcripts sit one directory below `projects/`; deeper files are subagents'. */
+  // Stores are resolved once per settings; resolving them takes a realpath per home.
+  let storeMemo: { readonly key: string; readonly stores: ReadonlyArray<SyncStore> } | undefined;
+  const currentState = Effect.gen(function* () {
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.mapError(fail("read settings")),
+    );
+    const key = settingsKey(settings);
+    if (storeMemo?.key !== key) {
+      storeMemo = { key, stores: yield* resolveStoresUncached(settings) };
+    }
+    return { settings, stores: storeMemo.stores };
+  });
+
+  const statTranscript = (sessionId: string, filePath: string) =>
+    fileSystem.stat(filePath).pipe(
+      Effect.option,
+      Effect.map((info): Transcript | undefined =>
+        Option.isSome(info) && info.value.type === "File"
+          ? {
+              sessionId,
+              filePath,
+              fileIdentity: fileIdentityOf(info.value, filePath),
+              size: Number(info.value.size),
+              mtimeMs: mtimeMsOf(info.value),
+            }
+          : undefined,
+      ),
+    );
+
+  // Project directory mtimes at their last listing; a directory whose mtime is unchanged has no new file.
+  const listedDirectories = new Map<string, number>();
+
+  /**
+   * Main-chain transcripts sit one directory below `projects/`; deeper files are subagents'. A session id found in two directories is the one changed last.
+   */
   const listTranscripts = Effect.fn("ClaudeSessionSync.listTranscripts")(function* (
     store: SyncStore,
+    full: boolean,
   ) {
     const directories = yield* fileSystem
       .readDirectory(store.projectsDir)
       .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])));
-    const found: Array<{
-      sessionId: string;
-      filePath: string;
-      fileIdentity: string;
-      size: number;
-      mtimeMs: number;
-    }> = [];
+    const found = new Map<string, Transcript>();
     for (const directory of directories) {
       const directoryPath = path.join(store.projectsDir, directory);
+      const info = yield* fileSystem.stat(directoryPath).pipe(Effect.option);
+      if (Option.isNone(info) || info.value.type !== "Directory") continue;
+      const directoryMtime = mtimeMsOf(info.value);
+      if (!full && listedDirectories.get(directoryPath) === directoryMtime) continue;
+      listedDirectories.set(directoryPath, directoryMtime);
       const names = yield* fileSystem
         .readDirectory(directoryPath)
         .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
       for (const name of names) {
         const sessionId = claudeTranscriptSessionId(name);
         if (sessionId === undefined) continue;
-        const filePath = path.join(directoryPath, name);
-        const info = yield* fileSystem.stat(filePath).pipe(Effect.option);
-        if (Option.isNone(info) || info.value.type !== "File") continue;
-        found.push({
-          sessionId,
-          filePath,
-          fileIdentity: fileIdentityOf(info.value, filePath),
-          size: Number(info.value.size),
-          mtimeMs: mtimeMsOf(info.value),
-        });
+        const transcript = yield* statTranscript(sessionId, path.join(directoryPath, name));
+        if (transcript === undefined) continue;
+        const known = found.get(sessionId);
+        if (
+          known === undefined ||
+          transcript.mtimeMs > known.mtimeMs ||
+          (transcript.mtimeMs === known.mtimeMs && transcript.filePath < known.filePath)
+        ) {
+          found.set(sessionId, transcript);
+        }
       }
     }
-    return found.toSorted((left, right) => right.mtimeMs - left.mtimeMs);
+    return [...found.values()].toSorted((left, right) => right.mtimeMs - left.mtimeMs);
   });
 
-  const readHead = Effect.fn("ClaudeSessionSync.readHead")(function* (
+  /** Finds a session's transcript by id, for a live session the sync has not seen yet. */
+  const findTranscript = Effect.fn("ClaudeSessionSync.findTranscript")(function* (
+    store: SyncStore,
+    sessionId: string,
+  ) {
+    const directories = yield* fileSystem
+      .readDirectory(store.projectsDir)
+      .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+    let best: Transcript | undefined;
+    for (const directory of directories) {
+      const transcript = yield* statTranscript(
+        sessionId,
+        path.join(store.projectsDir, directory, `${sessionId}.jsonl`),
+      );
+      if (transcript !== undefined && (best === undefined || transcript.mtimeMs > best.mtimeMs)) {
+        best = transcript;
+      }
+    }
+    return best;
+  });
+
+  /**
+   * Reads a transcript from the top until its first prompt and the facts its entry needs: working directory, start time, title and model. Stops at the first prompt once those are known, else at the end of the file.
+   */
+  const scanHead = Effect.fn("ClaudeSessionSync.scanHead")(function* (
     filePath: string,
     sessionId: string,
   ) {
-    const bytes = yield* Effect.scoped(
-      fileSystem
-        .open(filePath, { flag: "r" })
-        .pipe(Effect.flatMap((handle) => handle.readAlloc(ENTRY_HEAD_BYTES))),
-    );
-    const text = Option.isSome(bytes) ? new TextDecoder().decode(bytes.value) : "";
-    const complete = text.slice(0, text.lastIndexOf("\n") + 1);
     let cwd: string | undefined;
-    let startedAt: string | undefined;
-    let offset = 0;
-    const lines = complete.split("\n").map((line) => {
-      const entry = { text: line, offset };
-      offset += new TextEncoder().encode(line).length + 1;
-      return entry;
-    });
-    for (const line of lines) {
-      const parsed = decodeJsonLine(line.text);
-      if (Option.isNone(parsed)) continue;
-      const lineCwd = field(parsed.value, "cwd");
-      const timestamp = field(parsed.value, "timestamp");
-      if (cwd === undefined && typeof lineCwd === "string") cwd = lineCwd;
-      if (startedAt === undefined && typeof timestamp === "string") startedAt = timestamp;
-    }
-    const parsed = parseClaudeTranscriptLines({
-      sessionId,
-      state: initialClaudeTranscriptParserState,
-      lines,
-    });
+    let startedAt: DateTime.Utc | undefined;
+    let model: string | undefined;
     let promptTitle: string | undefined;
     let aiTitle: string | undefined;
     let customTitle: string | undefined;
-    for (const event of parsed.events) {
-      if (event._tag === "SegmentStarted") promptTitle ??= event.prompt?.title;
-      if (event._tag === "Title" && event.source === "ai" && event.title !== null) {
-        aiTitle = event.title;
-      }
-      if (event._tag === "Title" && event.source === "custom") {
-        customTitle = event.title ?? undefined;
-      }
-    }
-    const hasConversation = parsed.events.some((event) => event._tag === "SegmentStarted");
-    return { cwd, startedAt, title: customTitle ?? aiTitle ?? promptTitle, hasConversation };
+    let hasConversation = false;
+    let state = initialClaudeTranscriptParserState;
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* fileSystem.open(filePath, { flag: "r" });
+        const decoder = new TextDecoder();
+        let pending = new Uint8Array(0);
+        let offset = 0;
+        for (;;) {
+          const chunk = yield* handle.readAlloc(HEAD_CHUNK_BYTES);
+          if (Option.isNone(chunk)) return;
+          const joined = new Uint8Array(pending.length + chunk.value.length);
+          joined.set(pending);
+          joined.set(chunk.value, pending.length);
+          const lines: Array<ClaudeTranscriptLine> = [];
+          let start = 0;
+          for (let end = joined.indexOf(0x0a); end !== -1; end = joined.indexOf(0x0a, start)) {
+            const text = decoder.decode(joined.subarray(start, end));
+            lines.push({ text, offset: offset + start });
+            const record = decodeJsonLine(text);
+            if (Option.isSome(record)) {
+              const lineCwd = field(record.value, "cwd");
+              if (cwd === undefined && typeof lineCwd === "string") cwd = lineCwd;
+              const timestamp = field(record.value, "timestamp");
+              if (startedAt === undefined && typeof timestamp === "string") {
+                startedAt = parseTranscriptTime(timestamp);
+              }
+              const lineModel = field(field(record.value, "message"), "model");
+              if (
+                model === undefined &&
+                field(record.value, "type") === "assistant" &&
+                field(record.value, "isSidechain") !== true &&
+                typeof lineModel === "string" &&
+                lineModel !== "<synthetic>"
+              ) {
+                model = modelSlug(lineModel);
+              }
+            }
+            start = end + 1;
+          }
+          offset += start;
+          pending = joined.slice(start);
+          const parsed = parseClaudeTranscriptLines({ sessionId, state, lines });
+          state = parsed.state;
+          for (const event of parsed.events) {
+            if (event._tag === "SegmentStarted") {
+              hasConversation = true;
+              promptTitle ??= event.prompt?.title;
+            } else if (event._tag === "Title" && event.source === "ai" && event.title !== null) {
+              aiTitle = event.title;
+            } else if (event._tag === "Title" && event.source === "custom") {
+              customTitle = event.title ?? undefined;
+            }
+          }
+          if (hasConversation && cwd !== undefined && model !== undefined) return;
+          yield* Effect.yieldNow;
+        }
+      }),
+    );
+    return { cwd, startedAt, model, title: customTitle ?? aiTitle ?? promptTitle, hasConversation };
   });
 
-  const markDeleted = (row: ClaudeSessionSyncState.ClaudeSessionSyncState) =>
-    syncState.upsert({ ...row, hydrationState: "deleted", updatedAt: DateTime.nowUnsafe() });
+  const markState = (
+    row: ClaudeSessionSyncState.ClaudeSessionSyncState,
+    hydrationState: ClaudeSessionSyncState.ClaudeSessionHydrationState,
+  ) =>
+    Effect.flatMap(DateTime.now, (at) =>
+      syncState.upsert({ ...row, hydrationState, updatedAt: at }),
+    );
 
-  /** A new `claude:<sessionId>` thread holding no history yet: the session's entry. */
+  type EntryOutcome =
+    | {
+        readonly _tag: "Thread";
+        readonly threadId: ThreadId;
+        readonly providerThreadId: ProviderThreadId;
+      }
+    | { readonly _tag: "Deleted"; readonly threadId: ThreadId }
+    | { readonly _tag: "Skipped" };
+
+  /**
+   * A new thread holding no history yet: the session's entry. Its id is `claude:<sessionId>`, or, when another store already shows a session with that id, `claude:<sessionId>:<store digest>`. `restoredFrom` gives a restored session a new id, since its deleted thread's content is being purged.
+   */
   const createEntry = Effect.fn("ClaudeSessionSync.createEntry")(function* (input: {
     readonly store: SyncStore;
-    readonly sessionId: string;
-    readonly filePath: string;
-    readonly mtimeMs: number;
+    readonly transcript: Transcript;
     readonly settled: boolean;
+    readonly excludedCwdGlobs: ReadonlyArray<string>;
+    readonly restoredAt?: number;
   }) {
-    const head = yield* readHead(input.filePath, input.sessionId);
-    if (!head.hasConversation) return undefined;
-    const threadId = ThreadId.make(`claude:${input.sessionId}`);
-    const placement = yield* placements.resolve({ cwd: head.cwd, storeKey: input.store.key });
+    const { store, transcript } = input;
+    const { sessionId } = transcript;
+    const head = yield* scanHead(transcript.filePath, sessionId);
+    if (!head.hasConversation) return { _tag: "Skipped" } satisfies EntryOutcome;
+    if (
+      head.cwd !== undefined &&
+      input.excludedCwdGlobs.some((glob) =>
+        matchesCwdGlob({ glob, cwd: head.cwd ?? "", home: homeDirectory }),
+      )
+    ) {
+      return { _tag: "Skipped" } satisfies EntryOutcome;
+    }
+    const baseId = ThreadId.make(`claude:${sessionId}`);
+    let threadId = baseId;
+    if (input.restoredAt !== undefined) {
+      threadId = ThreadId.make(`claude:${sessionId}:restored-${input.restoredAt}`);
+    } else {
+      const existing = yield* projections.findThread(baseId);
+      if (existing !== null) {
+        if (store.instanceIds.includes(existing.providerInstanceId)) {
+          if (existing.deletedAt !== null) {
+            return { _tag: "Deleted", threadId: baseId } satisfies EntryOutcome;
+          }
+          if (existing.activeProviderThreadId !== null) {
+            return {
+              _tag: "Thread",
+              threadId: baseId,
+              providerThreadId: existing.activeProviderThreadId,
+            } satisfies EntryOutcome;
+          }
+        }
+        threadId = ThreadId.make(`claude:${sessionId}:${storeDigest(store.key)}`);
+      }
+    }
+    const placement = yield* placements.resolve({ cwd: head.cwd, storeKey: store.key });
+    if (placement === undefined) return { _tag: "Skipped" } satisfies EntryOutcome;
     const providerThreadId = idAllocator.derive.providerThread({
       driver: CLAUDE_PROVIDER,
-      providerInstanceId: input.store.providerInstanceId,
-      nativeThreadId: input.sessionId,
+      providerInstanceId: store.providerInstanceId,
+      nativeThreadId: threadId === baseId ? sessionId : `${sessionId}@${threadId}`,
     });
-    const updatedAt = DateTime.makeUnsafe(input.mtimeMs);
-    const createdAt =
-      head.startedAt === undefined ? updatedAt : DateTime.makeUnsafe(head.startedAt);
+    const updatedAt = DateTime.makeUnsafe(transcript.mtimeMs);
+    const createdAt = head.startedAt ?? updatedAt;
+    const model = head.model ?? defaultModel;
     const thread: OrchestrationV2AppThread = {
       createdBy: "system",
       creationSource: "server",
       id: threadId,
       projectId: placement.projectId,
       title: head.title ?? "Untitled thread",
-      providerInstanceId: input.store.providerInstanceId,
-      modelSelection: { instanceId: input.store.providerInstanceId, model },
+      providerInstanceId: store.providerInstanceId,
+      modelSelection: { instanceId: store.providerInstanceId, model },
       runtimeMode,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       branch: null,
@@ -378,12 +581,12 @@ const make = Effect.gen(function* () {
     const providerThread: OrchestrationV2ProviderThread = {
       id: providerThreadId,
       driver: CLAUDE_PROVIDER,
-      providerInstanceId: input.store.providerInstanceId,
+      providerInstanceId: store.providerInstanceId,
       providerSessionId: null,
       appThreadId: threadId,
       ownerNodeId: null,
       // A send resumes this session, so it stays the one a terminal `claude --resume` continues.
-      nativeThreadRef: { driver: CLAUDE_PROVIDER, nativeId: input.sessionId, strength: "strong" },
+      nativeThreadRef: { driver: CLAUDE_PROVIDER, nativeId: sessionId, strength: "strong" },
       nativeConversationHeadRef: null,
       status: "idle",
       firstRunOrdinal: null,
@@ -395,13 +598,14 @@ const make = Effect.gen(function* () {
       updatedAt,
     };
     const committed = yield* eventSink.write({
-      unlessNativeThreadOwned: providerThread,
+      // A copy of a session another store shows, or a restore, is a thread of its own.
+      ...(threadId === baseId ? { unlessNativeThreadOwned: providerThread } : {}),
       events: [
         {
           id: yield* idAllocator.allocate.event({ threadId }),
           type: "thread.created",
           threadId,
-          providerInstanceId: input.store.providerInstanceId,
+          providerInstanceId: store.providerInstanceId,
           occurredAt: createdAt,
           payload: thread,
         },
@@ -410,28 +614,29 @@ const make = Effect.gen(function* () {
           type: "provider-thread.updated",
           threadId,
           driver: CLAUDE_PROVIDER,
-          providerInstanceId: input.store.providerInstanceId,
+          providerInstanceId: store.providerInstanceId,
           occurredAt: updatedAt,
           payload: providerThread,
         },
       ],
     });
-    if (committed.length === 0) return undefined;
+    if (committed.length === 0) return { _tag: "Skipped" } satisfies EntryOutcome;
     yield* runtimes.upsert(
       {
         threadId,
         providerName: CLAUDE_PROVIDER,
-        providerInstanceId: input.store.providerInstanceId,
+        providerInstanceId: store.providerInstanceId,
         adapterKey: CLAUDE_PROVIDER,
         runtimeMode,
         status: "stopped",
         lastSeenAt: DateTime.formatIso(updatedAt),
-        resumeCursor: { threadId, resume: input.sessionId },
+        resumeCursor: { threadId, resume: sessionId },
+        // The session's own directory, where a terminal `claude --resume` finds it.
         runtimePayload: { cwd: head.cwd ?? null },
       },
       { onConflict: "ignore" },
     );
-    return { threadId, providerThreadId };
+    return { _tag: "Thread", threadId, providerThreadId } satisfies EntryOutcome;
   });
 
   const inChunks = <A, B, E>(
@@ -445,28 +650,42 @@ const make = Effect.gen(function* () {
       read,
     ).pipe(Effect.map((chunks) => chunks.flat()));
 
-  /** Prompt and reply uuids of T3 Code's own turns, which the transcript also holds. */
+  /**
+   * What identifies T3 Code's own turns in this thread: the prompt uuids it recorded, the replies it saw, and the prompt text of runs whose turns recorded no prompt uuid (older builds, or a turn that ended before its first reply).
+   */
   const ownTurns = Effect.fn("ClaudeSessionSync.ownTurns")(function* (threadId: ThreadId) {
-    const rows = yield* sql<{
-      readonly assistantUuid: string | null;
-      readonly promptUuids: string | null;
-    }>`
-      SELECT
-        json_extract(payload_json, '$.nativeTurnRef.nativeId') AS "assistantUuid",
-        json_extract(payload_json, '$.nativePromptUuids') AS "promptUuids"
-      FROM orchestration_v2_projection_provider_turns
-      WHERE thread_id = ${threadId}
-        AND substr(provider_turn_id, 1, ${NATIVE_PROVIDER_TURN_PREFIX.length}) <> ${NATIVE_PROVIDER_TURN_PREFIX}
-    `;
+    const records = yield* projections.getThreadRecords(threadId, [
+      "runs",
+      "attempts",
+      "providerTurns",
+    ]);
     const promptUuids = new Set<string>();
     const assistantUuids = new Set<string>();
-    for (const row of rows) {
-      if (row.assistantUuid !== null) assistantUuids.add(row.assistantUuid);
-      for (const uuid of Option.getOrElse(decodePromptUuids(row.promptUuids), () => [])) {
-        promptUuids.add(uuid);
-      }
+    const recordedRuns = new Set<string>();
+    const runByAttempt = new Map(records.attempts.map((attempt) => [attempt.id, attempt.runId]));
+    for (const turn of records.providerTurns) {
+      if (turn.id.startsWith(NATIVE_PROVIDER_TURN_PREFIX)) continue;
+      const nativeId = turn.nativeTurnRef?.nativeId;
+      if (nativeId != null && !nativeId.startsWith("turn:")) assistantUuids.add(nativeId);
+      for (const uuid of turn.nativePromptUuids ?? []) promptUuids.add(uuid);
+      const runId = turn.runAttemptId === null ? undefined : runByAttempt.get(turn.runAttemptId);
+      if (runId !== undefined && (turn.nativePromptUuids?.length ?? 0) > 0) recordedRuns.add(runId);
     }
-    return { promptUuids, assistantUuids };
+    const unrecorded = records.runs.filter(
+      (run) => !isNativeOriginRun(run) && run.status !== "rolled_back" && !recordedRuns.has(run.id),
+    );
+    const messages = yield* projections.getMessagesById(
+      threadId,
+      unrecorded.map((run) => run.userMessageId),
+    );
+    const promptTexts = new Map<string, number>();
+    for (const run of unrecorded) {
+      const text = messages.get(run.userMessageId)?.text.trim() ?? "";
+      if (text.length === 0) continue;
+      const digest = claudePromptTextDigest(text);
+      promptTexts.set(digest, (promptTexts.get(digest) ?? 0) + 1);
+    }
+    return { promptUuids, assistantUuids, promptTexts } satisfies ClaudeOwnTurns;
   });
 
   const storedRunsFor = Effect.fn("ClaudeSessionSync.storedRunsFor")(function* (
@@ -547,19 +766,129 @@ const make = Effect.gen(function* () {
     if (batch.length > 0) yield* eventSink.write({ events: batch });
   });
 
+  const isSyncThread = (thread: OrchestrationV2AppThread) =>
+    thread.createdBy === "system" && thread.id.startsWith("claude:");
+
+  const updateThreadAfterRead = Effect.fn("ClaudeSessionSync.updateThreadAfterRead")(function* (
+    target: ClaudeNativeRunTarget,
+    plan: ReturnType<typeof planClaudeNativeRuns>,
+  ) {
+    const thread = yield* projections.findThread(target.threadId);
+    if (thread === null) return;
+    // Times come from the transcript, so reading an old session never makes it look just updated.
+    const activity = plan.lastActivityAt;
+    const later = (current: DateTime.Utc) =>
+      activity !== undefined && DateTime.toEpochMillis(activity) > DateTime.toEpochMillis(current)
+        ? activity
+        : current;
+    const events: Array<OrchestrationV2DomainEvent> = [];
+    if (plan.lastRunOrdinal !== undefined && plan.firstRunOrdinal !== undefined) {
+      const records = yield* projections.getThreadRecords(target.threadId, ["providerThreads"]);
+      const providerThread = records.providerThreads.find(
+        (candidate) => candidate.id === target.providerThreadId,
+      );
+      if (providerThread !== undefined) {
+        const firstRunOrdinal = Math.min(
+          providerThread.firstRunOrdinal ?? plan.firstRunOrdinal,
+          plan.firstRunOrdinal,
+        );
+        const lastRunOrdinal = Math.max(providerThread.lastRunOrdinal ?? 0, plan.lastRunOrdinal);
+        if (
+          firstRunOrdinal !== providerThread.firstRunOrdinal ||
+          lastRunOrdinal !== providerThread.lastRunOrdinal
+        ) {
+          const updatedAt = later(providerThread.updatedAt);
+          events.push({
+            id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
+            type: "provider-thread.updated",
+            threadId: target.threadId,
+            driver: CLAUDE_PROVIDER,
+            providerInstanceId: target.providerInstanceId,
+            occurredAt: updatedAt,
+            payload: { ...providerThread, firstRunOrdinal, lastRunOrdinal, updatedAt },
+          });
+        }
+      }
+    }
+    // Only threads the sync made take Claude's titles; T3 Code titles its own threads.
+    const title = plan.customTitle ?? plan.aiTitle;
+    if (title !== undefined && isSyncThread(thread) && thread.title !== title) {
+      const updatedAt = later(thread.updatedAt);
+      events.push({
+        id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
+        type: "thread.metadata-updated",
+        threadId: target.threadId,
+        providerInstanceId: target.providerInstanceId,
+        occurredAt: updatedAt,
+        payload: { ...thread, title, updatedAt },
+      });
+    }
+    // A session forked from another starts with a note saying which; it is run-less, so it sorts first.
+    if (plan.forkedFromSessionId !== undefined && isSyncThread(thread)) {
+      const noticeId = TurnItemId.make(`x:${target.sessionId}:forked-from`);
+      if (
+        (yield* projections.getTurnItem({ threadId: target.threadId, itemId: noticeId })) === null
+      ) {
+        const message = `Forked from Claude session ${plan.forkedFromSessionId}.`;
+        events.push({
+          id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
+          type: "turn-item.updated",
+          threadId: target.threadId,
+          occurredAt: thread.createdAt,
+          payload: {
+            id: noticeId,
+            threadId: target.threadId,
+            runId: null,
+            nodeId: null,
+            providerThreadId: target.providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 0,
+            status: "completed",
+            title: message,
+            startedAt: thread.createdAt,
+            completedAt: thread.createdAt,
+            updatedAt: thread.createdAt,
+            type: "system_notice",
+            message,
+          },
+        });
+      }
+    }
+    if (events.length > 0) yield* eventSink.write({ events });
+  });
+
+  type IngestStep =
+    | {
+        readonly _tag: "Read";
+        readonly row: ClaudeSessionSyncState.ClaudeSessionSyncState;
+        readonly atEnd: boolean;
+      }
+    | { readonly _tag: "Deferred" }
+    | { readonly _tag: "Deleted" };
+
   /** One bounded read of a transcript into its thread, under the thread's lock. */
   const ingestOnce = Effect.fn("ClaudeSessionSync.ingestOnce")(function* (input: {
     readonly row: ClaudeSessionSyncState.ClaudeSessionSyncState;
     readonly target: ClaudeNativeRunTarget;
+    readonly own: ClaudeOwnTurns;
+    readonly fallbackAt: DateTime.Utc;
   }) {
     const { row, target } = input;
+    // Deletion can land between steps; nothing is written into a deleted thread.
+    const thread = yield* projections.findThread(target.threadId);
+    if (thread === null || thread.deletedAt !== null) {
+      yield* markState(row, "deleted");
+      return { _tag: "Deleted" } satisfies IngestStep;
+    }
     const active = yield* sql<{ readonly found: number }>`
       SELECT 1 AS found FROM orchestration_v2_projection_runs
       WHERE thread_id = ${target.threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}
       LIMIT 1
     `;
-    // T3 Code's live stream owns a turn it is running; its lines are read once the run settles.
-    if (active.length > 0) return { row, atEnd: false, deferred: true };
+    // T3 Code's live stream owns a turn it is running; its settling asks for a read again.
+    if (active.length > 0) return { _tag: "Deferred" } satisfies IngestStep;
     const saved = Option.flatMap(Option.fromNullishOr(row.parserState), decodeSyncCursorState);
     const cursor = Option.isSome(saved) ? saved.value.cursor : initialClaudeTranscriptCursor;
     // Event ids only need to be unique; one random token per read and a counter make them so.
@@ -612,7 +941,7 @@ const make = Effect.gen(function* () {
       target,
       state: runState,
       events: read.events,
-      own: yield* ownTurns(target.threadId),
+      own: input.own,
       storedRuns,
       storedItems: new Map(
         storedItemRows.map((item) => [item.id, { settled: isSettledItemStatus(item.status) }]),
@@ -621,193 +950,266 @@ const make = Effect.gen(function* () {
       nextRunOrdinal: nextRun?.next ?? 1,
       nextProviderTurnOrdinal: nextTurn?.next ?? 1,
       eventId: () => EventId.make(`event:claude-sync:${readToken}:${nextEvent++}`),
+      modelSlug,
+      fallbackAt: input.fallbackAt,
     });
     yield* writeGroups(plan.groups);
-    yield* updateThreadAfterRead({ target, plan });
+    yield* updateThreadAfterRead(target, plan);
     const next: ClaudeSessionSyncState.ClaudeSessionSyncState = {
       ...row,
       byteOffset: read.cursor.offset,
       guardHash: read.cursor.guardHash,
       lastUuid: read.cursor.state.lastUuid,
       parserState: encodeSyncCursorState({ cursor: read.cursor, runs: plan.state }),
-      hydrationState: "full",
-      updatedAt: DateTime.nowUnsafe(),
+      hydrationState: "hydrating",
+      updatedAt: yield* DateTime.now,
     };
     yield* syncState.upsert(next);
-    return { row: next, atEnd: read.atEnd, deferred: false };
+    return { _tag: "Read", row: next, atEnd: read.atEnd } satisfies IngestStep;
   });
 
-  const updateThreadAfterRead = Effect.fn("ClaudeSessionSync.updateThreadAfterRead")(function* ({
-    target,
-    plan,
-  }: {
-    readonly target: ClaudeNativeRunTarget;
-    readonly plan: ReturnType<typeof planClaudeNativeRuns>;
-  }) {
-    const now = yield* DateTime.now;
-    const events: Array<OrchestrationV2DomainEvent> = [];
-    if (plan.lastRunOrdinal !== undefined && plan.firstRunOrdinal !== undefined) {
-      const records = yield* projections.getThreadRecords(target.threadId, ["providerThreads"]);
-      const providerThread = records.providerThreads.find(
-        (candidate) => candidate.id === target.providerThreadId,
+  // Hydration requests by session; a request already pending keeps the higher of its priorities.
+  const pending = new Map<string, HydrationRequest>();
+  const wake = yield* Queue.unbounded<void>();
+  const requestKey = (storeKey: string, sessionId: string) => `${storeKey}\0${sessionId}`;
+  const request = (next: HydrationRequest) =>
+    Effect.gen(function* () {
+      const key = requestKey(next.store.key, next.sessionId);
+      const known = pending.get(key);
+      pending.set(
+        key,
+        known === undefined || next.priority < known.priority
+          ? { ...next, filePath: next.filePath ?? known?.filePath }
+          : known,
       );
-      if (providerThread !== undefined) {
-        events.push({
-          id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
-          type: "provider-thread.updated",
-          threadId: target.threadId,
-          driver: CLAUDE_PROVIDER,
-          providerInstanceId: target.providerInstanceId,
-          occurredAt: now,
-          payload: {
-            ...providerThread,
-            firstRunOrdinal: Math.min(
-              providerThread.firstRunOrdinal ?? plan.firstRunOrdinal,
-              plan.firstRunOrdinal,
-            ),
-            lastRunOrdinal: Math.max(providerThread.lastRunOrdinal ?? 0, plan.lastRunOrdinal),
-            updatedAt: now,
-          },
-        });
-      }
+      yield* Queue.offer(wake, undefined);
+    });
+  const takeNext = () => {
+    let best: [string, HydrationRequest] | undefined;
+    for (const entry of pending) {
+      if (best === undefined || entry[1].priority < best[1].priority) best = entry;
     }
-    // Only threads the sync made take Claude's titles; T3 Code titles its own threads.
-    const title = plan.customTitle ?? plan.aiTitle;
-    if (title !== undefined && target.threadId === ThreadId.make(`claude:${target.sessionId}`)) {
-      const thread = yield* projections.findThread(target.threadId);
-      if (thread !== null && thread.title !== title) {
-        events.push({
-          id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
-          type: "thread.metadata-updated",
-          threadId: target.threadId,
-          providerInstanceId: target.providerInstanceId,
-          occurredAt: now,
-          payload: { ...thread, title, updatedAt: now },
-        });
-      }
-    }
-    if (events.length > 0) yield* eventSink.write({ events });
-  });
+    if (best !== undefined) pending.delete(best[0]);
+    return best?.[1];
+  };
+  const outranked = (priority: Priority) =>
+    [...pending.values()].some((candidate) => candidate.priority < priority);
+
+  type SyncOutcome = "deleted" | "pending" | "entry" | "follow" | "full" | "deferred" | "preempted";
 
   /**
-   * Brings one session up to date. `entry` creates its thread with no history; `full` also reads every line not yet read. A thread the user deleted is never recreated.
+   * Brings one session up to date. `entry` creates its thread with no history, and says `follow` when T3 Code already drives the session, so it is followed in full. `full` reads every line not yet read, in bounded steps that yield to capacity and to a request of higher priority. A thread the user deleted is never recreated.
    */
   const syncSession = Effect.fn("ClaudeSessionSync.syncSession")(
     function* (input: {
       readonly store: SyncStore;
-      readonly sessionId: string;
-      readonly filePath: string;
-      readonly fileIdentity: string;
-      readonly size: number;
-      readonly mtimeMs: number;
+      readonly transcript: Transcript;
       readonly mode: "entry" | "full";
+      readonly priority: Priority;
       readonly settled: boolean;
+      readonly excludedCwdGlobs: ReadonlyArray<string>;
     }) {
-      const key = { storeKey: input.store.key, sessionId: input.sessionId };
-      let row = yield* syncState.get(key);
-      if (row?.hydrationState === "deleted") return;
-      const knownThreadId = row?.threadId ?? null;
-      const owner =
-        knownThreadId === null
-          ? yield* syncState.findProviderThreadByNativeSessionId(input.sessionId)
-          : undefined;
-      let threadId = knownThreadId ?? owner?.threadId ?? null;
-      let providerThreadId: ProviderThreadId | null =
-        row?.providerThreadId ?? owner?.providerThreadId ?? null;
-      const base: ClaudeSessionSyncState.ClaudeSessionSyncState = row ?? {
-        ...key,
-        fileIdentity: input.fileIdentity,
-        byteOffset: 0,
-        guardHash: null,
-        lastUuid: null,
-        threadId: null,
-        providerThreadId: null,
-        accountUuids: [],
-        hydrationState: "pending",
-        filePath: input.filePath,
-        parserState: null,
-        fileSize: 0,
-        fileMtimeMs: 0,
-        updatedAt: DateTime.nowUnsafe(),
+      const { store, transcript } = input;
+      const key = { storeKey: store.key, sessionId: transcript.sessionId };
+      const row = yield* syncState.get(key);
+      if (row?.hydrationState === "deleted") return "deleted" satisfies SyncOutcome;
+      const updatedAt = yield* DateTime.now;
+      const base: ClaudeSessionSyncState.ClaudeSessionSyncState = {
+        ...(row ?? {
+          ...key,
+          byteOffset: 0,
+          guardHash: null,
+          lastUuid: null,
+          threadId: null,
+          providerThreadId: null,
+          accountUuids: [],
+          hydrationState: "pending",
+          parserState: null,
+          fileSize: 0,
+          fileMtimeMs: 0,
+        }),
+        filePath: transcript.filePath,
+        fileIdentity: transcript.fileIdentity,
+        updatedAt,
       };
-      if (threadId !== null) {
-        const thread = yield* projections.findThread(threadId);
-        if (thread === null || thread.deletedAt !== null) {
-          yield* markDeleted({ ...base, threadId });
-          return;
+      const caughtUp = { fileSize: transcript.size, fileMtimeMs: transcript.mtimeMs };
+      let threadId = base.threadId;
+      let providerThreadId = base.providerThreadId;
+      let owned = false;
+      if (threadId === null) {
+        const owner = yield* syncState.findProviderThreadInInstances({
+          nativeSessionId: transcript.sessionId,
+          providerInstanceIds: store.instanceIds,
+        });
+        if (owner?.threadId != null) {
+          threadId = owner.threadId;
+          providerThreadId = owner.providerThreadId;
+          owned = true;
         }
-        // Old imports hold run-less history; migrating them is separate work, so they are left as they are.
-        if (thread.historyOrigin === "v1_import") {
-          yield* syncState.upsert({
-            ...base,
-            threadId,
-            providerThreadId,
-            hydrationState: "entry",
-            fileSize: input.size,
-            fileMtimeMs: input.mtimeMs,
-          });
-          return;
+      }
+      if (threadId === null) {
+        const created = yield* createEntry({
+          store,
+          transcript,
+          settled: input.settled,
+          excludedCwdGlobs: input.excludedCwdGlobs,
+        });
+        if (created._tag === "Deleted") {
+          yield* markState({ ...base, threadId: created.threadId }, "deleted");
+          return "deleted" satisfies SyncOutcome;
         }
-      } else {
-        const created = yield* createEntry(input);
-        if (created === undefined) {
-          yield* syncState.upsert({ ...base, fileSize: input.size, fileMtimeMs: input.mtimeMs });
-          return;
+        if (created._tag === "Skipped") {
+          yield* syncState.upsert({ ...base, ...caughtUp, hydrationState: "pending" });
+          return "pending" satisfies SyncOutcome;
         }
         threadId = created.threadId;
         providerThreadId = created.providerThreadId;
       }
-      row = {
-        ...base,
-        threadId,
-        providerThreadId,
-        filePath: input.filePath,
-        fileIdentity: input.fileIdentity,
-      };
-      // A session T3 Code already drives is followed in full, so its terminal turns show at once.
-      const full = input.mode === "full" || row.hydrationState === "full" || owner !== undefined;
-      if (!full || providerThreadId === null) {
-        yield* syncState.upsert({
-          ...row,
-          hydrationState: row.hydrationState === "pending" ? "entry" : row.hydrationState,
-          fileSize: input.size,
-          fileMtimeMs: input.mtimeMs,
-        });
-        return;
+      const thread = yield* projections.findThread(threadId);
+      if (thread === null || thread.deletedAt !== null) {
+        yield* markState({ ...base, threadId }, "deleted");
+        return "deleted" satisfies SyncOutcome;
       }
-      const thread = yield* projections.getThread(threadId);
+      // Old imports hold run-less history; migrating them is separate work, so they are left as they are.
+      if (thread.historyOrigin === "v1_import" || providerThreadId === null) {
+        yield* syncState.upsert({
+          ...base,
+          ...caughtUp,
+          threadId,
+          providerThreadId,
+          hydrationState: "entry",
+        });
+        return "entry" satisfies SyncOutcome;
+      }
+      const linked = { ...base, threadId, providerThreadId };
+      if (input.mode === "entry") {
+        const hydrationState =
+          linked.hydrationState === "pending" || linked.hydrationState === "failed"
+            ? "entry"
+            : linked.hydrationState;
+        // A followed or part-read session keeps its old size, so the next request reads what changed.
+        yield* syncState.upsert(
+          hydrationState === "entry" ? { ...linked, ...caughtUp, hydrationState } : linked,
+        );
+        return owned || hydrationState !== "entry"
+          ? ("follow" satisfies SyncOutcome)
+          : ("entry" satisfies SyncOutcome);
+      }
       const target: ClaudeNativeRunTarget = {
-        sessionId: input.sessionId,
+        sessionId: transcript.sessionId,
         threadId,
         providerThreadId,
         providerInstanceId: thread.providerInstanceId,
         modelSelection: thread.modelSelection,
+        skipCopied: thread.forkedFrom !== null || thread.lineage.relationshipToParent === "fork",
       };
-      let current = row;
-      for (;;) {
-        const step = yield* threadCommands.withLock(threadId, ingestOnce({ row: current, target }));
-        current = step.row;
-        if (step.deferred) return;
-        if (step.atEnd) break;
-        yield* Effect.yieldNow;
+      const own = yield* ownTurns(threadId);
+      const fallbackAt = DateTime.makeUnsafe(transcript.mtimeMs);
+      let current = linked;
+      for (let step = 0; ; step++) {
+        if (step > 0) {
+          yield* capacity.wait;
+          if (outranked(input.priority)) {
+            yield* request({
+              store,
+              sessionId: transcript.sessionId,
+              filePath: transcript.filePath,
+              priority: input.priority,
+            });
+            return "preempted" satisfies SyncOutcome;
+          }
+        }
+        const read = yield* threadCommands.withLock(
+          threadId,
+          ingestOnce({ row: current, target, own, fallbackAt }),
+        );
+        if (read._tag === "Deleted") return "deleted" satisfies SyncOutcome;
+        if (read._tag === "Deferred") return "deferred" satisfies SyncOutcome;
+        current = read.row;
+        if (read.atEnd) break;
       }
-      yield* syncState.upsert({ ...current, fileSize: input.size, fileMtimeMs: input.mtimeMs });
+      yield* syncState.upsert({ ...current, ...caughtUp, hydrationState: "full" });
+      return "full" satisfies SyncOutcome;
     },
     (effect, input) =>
       sessionLocks
-        .withLock(`${input.store.key}\0${input.sessionId}`, effect)
-        .pipe(Effect.mapError(fail("sync a session", input.sessionId))),
+        .withLock(requestKey(input.store.key, input.transcript.sessionId), effect)
+        .pipe(Effect.mapError(fail("sync a session", input.transcript.sessionId))),
   );
 
-  const currentSettings = settingsService.getSettings.pipe(Effect.mapError(fail("read settings")));
+  /** Runs one request; a session that fails is marked so the fill moves on, and tried again when its file changes. */
+  const runRequest = Effect.fn("ClaudeSessionSync.runRequest")(function* (next: HydrationRequest) {
+    const { settings } = yield* currentState;
+    const row = yield* syncState
+      .get({ storeKey: next.store.key, sessionId: next.sessionId })
+      .pipe(Effect.mapError(fail("read a session", next.sessionId)));
+    const filePath = next.filePath ?? row?.filePath;
+    if (filePath === undefined) return;
+    const transcript = yield* statTranscript(next.sessionId, filePath);
+    if (transcript === undefined) {
+      if (row !== undefined) {
+        yield* markState(row, "failed").pipe(
+          Effect.mapError(fail("mark a session", next.sessionId)),
+        );
+      }
+      return;
+    }
+    yield* syncSession({
+      store: next.store,
+      transcript,
+      mode: "full",
+      priority: next.priority,
+      settled: next.priority >= Priority.follow,
+      excludedCwdGlobs: settings.claudeSessionSync.excludedCwdGlobs,
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          // A settings change or shutdown interrupts a read; that is not a failure of the session.
+          if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
+          const latest = yield* syncState
+            .get({ storeKey: next.store.key, sessionId: next.sessionId })
+            .pipe(Effect.orElseSucceed(() => undefined));
+          if (latest !== undefined) {
+            yield* markState(
+              { ...latest, fileSize: transcript.size, fileMtimeMs: transcript.mtimeMs },
+              "failed",
+            ).pipe(Effect.ignore);
+          }
+          return yield* fail("hydrate a session", next.sessionId)(Cause.squash(cause));
+        }),
+      ),
+    );
+  });
+
+  const drainWith = (pace: boolean) =>
+    Effect.gen(function* () {
+      const failures: Array<ClaudeSessionSyncError> = [];
+      for (let next = takeNext(); next !== undefined; next = takeNext()) {
+        if (pace) yield* capacity.wait;
+        yield* runRequest(next).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Could not hydrate a Claude session", { error }).pipe(
+              Effect.andThen(Effect.sync(() => failures.push(error))),
+            ),
+          ),
+        );
+      }
+      return failures;
+    });
+
+  const drain: ClaudeSessionSync["Service"]["drain"] = drainWith(false).pipe(
+    Effect.withSpan("ClaudeSessionSync.drain"),
+  );
 
   const sweepStore = Effect.fn("ClaudeSessionSync.sweepStore")(function* (
     store: SyncStore,
     settings: ServerSettings,
+    full: boolean,
     failures: Array<ClaudeSessionSyncError>,
   ) {
-    const now = DateTime.toEpochMillis(yield* DateTime.now);
-    const recentSince = now - settings.claudeSessionSync.hydrateRecentDays * DAY_MS;
+    const options = settings.claudeSessionSync;
+    const recentSince =
+      DateTime.toEpochMillis(yield* DateTime.now) - options.hydrateRecentDays * DAY_MS;
     const registry = yield* readClaudeSessionRegistry(store.sessionsDir).pipe(
       withHost,
       Effect.mapError(fail("read the session registry")),
@@ -818,221 +1220,324 @@ const make = Effect.gen(function* () {
         (row) => [row.sessionId, row],
       ),
     );
-    const transcripts = yield* listTranscripts(store).pipe(
+    const transcripts = yield* listTranscripts(store, full).pipe(
       Effect.mapError(fail("list transcripts")),
     );
     for (const transcript of transcripts) {
       const row = rows.get(transcript.sessionId);
       if (row?.hydrationState === "deleted") continue;
+      // A copy of the session in another directory is ignored unless it changed later.
       if (
         row !== undefined &&
-        row.fileSize === transcript.size &&
-        row.fileMtimeMs === transcript.mtimeMs
+        row.filePath !== transcript.filePath &&
+        transcript.mtimeMs <= row.fileMtimeMs
       ) {
         continue;
       }
-      const due = live.has(transcript.sessionId) || transcript.mtimeMs >= recentSince;
-      yield* syncSession({
+      const unchanged =
+        row !== undefined &&
+        row.filePath === transcript.filePath &&
+        row.fileSize === transcript.size &&
+        row.fileMtimeMs === transcript.mtimeMs;
+      const lookAgain =
+        row?.hydrationState === "hydrating" || (full && row?.hydrationState === "pending");
+      if (unchanged && !lookAgain) continue;
+      yield* capacity.wait;
+      const isLive = live.has(transcript.sessionId);
+      const outcome = yield* syncSession({
         store,
-        ...transcript,
-        mode: due ? "full" : "entry",
-        settled: !due,
+        transcript,
+        mode: "entry",
+        priority: Priority.follow,
+        settled: !isLive,
+        excludedCwdGlobs: options.excludedCwdGlobs,
       }).pipe(
         Effect.catch((error) =>
           Effect.logWarning("Could not sync a Claude session", { error }).pipe(
             Effect.andThen(Effect.sync(() => failures.push(error))),
+            Effect.as(undefined),
           ),
         ),
       );
-      yield* Effect.yieldNow;
+      const priority: Priority | undefined =
+        outcome === undefined || outcome === "deleted" || outcome === "pending"
+          ? undefined
+          : isLive
+            ? Priority.live
+            : outcome === "follow"
+              ? Priority.follow
+              : options.backgroundFill && transcript.mtimeMs >= recentSince
+                ? Priority.fill
+                : undefined;
+      if (priority !== undefined) {
+        yield* request({
+          store,
+          sessionId: transcript.sessionId,
+          filePath: transcript.filePath,
+          priority,
+        });
+      }
+    }
+    // A history whose reading stopped part-way, as at a shutdown, is finished whether or not its file changed.
+    for (const row of rows.values()) {
+      if (row.hydrationState !== "hydrating") continue;
+      yield* request({
+        store,
+        sessionId: row.sessionId,
+        filePath: row.filePath,
+        priority: Priority.follow,
+      });
     }
   });
 
-  const sweep: ClaudeSessionSync["Service"]["sweep"] = Effect.gen(function* () {
-    const settings = yield* currentSettings;
-    const failures: Array<ClaudeSessionSyncError> = [];
-    if (!settings.claudeSessionSync.enabled) return failures;
-    const stores = yield* resolveStores(settings);
-    for (const store of stores) yield* sweepStore(store, settings, failures);
-    return failures;
-  }).pipe(Effect.withSpan("ClaudeSessionSync.sweep"));
+  const sweep: ClaudeSessionSync["Service"]["sweep"] = Effect.fn("ClaudeSessionSync.sweep")(
+    function* (options) {
+      const { settings, stores } = yield* currentState;
+      const failures: Array<ClaudeSessionSyncError> = [];
+      if (!settings.claudeSessionSync.enabled) return failures;
+      for (const store of stores) {
+        yield* sweepStore(store, settings, options?.full === true, failures);
+      }
+      return failures;
+    },
+  );
 
-  const findStoreFor = Effect.fn("ClaudeSessionSync.findStoreFor")(function* (filePath: string) {
-    const settings = yield* currentSettings;
-    if (!settings.claudeSessionSync.enabled) return undefined;
-    const stores = yield* resolveStores(settings);
-    const projectsDir = path.dirname(path.dirname(filePath));
-    return stores.find((store) => store.projectsDir === projectsDir);
-  });
+  // Sessions in each store's registry at its last read; their transcripts are polled.
+  let liveSessions = new Map<string, ReadonlySet<string>>();
+  let polls = 0;
+
+  const pollLive: ClaudeSessionSync["Service"]["pollLive"] = Effect.gen(function* () {
+    const { settings, stores } = yield* currentState;
+    if (!settings.claudeSessionSync.enabled) return;
+    const refresh = polls++ % REGISTRY_EVERY === 0;
+    for (const store of stores) {
+      if (refresh) {
+        const registry = yield* readClaudeSessionRegistry(store.sessionsDir).pipe(
+          withHost,
+          Effect.mapError(fail("read the session registry")),
+        );
+        liveSessions = new Map(liveSessions).set(
+          store.key,
+          new Set(registry.entries.map((entry) => entry.sessionId)),
+        );
+      }
+      for (const sessionId of liveSessions.get(store.key) ?? []) {
+        const row = yield* syncState
+          .get({ storeKey: store.key, sessionId })
+          .pipe(Effect.mapError(fail("read a session", sessionId)));
+        if (row?.hydrationState === "deleted") continue;
+        const transcript =
+          row === undefined || row.filePath === ""
+            ? refresh
+              ? yield* findTranscript(store, sessionId)
+              : undefined
+            : yield* statTranscript(sessionId, row.filePath);
+        if (transcript === undefined) continue;
+        if (
+          row !== undefined &&
+          row.hydrationState === "full" &&
+          row.fileSize === transcript.size &&
+          row.fileMtimeMs === transcript.mtimeMs
+        ) {
+          continue;
+        }
+        yield* request({
+          store,
+          sessionId,
+          filePath: transcript.filePath,
+          priority: Priority.live,
+        });
+      }
+    }
+  }).pipe(Effect.withSpan("ClaudeSessionSync.pollLive"));
+
+  const storeOfFile = (stores: ReadonlyArray<SyncStore>, filePath: string) =>
+    stores.find((store) => store.projectsDir === path.dirname(path.dirname(filePath)));
 
   const followFile: ClaudeSessionSync["Service"]["followFile"] = Effect.fn(
     "ClaudeSessionSync.followFile",
   )(function* (watchedPath) {
     const sessionId = claudeTranscriptSessionId(path.basename(watchedPath));
     if (sessionId === undefined) return;
+    const { settings, stores } = yield* currentState;
+    if (!settings.claudeSessionSync.enabled) return;
     // Stores are keyed by real paths, and a home can reach its transcripts through a symlink.
     const real = yield* fileSystem.realPath(watchedPath).pipe(Effect.option);
     if (Option.isNone(real)) return;
-    const filePath = real.value;
-    const store = yield* findStoreFor(filePath);
+    const store = storeOfFile(stores, real.value);
     if (store === undefined) return;
-    const info = yield* fileSystem.stat(filePath).pipe(Effect.option);
-    if (Option.isNone(info) || info.value.type !== "File") return;
-    // A file that just changed is recent by definition, so it is followed in full.
+    const transcript = yield* statTranscript(sessionId, real.value);
+    if (transcript === undefined) return;
     yield* syncSession({
       store,
-      sessionId,
-      filePath,
-      fileIdentity: fileIdentityOf(info.value, filePath),
-      size: Number(info.value.size),
-      mtimeMs: mtimeMsOf(info.value),
+      transcript,
       mode: "full",
+      priority: Priority.live,
       settled: false,
+      excludedCwdGlobs: settings.claudeSessionSync.excludedCwdGlobs,
     });
   });
 
-  const hydrateRow = (store: SyncStore, row: ClaudeSessionSyncState.ClaudeSessionSyncState) =>
-    fileSystem.stat(row.filePath).pipe(
-      Effect.option,
-      Effect.flatMap((info) =>
-        Option.isNone(info)
-          ? Effect.void
-          : syncSession({
-              store,
-              sessionId: row.sessionId,
-              filePath: row.filePath,
-              fileIdentity: fileIdentityOf(info.value, row.filePath),
-              size: Number(info.value.size),
-              mtimeMs: mtimeMsOf(info.value),
-              mode: "full",
-              settled: true,
-            }),
-      ),
-    );
-
-  const hydrateThread: ClaudeSessionSync["Service"]["hydrateThread"] = Effect.fn(
-    "ClaudeSessionSync.hydrateThread",
-  )(function* (threadId) {
-    const prefix = "claude:";
-    if (!threadId.startsWith(prefix)) return;
-    const sessionId = threadId.slice(prefix.length);
-    const settings = yield* currentSettings;
+  const requestForThread = Effect.fn("ClaudeSessionSync.requestForThread")(function* (
+    threadId: ThreadId,
+    priority: Priority,
+  ) {
+    const { settings, stores } = yield* currentState;
     if (!settings.claudeSessionSync.enabled) return;
-    for (const store of yield* resolveStores(settings)) {
-      const row = yield* syncState
-        .get({ storeKey: store.key, sessionId })
-        .pipe(Effect.mapError(fail("read a session", sessionId)));
-      if (row?.hydrationState === "entry") yield* hydrateRow(store, row);
-    }
+    const row = yield* syncState
+      .findByThreadId(threadId)
+      .pipe(Effect.mapError(fail("find a thread's session")));
+    if (row === undefined || row.hydrationState === "deleted") return;
+    const store = stores.find((candidate) => candidate.key === row.storeKey);
+    if (store === undefined) return;
+    yield* request({ store, sessionId: row.sessionId, filePath: row.filePath, priority });
   });
 
+  const hydrateThread: ClaudeSessionSync["Service"]["hydrateThread"] = (threadId) =>
+    requestForThread(threadId, Priority.open);
+
+  const runSettled: ClaudeSessionSync["Service"]["runSettled"] = (threadId) =>
+    requestForThread(threadId, Priority.live);
+
   const fillOne: ClaudeSessionSync["Service"]["fillOne"] = Effect.gen(function* () {
-    const settings = yield* currentSettings;
+    const { settings, stores } = yield* currentState;
     if (!settings.claudeSessionSync.enabled) return false;
-    let next: { store: SyncStore; row: ClaudeSessionSyncState.ClaudeSessionSyncState } | undefined;
-    for (const store of yield* resolveStores(settings)) {
-      const rows = yield* syncState
-        .listStore(store.key)
-        .pipe(Effect.mapError(fail("list sessions")));
-      for (const row of rows) {
-        if (row.hydrationState !== "entry" || row.threadId === null) continue;
-        if (row.threadId !== ThreadId.make(`claude:${row.sessionId}`)) continue;
-        if (next === undefined || row.fileMtimeMs > next.row.fileMtimeMs) next = { store, row };
-      }
-    }
-    if (next === undefined) return false;
-    yield* hydrateRow(next.store, next.row);
+    const row = yield* syncState
+      .nextEntryToHydrate(stores.map((store) => store.key))
+      .pipe(Effect.mapError(fail("find the next session to fill")));
+    const store =
+      row === undefined ? undefined : stores.find((candidate) => candidate.key === row.storeKey);
+    if (row === undefined || store === undefined) return false;
+    yield* runRequest({
+      store,
+      sessionId: row.sessionId,
+      filePath: row.filePath,
+      priority: Priority.fill,
+    }).pipe(
+      Effect.catch((error) => Effect.logWarning("Could not fill a Claude session", { error })),
+    );
     return true;
   }).pipe(Effect.withSpan("ClaudeSessionSync.fillOne"));
 
-  // The fill yields to other work: it waits while the one-minute load average exceeds the core count.
-  const waitForCapacity = Effect.gen(function* () {
-    for (;;) {
-      // Windows reports no load average, as zeros, so the fill never waits there.
-      const [oneMinute] = NodeOS.loadavg();
-      if (oneMinute === undefined || oneMinute < NodeOS.availableParallelism()) return;
-      yield* Effect.sleep(FILL_LOAD_BACKOFF);
+  const restoreSession: ClaudeSessionSync["Service"]["restoreSession"] = Effect.fn(
+    "ClaudeSessionSync.restoreSession",
+  )(function* (threadId) {
+    const { settings, stores } = yield* currentState;
+    const row = yield* syncState
+      .findByThreadId(threadId)
+      .pipe(Effect.mapError(fail("find a thread's session")));
+    if (row === undefined || row.hydrationState !== "deleted") return false;
+    const store = stores.find((candidate) => candidate.key === row.storeKey);
+    if (store === undefined) return false;
+    const transcript = yield* statTranscript(row.sessionId, row.filePath);
+    if (transcript === undefined) return false;
+    const created = yield* createEntry({
+      store,
+      transcript,
+      settled: false,
+      excludedCwdGlobs: [],
+      restoredAt: DateTime.toEpochMillis(yield* DateTime.now),
+    }).pipe(Effect.mapError(fail("restore a session", row.sessionId)));
+    if (created._tag !== "Thread") return false;
+    yield* syncState
+      .upsert({
+        ...row,
+        threadId: created.threadId,
+        providerThreadId: created.providerThreadId,
+        hydrationState: "entry",
+        byteOffset: 0,
+        guardHash: null,
+        lastUuid: null,
+        parserState: null,
+        fileSize: transcript.size,
+        fileMtimeMs: transcript.mtimeMs,
+        updatedAt: yield* DateTime.now,
+      })
+      .pipe(Effect.mapError(fail("restore a session", row.sessionId)));
+    if (settings.claudeSessionSync.enabled) {
+      yield* request({
+        store,
+        sessionId: row.sessionId,
+        filePath: row.filePath,
+        priority: Priority.open,
+      });
     }
+    return true;
   });
 
-  const backgroundFill = Effect.gen(function* () {
-    for (;;) {
-      yield* waitForCapacity;
-      const filled = yield* fillOne.pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Claude session background fill failed", { cause }).pipe(
-            Effect.as(false),
-          ),
-        ),
-      );
-      yield* Effect.sleep(filled ? FILL_PACE : SWEEP_INTERVAL);
-    }
-  });
+  const logged = <A, E>(label: string, effect: Effect.Effect<A, E>) =>
+    effect.pipe(Effect.catchCause((cause) => Effect.logWarning(label, { cause })));
 
-  const watchStore = Effect.fn("ClaudeSessionSync.watchStore")(function* (store: SyncStore) {
-    const changed = yield* Queue.unbounded<string>();
-    yield* fileSystem.watch(store.projectsDir, { recursive: true }).pipe(
-      Stream.runForEach((event) => {
-        const filePath = path.resolve(store.projectsDir, event.path);
-        return path.dirname(path.dirname(filePath)) === store.projectsDir &&
-          claudeTranscriptSessionId(path.basename(filePath)) !== undefined
-          ? Queue.offer(changed, filePath)
-          : Effect.void;
-      }),
-      Effect.catchCause((cause) => Effect.logWarning("Claude transcript watch stopped", { cause })),
-      Effect.forkScoped,
-    );
-    // Claude Code appends a line at a time; changes that land together are read once.
+  // One worker runs requests in priority order, paced by capacity; when idle it fills, if asked to.
+  const hydrator = Effect.fn("ClaudeSessionSync.hydrator")(function* (backgroundFill: boolean) {
     for (;;) {
-      const first = yield* Queue.take(changed);
-      yield* Effect.sleep(WATCH_SETTLE);
-      const rest = yield* Queue.clear(changed);
-      for (const filePath of new Set([first, ...rest])) {
-        yield* followFile(filePath).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Could not follow a Claude transcript", { cause }),
-          ),
+      yield* logged("Claude session hydration failed", drainWith(true));
+      if (backgroundFill) {
+        yield* capacity.wait;
+        const filled = yield* logged("Claude session fill failed", fillOne).pipe(
+          Effect.map((value) => value === true),
         );
+        if (filled) continue;
       }
+      yield* Queue.take(wake);
+      yield* Queue.clear(wake);
     }
   });
 
   const run = (settings: ServerSettings) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const stores = yield* resolveStores(settings);
-        for (const store of stores) yield* Effect.forkScoped(watchStore(store));
-        yield* sweep.pipe(
-          Effect.catchCause((cause) => Effect.logWarning("Claude session sweep failed", { cause })),
-          Effect.repeat(Schedule.spaced(SWEEP_INTERVAL)),
-          Effect.forkScoped,
+        yield* Effect.forkScoped(hydrator(settings.claudeSessionSync.backgroundFill));
+        yield* Effect.forkScoped(
+          Effect.gen(function* () {
+            for (let sweepCount = 0; ; sweepCount++) {
+              // The first sweep after a start or a settings change is full.
+              const failures = yield* logged(
+                "Claude session sweep failed",
+                sweep({ full: sweepCount % FULL_SWEEP_EVERY === 0 }),
+              );
+              if (Array.isArray(failures) && failures.length > 0) {
+                yield* Effect.logWarning("Some Claude sessions could not be synced", {
+                  count: failures.length,
+                });
+              }
+              yield* Effect.sleep(SWEEP_INTERVAL);
+            }
+          }),
         );
-        yield* Effect.forkScoped(backgroundFill);
+        yield* Effect.forkScoped(
+          Effect.gen(function* () {
+            for (;;) {
+              yield* logged("Claude live session poll failed", pollLive);
+              yield* Effect.sleep(LIVE_POLL_INTERVAL);
+            }
+          }),
+        );
         const latest = yield* eventSink.latestSequence();
         yield* eventSink.stream({ afterSequence: latest, eventType: "thread.visit-recorded" }).pipe(
           Stream.runForEach((stored) =>
-            hydrateThread(stored.event.threadId).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Could not hydrate a Claude session thread", { cause }),
-              ),
+            logged(
+              "Could not request a Claude session's history",
+              hydrateThread(stored.event.threadId),
             ),
           ),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Claude session visit stream failed", { cause }),
+          (effect) => logged("Claude session visit stream failed", effect),
+          Effect.forkScoped,
+        );
+        yield* eventSink.stream({ afterSequence: latest, eventType: "run.updated" }).pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "run.updated" &&
+            SETTLED_RUN_STATUSES.has(stored.event.payload.status) &&
+            !isNativeOriginRun(stored.event.payload)
+              ? logged("Could not request a read after a run", runSettled(stored.event.threadId))
+              : Effect.void,
           ),
+          (effect) => logged("Claude session run stream failed", effect),
           Effect.forkScoped,
         );
         return yield* Effect.never;
       }),
     );
-
-  const settingsKey = (settings: ServerSettings) =>
-    JSON.stringify([
-      settings.claudeSessionSync,
-      Object.entries(settings.providerInstances).filter(
-        ([, instance]) => instance.driver === CLAUDE_PROVIDER,
-      ),
-    ]);
 
   const start: ClaudeSessionSync["Service"]["start"] = Effect.fn("ClaudeSessionSync.start")(
     function* () {
@@ -1045,13 +1550,10 @@ const make = Effect.gen(function* () {
         if (key === appliedKey) return;
         appliedKey = key;
         if (running !== undefined) yield* Fiber.interrupt(running);
+        pending.clear();
+        listedDirectories.clear();
         running = settings.claudeSessionSync.enabled
-          ? yield* run(settings).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Claude session sync stopped", { cause }),
-              ),
-              Effect.forkIn(scope),
-            )
+          ? yield* logged("Claude session sync stopped", run(settings)).pipe(Effect.forkIn(scope))
           : undefined;
       });
       yield* forkParked(
@@ -1064,7 +1566,17 @@ const make = Effect.gen(function* () {
     },
   );
 
-  return ClaudeSessionSync.of({ start, sweep, followFile, hydrateThread, fillOne });
+  return ClaudeSessionSync.of({
+    start,
+    sweep,
+    pollLive,
+    drain,
+    followFile,
+    hydrateThread,
+    runSettled,
+    fillOne,
+    restoreSession,
+  });
 });
 
 export const layer = Layer.effect(ClaudeSessionSync, make);
