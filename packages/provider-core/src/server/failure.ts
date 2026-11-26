@@ -15,6 +15,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 
 import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "../client.ts";
 import * as IdAllocator from "./IdAllocator.ts";
@@ -153,15 +154,13 @@ function curatedCauseMessages(cause: unknown): {
         case "ProviderSetupError":
         case "ProviderCompactionUnsupportedError":
           return { known: stringField(cause, "message"), category: categoryMessage() };
-        case "ProviderAdapterThreadInUseError":
+        case "ProviderAdapterThreadInUseError": {
+          const known = stringField(cause, "message");
           // Clients offer a fork only where a holder was seen, not where one is only possible.
-          return {
-            known: stringField(cause, "message"),
-            category: categoryMessage(),
-            ...((cause as Record<string, unknown>).holderObserved === true
-              ? { code: PROVIDER_THREAD_IN_USE_FAILURE_CODE }
-              : {}),
-          };
+          return Predicate.hasProperty(cause, "holderObserved") && cause.holderObserved === true
+            ? { known, category: categoryMessage(), code: PROVIDER_THREAD_IN_USE_FAILURE_CODE }
+            : { known, category: categoryMessage() };
+        }
         case "CodexAppServerRequestError": {
           // Only Codex's fixed-shape goal validation and managed-requirements
           // text is actionable and safe to show; other request error text stays hidden.
