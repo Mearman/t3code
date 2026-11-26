@@ -150,15 +150,18 @@ function curatedCauseMessages(cause: unknown): {
         case "CodexGoalObjectiveTooLongError":
         case "CodexAppServerUnresponsiveError":
         case "CodexAppServerRetiredError":
-        case "ProviderAdapterThreadInUseError":
-          return {
-            known: stringField(cause, "message"),
-            category: categoryMessage(),
-            code: PROVIDER_THREAD_IN_USE_FAILURE_CODE,
-          };
         case "ProviderSetupError":
         case "ProviderCompactionUnsupportedError":
           return { known: stringField(cause, "message"), category: categoryMessage() };
+        case "ProviderAdapterThreadInUseError":
+          // Clients offer a fork only where a holder was seen, not where one is only possible.
+          return {
+            known: stringField(cause, "message"),
+            category: categoryMessage(),
+            ...((cause as Record<string, unknown>).holderObserved === true
+              ? { code: PROVIDER_THREAD_IN_USE_FAILURE_CODE }
+              : {}),
+          };
         case "CodexAppServerRequestError": {
           // Only Codex's fixed-shape goal validation and managed-requirements
           // text is actionable and safe to show; other request error text stays hidden.

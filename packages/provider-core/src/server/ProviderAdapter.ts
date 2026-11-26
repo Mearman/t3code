@@ -314,6 +314,8 @@ export class ProviderAdapterThreadInUseError extends Schema.TaggedError<Provider
     providerThreadId: ProviderThreadId,
     detail: Schema.String,
     cause: Schema.Defect(),
+    /** Another process was seen holding the thread; unset when it may, or may not, be held. */
+    holderObserved: Schema.optional(Schema.Literal(true)),
   },
 ) {
   override get message(): string {
