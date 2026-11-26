@@ -67,10 +67,10 @@ export function compareTimes(left: number, right: number): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-export const compareStrings = (left: string, right: string) =>
+const compareStrings = (left: string, right: string) =>
   left < right ? -1 : left > right ? 1 : 0;
 
-export function at<T>(values: ArrayLike<T>, index: number): T {
+function at<T>(values: ArrayLike<T>, index: number): T {
   const value = values[index];
   if (value === undefined) throw new RangeError(`No slot ${index}.`);
   return value;
