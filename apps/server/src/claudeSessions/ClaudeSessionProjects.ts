@@ -79,9 +79,9 @@ const make = Effect.gen(function* () {
       .pipe(
         // bootstrap reads before it locks, so a racing create reports the winner as a conflict.
         Effect.map(({ project }) => project.id),
-        Effect.catchTag("ProjectConflictError", (conflict) =>
-          Effect.succeed(conflict.conflictingProjectId),
-        ),
+        Effect.catchTags({
+          ProjectConflictError: (conflict) => Effect.succeed(conflict.conflictingProjectId),
+        }),
       );
     known.set(workspaceRoot, bootstrapped);
     return bootstrapped;
@@ -108,7 +108,7 @@ const make = Effect.gen(function* () {
       );
       const projectId = yield* projectAt(root, path.basename(root) || root).pipe(
         // A folder the project rules refuse still has its sessions shown, in the shared project.
-        Effect.catchTag("ProjectInvalidError", () => sharedProject(storeKey)),
+        Effect.catchTags({ ProjectInvalidError: () => sharedProject(storeKey) }),
       );
       return { projectId, worktreePath: root === cwd ? null : cwd };
     },
