@@ -206,6 +206,27 @@ function permute<T>(lines: ReadonlyArray<T>, next: (bound: number) => number): A
 }
 
 const SEEDS = 150;
+
+/** A tracker fed `lines` as one update, and a function that appends one more line and updates. */
+function trackerOf(lines: ReadonlyArray<unknown>) {
+  const encoder = new TextEncoder();
+  const tracker = new ClaudeTranscriptTurnTracker();
+  let offset = 0;
+  const add = (line: unknown) => {
+    const bytes = encoder.encode(JSON.stringify(line));
+    tracker.index.addLine(bytes, offset);
+    offset += bytes.length + 1;
+  };
+  for (const line of lines) add(line);
+  tracker.update();
+  return {
+    tracker,
+    append: (line: unknown) => {
+      add(line);
+      return tracker.update();
+    },
+  };
+}
 const FORWARD_SEEDS = 200;
 
 describe("ClaudeTranscriptTurnTracker", () => {
@@ -370,6 +391,108 @@ describe("ClaudeTranscriptTurnTracker", () => {
     ];
 
     expect(Math.max(...updates.map((update) => update.hostVisits))).toBeLessThanOrEqual(8);
+    expect(tracker.structure()).toEqual(claudeTranscriptStructure(tracker.index));
+  });
+
+  // Final inspection finding 1: a round of prompt id changes looks at each root once, whatever the
+  // number of changes, including roots with no readable time and roots naming a changed prompt id.
+  it.each([
+    {
+      kind: "roots with no readable time",
+      time: { timestamp: "garbage" },
+      named: (index: number) => `u${index}`,
+    },
+    {
+      kind: "roots naming the changed prompt ids",
+      time: {},
+      named: (index: number) => (index % 2 === 0 ? "A" : "B"),
+    },
+  ] as const)("looks at each of many $kind once per round", ({ time, named }) => {
+    const f = claudeTranscriptFixture();
+    const t = (seconds: number) => ({ timestamp: f.iso(seconds) });
+    const lines: Array<Line> = [
+      f.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+      f.meta("m", "p1", "B", "<task-notification>y</task-notification>", t(2)),
+      f.result("r", "m", "t1", t(3)),
+      f.text("a1", "r", "Done", "end_turn", t(4)),
+    ];
+    let previous = "a1";
+    let clock = 5;
+    for (let index = 0; index < 200; index++) {
+      lines.push(
+        f.queued(`q${index}`, previous, "Next", t(clock++)),
+        f.text(`z${index}`, `q${index}`, "Done", "end_turn", t(clock++)),
+      );
+      previous = `z${index}`;
+    }
+    for (let index = 0; index < 100; index++) {
+      lines.push(
+        f.boundary(`b${index}`, `gone${index}`, { ...t(clock++), ...time }),
+        f.summary(`s${index}`, `b${index}`, { ...t(clock++), ...time, promptId: named(index) }),
+      );
+    }
+    const { tracker, append } = trackerOf(lines);
+    const update = append(f.text("a4", "m", "Reply", "end_turn", t(clock + 5)));
+
+    expect(update.hostVisits).toBeLessThanOrEqual(2 * (200 + 100));
+    expect(tracker.structure()).toEqual(claudeTranscriptStructure(tracker.index));
+  });
+
+  // Changed turns under a root ranked after the roots they precede do not stop the walk; each later
+  // root is still looked at once, not once per change.
+  it("looks at each later root once when the changed turns cannot host it", () => {
+    const f = claudeTranscriptFixture();
+    const t = (seconds: number) => ({ timestamp: f.iso(seconds) });
+    const lines: Array<Line> = [
+      f.prompt("p0", null, "Go", { ...t(0), promptId: "A" }),
+      f.boundary("z", "gone-z", t(1000)),
+      f.summary("zs", "z", t(1001)),
+      f.meta("m", "zs", "B", "<task-notification>y</task-notification>", t(1)),
+      f.result("r", "m", "t1", t(2)),
+      f.text("a1", "r", "Done", "end_turn", t(3)),
+    ];
+    let previous = "a1";
+    for (let index = 0; index < 100; index++) {
+      lines.push(
+        f.queued(`q${index}`, previous, "Next", t(4 + index * 0.5)),
+        f.text(`w${index}`, `q${index}`, "Done", "end_turn", t(4.25 + index * 0.5)),
+      );
+      previous = `w${index}`;
+    }
+    for (let index = 0; index < 50; index++) {
+      lines.push(f.text(`root${index}`, `gone${index}`, "Late", "end_turn", t(100 + index)));
+    }
+    const { tracker, append } = trackerOf(lines);
+    const update = append(f.text("a4", "m", "Reply", "end_turn", t(60)));
+
+    expect(update.hostVisits).toBeLessThanOrEqual(4 * (100 + 50));
+    expect(tracker.structure()).toEqual(claudeTranscriptStructure(tracker.index));
+  });
+
+  // Final inspection finding 3: a turn in an earlier root's tree stops the walk as a rooted turn does.
+  it("stops refiling at a turn every later root may join, in another root's tree", () => {
+    const f = claudeTranscriptFixture();
+    const t = (seconds: number) => ({ timestamp: f.iso(seconds) });
+    const lines: Array<Line> = [
+      f.prompt("p0", null, "Go", t(0)),
+      f.boundary("d", "gone-d", t(1)),
+      f.summary("ds", "d", t(1.5)),
+    ];
+    let previous = "ds";
+    for (let index = 0; index < 40; index++) {
+      lines.push(
+        f.prompt(`pd${index}`, previous, `In D ${index}`, t(2 + index)),
+        f.text(`ad${index}`, `pd${index}`, "Ok", "end_turn", t(2.5 + index)),
+      );
+      previous = `ad${index}`;
+    }
+    for (let index = 0; index < 50; index++) {
+      lines.push(f.text(`root${index}`, `gone${index}`, "Late", "end_turn", t(100 + index)));
+    }
+    const { tracker, append } = trackerOf(lines);
+    const update = append(f.prompt("late", "p0", "Early", t(1.75)));
+
+    expect(update.hostVisits).toBeLessThanOrEqual(8);
     expect(tracker.structure()).toEqual(claudeTranscriptStructure(tracker.index));
   });
 
