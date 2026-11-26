@@ -90,44 +90,51 @@ export const renderCliShim = (input: {
     ...header,
     // Extract-and-run would make the runtime start the app instead of mounting it.
     "unset APPIMAGE_EXTRACT_AND_RUN",
+    // One set of traps for the whole run. Until $cli is known they only note the stop, and the
+    // launcher acts on it where nothing it started can be left behind.
+    "cli=",
+    "stop=",
+    "mounter=",
+    "mount=",
+    `trap 'if [ -n "$cli" ]; then kill -TERM "$cli" 2>/dev/null; else stop=TERM; fi' TERM`,
+    `trap 'if [ -n "$cli" ]; then kill -HUP "$cli" 2>/dev/null; else stop=HUP; fi' HUP`,
+    // The terminal sends Ctrl-C to the CLI itself. One that lands before $cli is known becomes TERM.
+    `trap '[ -n "$cli" ] || stop=TERM' INT`,
+    "work=$(mktemp -d) || exit 1",
+    // The mounter unmounts itself on TERM, which it ignores here, so this trap unmounts it.
+    // Lazily, like the runtime: the server's own children may still be exiting.
+    `trap '[ -z "$mount" ] || fusermount3 -uz "$mount" 2>/dev/null || fusermount -uz "$mount" 2>/dev/null; kill -HUP "$mounter" 2>/dev/null; rm -rf "$work"' EXIT`,
+    // A new background process has these traps until the shell resets them, and dash drops a signal
+    // that arrives before then. Each touches a file first; wait for that before signalling it.
+    'await_start() { while [ ! -e "$1" ] && kill -0 "$!" 2>/dev/null; do sleep 0.01; done; }',
     // Its own session keeps a group signal (Ctrl-C, SSH hangup) from unmounting it under the
     // running server, and ignoring TERM survives a stop sent to every process (systemd's default).
     // Without setsid the extract fallback runs.
-    "work=$(mktemp -d) || exit 1",
-    "trap '' TERM",
-    'setsid "$app" --appimage-mount >"$work/mount" 2>/dev/null &',
+    `{ trap '' TERM; : >"$work/mounter-started"; exec setsid "$app" --appimage-mount >"$work/mount" 2>/dev/null; } &`,
+    'await_start "$work/mounter-started"',
     "mounter=$!",
-    // It unmounts itself on TERM, which it now ignores, so the trap unmounts it. Lazily, like the
-    // runtime: the server's own children may still be exiting.
-    `trap '[ -z "$mount" ] || fusermount3 -uz "$mount" 2>/dev/null || fusermount -uz "$mount" 2>/dev/null; kill -HUP "$mounter" 2>/dev/null; rm -rf "$work"' EXIT`,
-    "trap 'exit 130' INT TERM HUP",
-    "mount=",
-    'while kill -0 "$mounter" 2>/dev/null; do',
+    'while [ -z "$stop" ] && kill -0 "$mounter" 2>/dev/null; do',
     '  mount=$(head -n 1 "$work/mount")',
     '  [ -d "$mount" ] && break',
     "  mount=",
     "  sleep 0.05",
     "done",
+    '[ -z "$stop" ] || exit 130',
     // Without FUSE the runtime cannot mount (it prints why and exits); extracting the image still works.
     'if [ -z "$mount" ]; then',
-    '  (cd "$work" && "$app" --appimage-extract >/dev/null) || { echo "Could not open $app." >&2; exit 1; }',
+    // A stop can kill the extraction, which is then no fault of the image.
+    '  (cd "$work" && "$app" --appimage-extract >/dev/null) || { [ -z "$stop" ] || exit 130; echo "Could not open $app." >&2; exit 1; }',
     '  mount="$work/squashfs-root"',
     "fi",
     // The runtime sets this when it launches the app; the CLI skips its path-keyed compile cache on it.
     'export APPIMAGE="$app"',
-    // The shell must outlive the CLI to unmount, so it forwards TERM and HUP; the terminal sends
-    // Ctrl-C to the CLI directly. A background child would read /dev/null, so pass stdin on fd 9.
-    // With stdin closed, `exec 9<&0` would end the shell; `command` makes it a normal error.
+    // The shell must outlive the CLI to unmount. A background child would read /dev/null, so pass
+    // stdin on fd 9. With stdin closed, `exec 9<&0` would end the shell; `command` makes it a
+    // normal error.
     "{ command exec 9<&0; } 2>/dev/null || exec 9</dev/null",
-    // Set before the CLI starts: the old `exit 130` trap would unmount under it. A signal that
-    // lands before $cli is known is kept in $stop and forwarded once it is.
-    "cli=",
-    "stop=",
-    `trap 'if [ -n "$cli" ]; then kill -TERM "$cli" 2>/dev/null; else stop=TERM; fi' TERM`,
-    `trap 'if [ -n "$cli" ]; then kill -HUP "$cli" 2>/dev/null; else stop=HUP; fi' HUP`,
-    // Ctrl-C goes to the CLI directly; the launcher stays to unmount after it exits.
-    "trap ':' INT",
-    `${run("$mount")} <&9 9<&- &`,
+    '[ -z "$stop" ] || exit 130',
+    `{ : >"$work/cli-started"; exec ${run("$mount")}; } <&9 9<&- &`,
+    'await_start "$work/cli-started"',
     "cli=$!",
     "exec 9<&-",
     '[ -z "$stop" ] || kill -"$stop" "$cli" 2>/dev/null',

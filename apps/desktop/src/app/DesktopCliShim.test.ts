@@ -257,6 +257,27 @@ describe("renderCliShim", () => {
     },
   );
 
+  it.skipIf(!hasSetsid).each(["SIGHUP", "SIGINT", "SIGTERM"] as const)(
+    "exits as stopped, not as a broken image, after %s during extraction",
+    async (signal) => {
+      const fake = fakeAppImage(false);
+      // A stop to the process group also kills the extraction, so the held one fails.
+      const gate = holdLauncher(fake, (script, hold) =>
+        script.replace('"$app" --appimage-extract >/dev/null', `{ ${hold}; false; }`),
+      );
+      try {
+        await withLauncher(fake, async ({ child, events, closed }) => {
+          await events.until((line) => line === "held");
+          process.kill(child.pid!, signal);
+          NodeFS.writeSync(gate, "\n");
+          expect(await closed).toBe(130);
+        });
+      } finally {
+        NodeFS.closeSync(gate);
+      }
+    },
+  );
+
   // dash drops a signal that reaches a new background process before it has reset the traps it
   // was forked with. The hold stands in for that moment: a signal sent into it is only reported.
   it.skipIf(!hasSetsid).each([
