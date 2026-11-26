@@ -133,6 +133,21 @@ const nodeBinDirOf = (nodePath: string): string => {
 const backendChildEnvPatch = (): Record<string, string | undefined> =>
   Object.fromEntries(DESKTOP_BACKEND_ENV_NAMES.map((name) => [name, undefined]));
 
+/** Runs the bundled server CLI, the same build as the backend this app spawns, with `args`. */
+export const serverCliCommand = (
+  environment: DesktopEnvironment.DesktopEnvironment["Service"],
+  args: ReadonlyArray<string>,
+) => ({
+  executablePath: process.execPath,
+  args: [
+    ...(environment.isPackaged ? ["--require", environment.compileCachePath] : []),
+    environment.backendEntryPath,
+    ...args,
+  ],
+  cwd: environment.backendCwd,
+  env: { ...backendChildEnvPatch(), ELECTRON_RUN_AS_NODE: "1" },
+});
+
 const getWslEnvEntryName = (entry: string): string => {
   const slashIndex = entry.indexOf("/");
   return slashIndex === -1 ? entry : entry.slice(0, slashIndex);
@@ -565,6 +580,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     };
 
     return {
+      _tag: "Spawn",
       executablePath: process.execPath,
       // Packaged builds have a separate cache; --require prevents cache settings leaking to provider subprocesses.
       args: [
@@ -702,6 +718,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
   const wslEnv = mergeWslEnv(parentEnvWithoutT3Home.WSLENV, forwardedEnvNames);
 
   const baseConfig = {
+    _tag: "Spawn" as const,
     executablePath: "wsl.exe",
     entryPath:
       preflight._tag === "Ready" ? preflight.windowsEntryPath : environment.backendEntryPath,

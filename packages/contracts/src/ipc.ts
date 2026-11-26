@@ -391,6 +391,8 @@ export interface DesktopEnvironmentBootstrap {
   httpBaseUrl: string | null;
   wsBaseUrl: string | null;
   bootstrapToken?: string;
+  /** The app uses a server that already owned its T3 home (a background service or `t3 serve`). */
+  attached?: boolean;
 }
 
 export const DesktopEnvironmentBootstrapSchema = Schema.Struct({
@@ -400,6 +402,7 @@ export const DesktopEnvironmentBootstrapSchema = Schema.Struct({
   httpBaseUrl: Schema.NullOr(Schema.String),
   wsBaseUrl: Schema.NullOr(Schema.String),
   bootstrapToken: Schema.optionalKey(Schema.String),
+  attached: Schema.optionalKey(Schema.Boolean),
 });
 
 export const DesktopSshEnvironmentTargetSchema = Schema.Struct({

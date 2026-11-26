@@ -76,11 +76,6 @@ export const make = Effect.gen(function* () {
   const getBearerToken = mutex
     .withPermits(1)(
       Effect.gen(function* () {
-        const cached = yield* Ref.get(tokenRef);
-        if (Option.isSome(cached)) {
-          return cached.value;
-        }
-
         const instances = yield* pool.list;
         const primary = instances.find((instance) => instance.id === PRIMARY_LOCAL_ENVIRONMENT_ID);
         if (primary === undefined || !(yield* primary.waitForReady(Duration.infinity))) {
@@ -91,6 +86,18 @@ export const make = Effect.gen(function* () {
           return yield* new DesktopLocalEnvironmentAuthBackendNotConfiguredError();
         }
         const config = configOption.value;
+        // The attach config keeps and renews its own session; a spawned backend's token is kept here.
+        if (config._tag === "Attach") {
+          return yield* config.bearerToken.pipe(
+            Effect.mapError(
+              (cause) => new DesktopLocalEnvironmentAuthSessionBootstrapError({ cause }),
+            ),
+          );
+        }
+        const cached = yield* Ref.get(tokenRef);
+        if (Option.isSome(cached)) {
+          return cached.value;
+        }
         // Secret-authenticated backends accept the current window token; the launch token may be stale.
         const secret = config.bootstrap.desktopBootstrapSecret;
         const credential =

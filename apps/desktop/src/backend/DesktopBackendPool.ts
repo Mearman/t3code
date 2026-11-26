@@ -23,6 +23,7 @@ import * as FileSystem from "effect/FileSystem";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
+import * as DesktopAttachedServer from "./DesktopAttachedServer.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopBackendRecoveryProcess from "./DesktopBackendRecoveryProcess.ts";
@@ -41,6 +42,8 @@ import { m } from "../i18n/messages.ts";
 
 const { logInfo: logBackendPoolInfo, logWarning: logBackendPoolWarning } =
   DesktopObservability.makeComponentLogger("desktop-backend-pool");
+
+const ATTACHED_SESSION_CHECK_INTERVAL = Duration.minutes(5);
 
 const makeRecovery = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -157,8 +160,24 @@ export const layer = Layer.effect(
     const layerScope = yield* Scope.Scope;
     const factoryContext = yield* Effect.context<BackendInstanceFactoryRequirements>();
     const homeOwnerContext = yield* Effect.context<
-      FileSystem.FileSystem | Path.Path | DesktopEnvironment.DesktopEnvironment
+      | FileSystem.FileSystem
+      | Path.Path
+      | DesktopEnvironment.DesktopEnvironment
+      | HttpClient.HttpClient
+      | ChildProcessSpawner.ChildProcessSpawner
     >();
+    const attachConfig = yield* DesktopAttachedServer.makeAttachConfig();
+    const resolvePrimaryConfig = Effect.gen(function* () {
+      const settings = yield* appSettings.get;
+      // A WSL-only primary runs in the distro and never shares this home.
+      if (!(settings.wslOnly && settings.wslBackendEnabled)) {
+        const owner = yield* DesktopHomeOwner.resolveHomeOwner().pipe(
+          Effect.provideContext(homeOwnerContext),
+        );
+        if (owner._tag !== "Free") return attachConfig;
+      }
+      return yield* configuration.resolvePrimary;
+    });
 
     const updateMarkerPath = environment.path.join(
       environment.baseDir,
@@ -196,21 +215,23 @@ export const layer = Layer.effect(
     const updateMarkerWait = yield* FiberHandle.make<void>();
 
     // The main window loads during startup and reads the primary endpoint once; a Windows fallback
-    // before the first readiness replaces the WSL endpoint it read.
-    let primaryWasReady = false;
+    // before the first readiness, or a ready primary at a new address, replaces the one it read.
+    let primaryReadyUrl: string | undefined;
     let reloadMainOnReady = false;
-    const reloadStaleMain = Effect.suspend(() => {
-      primaryWasReady = true;
-      if (!reloadMainOnReady) return Effect.void;
-      reloadMainOnReady = false;
-      return desktopWindow.runMainContentsCommand("reload");
-    });
+    const reloadStaleMain = (httpBaseUrl: URL) =>
+      Effect.suspend(() => {
+        const moved = primaryReadyUrl !== undefined && primaryReadyUrl !== httpBaseUrl.href;
+        primaryReadyUrl = httpBaseUrl.href;
+        if (!reloadMainOnReady && !moved) return Effect.void;
+        reloadMainOnReady = false;
+        return desktopWindow.runMainContentsCommand("reload");
+      });
 
     // Persist fatal Windows fallbacks; transient transport failures must preserve the user's WSL preference.
     const handlePrimaryPreflightFailure = Effect.fn("desktop.backendPool.primaryPreflightFailed")(
       function* (failure: DesktopBackendManager.PreflightFailure) {
         const { reason, fatal } = failure;
-        if (!primaryWasReady) reloadMainOnReady = true;
+        if (primaryReadyUrl === undefined) reloadMainOnReady = true;
         if (!fatal) {
           yield* logBackendPoolWarning(
             "primary WSL preflight retry window exhausted; using Windows for this launch",
@@ -251,7 +272,7 @@ export const layer = Layer.effect(
       id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
       // Resolve lazily: startup loads persisted settings after pool initialization.
       label: configuration.resolvePrimaryLabel,
-      configResolve: configuration.resolvePrimary,
+      configResolve: resolvePrimaryConfig,
       ...(recovery === undefined
         ? {}
         : {
@@ -265,7 +286,7 @@ export const layer = Layer.effect(
       // Absorb window errors so readiness can reset restartAttempt.
       onReady: (httpBaseUrl, pid) =>
         FiberHandle.run(updateMarkerWait, releaseUpdateMarker(httpBaseUrl, pid)).pipe(
-          Effect.andThen(reloadStaleMain),
+          Effect.andThen(reloadStaleMain(httpBaseUrl)),
           Effect.andThen(desktopWindow.handleBackendReady(httpBaseUrl)),
           // Only once the main window exists, so the recovery window never closes into nothing.
           Effect.andThen(SubscriptionRef.set(primaryBackendStartup, { _tag: "Ready" })),
@@ -283,18 +304,39 @@ export const layer = Layer.effect(
           Effect.andThen(desktopWindow.handleBackendNotReady),
         ),
       onPreflightFailed: handlePrimaryPreflightFailure,
+      // Runs outside the instance's lock: waiting on the owner must not hold up a quit.
       onStateDirOwned: () =>
-        DesktopHomeOwner.readLiveHomeOwner().pipe(
-          Effect.flatMap((owner) =>
-            electronDialog.showErrorBox(
-              m(msg("This T3 home is unavailable")),
-              DesktopHomeOwner.homeOwnedMessage(owner),
-            ),
-          ),
+        DesktopHomeOwner.explainHomeRefusal().pipe(
           Effect.provideContext(homeOwnerContext),
-          Effect.andThen(electronApp.quit),
+          Effect.flatMap((state) =>
+            state._tag === "Unavailable"
+              ? electronDialog
+                  .showErrorBox(
+                    DesktopHomeOwner.homeUnavailableTitle(),
+                    DesktopHomeOwner.homeUnavailableMessage(state.unavailable),
+                  )
+                  .pipe(Effect.andThen(electronApp.quit))
+              : logBackendPoolInfo("attaching to the server that owns the T3 home").pipe(
+                  Effect.andThen(Effect.suspend(() => primary.start)),
+                ),
+          ),
+          Effect.forkIn(layerScope),
+          Effect.asVoid,
         ),
     });
+
+    // A server may reject the attached session (expiry, or revoked elsewhere); the renderer holds
+    // the old token until it reloads.
+    yield* Effect.gen(function* () {
+      const config = yield* primary.currentConfig;
+      if (Option.isNone(config) || config.value._tag !== "Attach") return;
+      if (yield* config.value.renewRejectedSession) {
+        yield* desktopWindow.runMainContentsCommand("reload");
+      }
+    }).pipe(
+      Effect.repeat(Schedule.spaced(ATTACHED_SESSION_CHECK_INTERVAL)),
+      Effect.forkIn(layerScope),
+    );
 
     const instancesRef = yield* SynchronizedRef.make<
       ReadonlyMap<BackendInstanceId, RegisteredInstance>

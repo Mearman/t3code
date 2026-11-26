@@ -20,11 +20,6 @@
   "eeb7ea62dc4706c1": "T3 Code verwendet für diesen Start das Windows-Backend und versucht es beim nächsten App-Start erneut mit WSL.",
   "b5435aa5b470bafd": "Das WSL-Backend konnte nicht starten",
   "d82d7c96e1904629": "Es wird auf das Windows-Backend ausgewichen, damit T3 Code sich öffnen kann. Aktiviere das WSL-Backend unter Einstellungen > Freigabe & Zugriff wieder, sobald die WSL-Distribution repariert ist.",
-  "a4acf18834787a4f": "Ein anderer T3-Code-Server, etwa der Hintergrunddienst, verwendet dieses Datenverzeichnis, oder ein älterer Hintergrunddienst ist dafür eingerichtet. Stoppe diesen Server oder versuche `t3 update`. Wenn der ältere Launcher sich nicht aktualisieren kann, führe `t3 service uninstall` aus und installiere ihn optional mit `t3 service install` aus einer aktuellen CLI neu. Verwende `npx t3@latest`, wenn `t3` fehlt oder veraltet ist, und übergib jedem Befehl `--base-dir` mit dem T3-Home des Dienstes. Öffne T3 Code dann erneut. Du kannst auch ein separates T3CODE_HOME setzen und mit dem laufenden Server koppeln.",
-  "0e306130a55a3954": "Der T3-Code-Hintergrunddienst verwendet dieses T3-Home (PID {pid}, Port {port}, Version {version}). Stoppe ihn mit `t3 service uninstall` und übergib dabei `--base-dir` mit diesem T3-Home, und öffne T3 Code dann erneut. Du kannst auch ein separates T3CODE_HOME setzen und mit dem laufenden Server koppeln.",
-  "7379a43c1ac009d2": "Der T3-Code-Hintergrunddienst verwendet dieses T3-Home (PID {pid}, Port {port}). Stoppe ihn mit `t3 service uninstall` und übergib dabei `--base-dir` mit diesem T3-Home, und öffne T3 Code dann erneut. Du kannst auch ein separates T3CODE_HOME setzen und mit dem laufenden Server koppeln.",
-  "1510c6547cde9c2e": "Ein anderer T3-Code-Server (zum Beispiel `t3 serve` oder einer, der über SSH gestartet wurde) verwendet dieses T3-Home (PID {pid}, Port {port}, Version {version}). Wenn eine T3-Code-App auf einem anderen Rechner ihn über SSH gestartet hat, startet diese App ihn neu: Entferne oder trenne dort diese SSH-Umgebung oder beende diese App. Stoppe dann den Server und öffne T3 Code erneut. Du kannst auch ein separates T3CODE_HOME setzen und mit dem laufenden Server koppeln.",
-  "8d8628520de0d9f1": "Ein anderer T3-Code-Server (zum Beispiel `t3 serve` oder einer, der über SSH gestartet wurde) verwendet dieses T3-Home (PID {pid}, Port {port}). Wenn eine T3-Code-App auf einem anderen Rechner ihn über SSH gestartet hat, startet diese App ihn neu: Entferne oder trenne dort diese SSH-Umgebung oder beende diese App. Stoppe dann den Server und öffne T3 Code erneut. Du kannst auch ein separates T3CODE_HOME setzen und mit dem laufenden Server koppeln.",
   "6574442caf8bfd15": "Bildschirmaufnahme einrichten",
   "a8210440c691b062": "Bedienungshilfen einrichten",
   "0cbbbd8abd25f9d4": "Festplattenvollzugriff einrichten",
@@ -130,5 +125,14 @@
   "8af79268f2349f4c": "E-Mail-Adresse kopieren",
   "a9f9254d458e49fe": "Bild kopieren",
   "9c1b20fbc881de5d": "Desktop-Konfiguration",
-  "1b14230874f19eb9": "Bilder"
+  "1b14230874f19eb9": "Bilder",
+  "ac5b392578bacdc3": "Für dieses T3-Home ist ein älterer T3-Code-Hintergrunddienst eingerichtet, der möglicherweise noch eine Version ohne Besitzsperre ausführt. Aktualisiere ihn mit `t3 update` oder entferne ihn mit `t3 service uninstall` und übergib dabei `--base-dir` mit diesem T3-Home. Verwende `npx t3@latest`, wenn `t3` fehlt oder veraltet ist. Öffne T3 Code dann erneut.",
+  "e04a6102ad392f46": "Ein anderer T3-Code-Server belegt dieses T3-Home, antwortet aber nicht. Wenn er gerade startet oder aktualisiert wird, warte darauf und öffne T3 Code erneut. Andernfalls stoppe ihn und öffne T3 Code dann erneut.",
+  "43106dd4d9823ba2": "Ein anderer T3-Code-Server (PID {pid}, Port {port}) belegt dieses T3-Home, antwortet aber nicht. Wenn er gerade startet oder aktualisiert wird, warte darauf und öffne T3 Code erneut. Andernfalls stoppe ihn und öffne T3 Code dann erneut.",
+  "fb7fc26cb0bff28a": "Ein T3-Code-Server aus einer älteren Version (PID {pid}, Port {port}) verwendet dieses T3-Home. Er stammt aus der Zeit vor der Besitzsperre, daher kann T3 Code sich nicht mit ihm verbinden. Stoppe diesen Prozess und öffne T3 Code dann erneut.",
+  "dd614b4ab1eeb617": "Ein T3-Code-Entwicklungsserver (PID {pid}, Port {port}) verwendet dieses T3-Home. Stoppe ihn oder gib ihm ein separates T3CODE_HOME und öffne T3 Code dann erneut.",
+  "aa448fa4491a5d4f": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}), lauscht nur auf {origin}, daher kann T3 Code sich auf diesem Rechner nicht mit ihm verbinden. Starte ihn ohne bestimmten Host neu und öffne T3 Code dann erneut.",
+  "c5079de7e1299c60": "Auf Port {port}, wo der T3-Code-Server dieses T3-Homes (PID {pid}) sein sollte, hat eine andere Umgebung geantwortet. Stoppe, was sonst auf diesem Port lauscht, und öffne T3 Code dann erneut.",
+  "32112d61c684d3a7": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}, Version {version}), ist für diese App zu alt. Aktualisiere ihn mit `t3 update` und übergib dabei `--base-dir` mit diesem T3-Home. Öffne T3 Code dann erneut.",
+  "c008ff68ac1804b7": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}, Version {version}), ist neuer als diese App. Aktualisiere T3 Code und öffne es dann erneut."
 }

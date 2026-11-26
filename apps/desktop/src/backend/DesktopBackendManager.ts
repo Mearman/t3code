@@ -1,5 +1,6 @@
 import * as Brand from "effect/Brand";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -58,6 +59,7 @@ const BACKEND_READINESS_PATH = "/.well-known/t3/environment";
 // Three restarts without readiness is about 2 s of backoff: past a blip, early enough to help.
 const STARTUP_FAILURE_RESTART_ATTEMPTS = 3;
 const STARTUP_FAILURE_OUTPUT_CHARS = 4_000;
+const ATTACHED_SERVER_PROBE_INTERVAL = Duration.seconds(2);
 const { logWarning: logBackendProcessWarning } =
   DesktopObservability.makeComponentLogger("desktop-backend-process");
 
@@ -83,6 +85,7 @@ export interface BackendReadinessProbe {
 }
 
 export interface DesktopBackendStartConfig extends BackendProcessContext {
+  readonly _tag: "Spawn";
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string | undefined>;
   /** False passes env verbatim, preventing the Windows T3CODE_HOME from leaking into WSL. */
@@ -98,6 +101,51 @@ export interface DesktopBackendStartConfig extends BackendProcessContext {
   readonly wslRuntimeId?: string;
   readonly wslT3Home?: string | null;
 }
+
+/** A current server that already owns this app's T3 home, which the app uses instead of its own. */
+export interface AttachedServer {
+  readonly httpBaseUrl: URL;
+  readonly pid: number;
+  readonly ownerId: string;
+  readonly serviceManaged: boolean;
+}
+
+export type AttachedServerProbe =
+  | { readonly _tag: "Ready"; readonly server: AttachedServer }
+  /** The home's owner is restarting, starting up, or not answering yet. */
+  | { readonly _tag: "Waiting" }
+  /** Nothing owns the home and no service launcher is bringing a server back. */
+  | { readonly _tag: "Gone" }
+  /** The home now belongs to a server this app cannot attach to. */
+  | { readonly _tag: "Refused" };
+
+export class AttachedSessionError extends Schema.TaggedError<AttachedSessionError>()(
+  "AttachedSessionError",
+  {
+    reason: Schema.Literals(["owner-unavailable", "issue-failed"]),
+    cause: Schema.optionalKey(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.reason === "owner-unavailable"
+      ? "No current server owns this T3 home, or its owner changed while a desktop session was issued."
+      : "Could not issue a desktop session on the server owning this T3 home.";
+  }
+}
+
+/** A run that uses a server owning the home instead of spawning one; it never signals that server. */
+export interface DesktopBackendAttachConfig {
+  readonly _tag: "Attach";
+  readonly probe: Effect.Effect<AttachedServerProbe>;
+  /** Set while the run is attached to a server that answers. */
+  readonly server: Option.Option<AttachedServer>;
+  /** A bearer session on the attached server, issued on first use and reused while it is valid. */
+  readonly bearerToken: Effect.Effect<string, AttachedSessionError>;
+  /** Replaces the session once the server rejects it; true when the token changed. */
+  readonly renewRejectedSession: Effect.Effect<boolean>;
+}
+
+export type DesktopBackendRunConfig = DesktopBackendStartConfig | DesktopBackendAttachConfig;
 
 export interface PreflightFailure {
   readonly reason: string;
@@ -260,7 +308,7 @@ export interface DesktopBackendInstance {
   readonly start: Effect.Effect<void>;
   /** Timeout controls the warning; stop still waits for process teardown and exit. */
   readonly stop: (options?: { readonly timeout?: Duration.Duration }) => Effect.Effect<void>;
-  readonly currentConfig: Effect.Effect<Option.Option<DesktopBackendStartConfig>>;
+  readonly currentConfig: Effect.Effect<Option.Option<DesktopBackendRunConfig>>;
   readonly snapshot: Effect.Effect<DesktopBackendSnapshot>;
   readonly waitForReady: (timeout: Duration.Duration) => Effect.Effect<boolean>;
 }
@@ -268,7 +316,7 @@ export interface DesktopBackendInstance {
 export interface BackendInstanceSpec {
   readonly id: BackendInstanceId;
   readonly label: Effect.Effect<string>;
-  readonly configResolve: Effect.Effect<DesktopBackendStartConfig, PlatformError.PlatformError>;
+  readonly configResolve: Effect.Effect<DesktopBackendRunConfig, PlatformError.PlatformError>;
   readonly trackProcess?: TrackBackendProcess;
   /** Receives the ready run's URL and pid; reading current config could race a subsequent restart. */
   readonly onReady?: (httpBaseUrl: URL, pid: number) => Effect.Effect<void>;
@@ -294,7 +342,7 @@ interface ActiveBackendRun {
 interface BackendManagerState {
   readonly desiredRunning: boolean;
   readonly ready: boolean;
-  readonly config: Option.Option<DesktopBackendStartConfig>;
+  readonly config: Option.Option<DesktopBackendRunConfig>;
   readonly active: Option.Option<ActiveBackendRun>;
   readonly restartAttempt: number;
   readonly preflightFailureAttempt: number;
@@ -787,6 +835,204 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
     });
   });
 
+  // A refused home is reported like a server's state-dir exit: nothing this app restarts can fix it.
+  const finalizeRun = Effect.fn("desktop.backendInstance.finalizeRun")(function* (
+    runId: number,
+    reason: string,
+    exitCode?: number,
+    homeRefused = false,
+  ) {
+    const stateDirOwned = homeRefused || exitCode === SERVER_EXIT_CODE_STATE_DIR_OWNED;
+    yield* mutex.withPermits(1)(
+      Effect.gen(function* () {
+        const { isCurrentRun, nextState, pid, exitObserved, stopRequested, wasReady } =
+          yield* SubscriptionRef.modify(
+            state,
+            (
+              latest,
+            ): readonly [
+              {
+                readonly isCurrentRun: boolean;
+                readonly nextState: BackendManagerState;
+                readonly pid: Option.Option<number>;
+                readonly exitObserved: boolean;
+                readonly stopRequested: boolean;
+                readonly wasReady: boolean;
+              },
+              BackendManagerState,
+            ] => {
+              const currentRun = Option.getOrUndefined(latest.active);
+              if (currentRun?.id !== runId) {
+                return [
+                  {
+                    isCurrentRun: false,
+                    nextState: latest,
+                    pid: Option.none<number>(),
+                    exitObserved: false,
+                    stopRequested: false,
+                    wasReady: false,
+                  },
+                  latest,
+                ] as const;
+              }
+
+              const next = {
+                ...latest,
+                active: Option.none<ActiveBackendRun>(),
+                ready: false,
+              };
+              return [
+                {
+                  isCurrentRun: true,
+                  nextState: next,
+                  pid: currentRun.pid,
+                  exitObserved: currentRun.exitObserved,
+                  stopRequested: currentRun.stopRequested,
+                  wasReady: latest.ready,
+                },
+                next,
+              ] as const;
+            },
+          );
+
+        if (isCurrentRun) {
+          yield* Ref.set(migrationProgress, null);
+          yield* spec.onMigrationProgress?.(null) ?? Effect.void;
+          yield* desktopTelemetryPublisher.removeControlSource(spec.id);
+          if (Option.isSome(pid)) {
+            if (exitObserved && !stopRequested) {
+              yield* backendOutputLog.persistFailure({
+                details: `pid=${pid.value} ${reason}`,
+              });
+            } else {
+              yield* backendOutputLog.discardSession;
+            }
+          }
+          if (wasReady) {
+            yield* spec.onShutdown?.() ?? Effect.void;
+          }
+        }
+
+        if (isCurrentRun && nextState.desiredRunning) {
+          if (stateDirOwned && !stopRequested) {
+            yield* SubscriptionRef.update(state, (latest) => ({
+              ...latest,
+              desiredRunning: false,
+            }));
+            yield* (spec.onStateDirOwned?.() ?? Effect.void).pipe(Effect.ignore);
+            return;
+          }
+          yield* scheduleRestart(reason, exitCode);
+        }
+      }),
+    );
+  });
+
+  const watchAttachedServer = Effect.fn("desktop.backendInstance.watchAttachedServer")(function* (
+    config: DesktopBackendAttachConfig,
+    runId: number,
+  ) {
+    let attached = Option.none<AttachedServer>();
+    let waitingSince = Option.none<number>();
+    while (true) {
+      const probe = yield* config.probe;
+      if (probe._tag === "Gone") {
+        return { reason: "the server owning the T3 home stopped", refused: false };
+      }
+      if (probe._tag === "Refused") {
+        return { reason: "the T3 home belongs to a server this app cannot use", refused: true };
+      }
+      if (probe._tag === "Ready") {
+        const server = probe.server;
+        // The renderer read the old address at load; the next run hands out the new one.
+        if (
+          Option.isSome(attached) &&
+          attached.value.httpBaseUrl.href !== server.httpBaseUrl.href
+        ) {
+          return { reason: "the server owning the T3 home moved", refused: false };
+        }
+        waitingSince = Option.none();
+        const becameReady = yield* SubscriptionRef.modify(state, (latest) => {
+          const activeRun = Option.getOrUndefined(latest.active);
+          const previous = Option.flatMap(latest.config, (current) =>
+            current._tag === "Attach" ? current.server : Option.none(),
+          );
+          const changed =
+            !latest.ready || Option.isNone(previous) || previous.value.ownerId !== server.ownerId;
+          if (activeRun?.id !== runId || !changed) return [false, latest] as const;
+          return [
+            true,
+            {
+              ...latest,
+              ready: true,
+              restartAttempt: 0,
+              config: Option.some({ ...config, server: Option.some(server) }),
+            },
+          ] as const;
+        });
+        attached = Option.some(server);
+        if (becameReady) {
+          yield* spec.onReady?.(server.httpBaseUrl, server.pid) ?? Effect.void;
+        }
+      } else {
+        const wasReady = yield* SubscriptionRef.modify(state, (latest) =>
+          latest.ready && Option.getOrUndefined(latest.active)?.id === runId
+            ? ([true, { ...latest, ready: false }] as const)
+            : ([false, latest] as const),
+        );
+        if (wasReady) yield* spec.onShutdown?.() ?? Effect.void;
+        const now = yield* Clock.currentTimeMillis;
+        if (Option.isNone(waitingSince)) {
+          waitingSince = Option.some(now);
+        } else if (
+          now - waitingSince.value >=
+          Duration.toMillis(DEFAULT_BACKEND_READINESS_TIMEOUT)
+        ) {
+          yield* reportStartupFailure("The server using this T3 home is not answering.");
+          return { reason: "the server owning the T3 home stopped answering", refused: false };
+        }
+      }
+      yield* Effect.sleep(ATTACHED_SERVER_PROBE_INTERVAL);
+    }
+  });
+
+  // Mirrors a spawned run, except that closing the run only stops watching: the server is not ours.
+  const startAttachedRun = Effect.fn("desktop.backendInstance.startAttachedRun")(function* (
+    config: DesktopBackendAttachConfig,
+  ) {
+    const runScope = yield* Scope.make("sequential");
+    const closed = yield* Deferred.make<void>();
+    yield* Scope.addFinalizer(runScope, Deferred.succeed(closed, undefined));
+    const runId = yield* SubscriptionRef.modify(state, (latest) => [
+      latest.nextRunId,
+      {
+        ...latest,
+        desiredRunning: true,
+        ready: false,
+        config: Option.some({ ...config, server: Option.none() }),
+        preflightFailureAttempt: 0,
+        active: Option.some({
+          id: latest.nextRunId,
+          scope: runScope,
+          fiber: Option.none(),
+          pid: Option.none(),
+          exitObserved: false,
+          stopRequested: false,
+        } satisfies ActiveBackendRun),
+        nextRunId: latest.nextRunId + 1,
+      },
+    ]);
+    const program = Effect.raceFirst(
+      watchAttachedServer(config, runId),
+      Deferred.await(closed).pipe(Effect.as({ reason: "stopped", refused: false })),
+    ).pipe(
+      Effect.flatMap((outcome) => finalizeRun(runId, outcome.reason, undefined, outcome.refused)),
+      Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
+    );
+    const fiber = yield* Effect.forkIn(program, parentScope);
+    yield* updateActiveRun(runId, (run) => ({ ...run, fiber: Option.some(fiber) }));
+  });
+
   const start: Effect.Effect<void> = Effect.suspend(() =>
     mutex.withPermits(1)(
       Effect.gen(function* () {
@@ -821,8 +1067,14 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           }
           return;
         }
+        if (config.value._tag === "Attach") {
+          yield* cancelRestart;
+          yield* startAttachedRun(config.value);
+          return;
+        }
+        const spawnConfig = config.value;
         const entryExists = yield* fileSystem
-          .exists(config.value.entryPath)
+          .exists(spawnConfig.entryPath)
           .pipe(Effect.orElseSucceed(() => false));
 
         const resetFatalPreflightCounter =
@@ -832,11 +1084,11 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           ...latest,
           desiredRunning: true,
           ready: false,
-          config: Option.some(config.value),
+          config: Option.some(spawnConfig),
           preflightFailureAttempt: resetFatalPreflightCounter ? 0 : latest.preflightFailureAttempt,
         }));
 
-        const preflightFailure = config.value.preflightFailure;
+        const preflightFailure = spawnConfig.preflightFailure;
         if (Option.isSome(preflightFailure)) {
           const { reason, fatal, retryLimit } = preflightFailure.value;
           if (!fatal && retryLimit === undefined) {
@@ -892,7 +1144,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
         );
 
         if (!entryExists) {
-          yield* scheduleRestart(`missing server entry at ${config.value.entryPath}`);
+          yield* scheduleRestart(`missing server entry at ${spawnConfig.entryPath}`);
           return;
         }
 
@@ -913,98 +1165,8 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           },
         ]);
 
-        const finalizeRun = Effect.fn("desktop.backendInstance.finalizeRun")(function* (
-          reason: string,
-          exitCode?: number,
-        ) {
-          const stateDirOwned = exitCode === SERVER_EXIT_CODE_STATE_DIR_OWNED;
-          yield* mutex.withPermits(1)(
-            Effect.gen(function* () {
-              const { isCurrentRun, nextState, pid, exitObserved, stopRequested, wasReady } =
-                yield* SubscriptionRef.modify(
-                  state,
-                  (
-                    latest,
-                  ): readonly [
-                    {
-                      readonly isCurrentRun: boolean;
-                      readonly nextState: BackendManagerState;
-                      readonly pid: Option.Option<number>;
-                      readonly exitObserved: boolean;
-                      readonly stopRequested: boolean;
-                      readonly wasReady: boolean;
-                    },
-                    BackendManagerState,
-                  ] => {
-                    const currentRun = Option.getOrUndefined(latest.active);
-                    if (currentRun?.id !== runId) {
-                      return [
-                        {
-                          isCurrentRun: false,
-                          nextState: latest,
-                          pid: Option.none<number>(),
-                          exitObserved: false,
-                          stopRequested: false,
-                          wasReady: false,
-                        },
-                        latest,
-                      ] as const;
-                    }
-
-                    const next = {
-                      ...latest,
-                      active: Option.none<ActiveBackendRun>(),
-                      ready: false,
-                    };
-                    return [
-                      {
-                        isCurrentRun: true,
-                        nextState: next,
-                        pid: currentRun.pid,
-                        exitObserved: currentRun.exitObserved,
-                        stopRequested: currentRun.stopRequested,
-                        wasReady: latest.ready,
-                      },
-                      next,
-                    ] as const;
-                  },
-                );
-
-              if (isCurrentRun) {
-                yield* Ref.set(migrationProgress, null);
-                yield* spec.onMigrationProgress?.(null) ?? Effect.void;
-                yield* desktopTelemetryPublisher.removeControlSource(spec.id);
-                if (Option.isSome(pid)) {
-                  if (exitObserved && !stopRequested) {
-                    yield* backendOutputLog.persistFailure({
-                      details: `pid=${pid.value} ${reason}`,
-                    });
-                  } else {
-                    yield* backendOutputLog.discardSession;
-                  }
-                }
-                if (wasReady) {
-                  yield* spec.onShutdown?.() ?? Effect.void;
-                }
-              }
-
-              if (isCurrentRun && nextState.desiredRunning) {
-                if (stateDirOwned && !stopRequested) {
-                  yield* SubscriptionRef.update(state, (latest) => ({
-                    ...latest,
-                    desiredRunning: false,
-                  }));
-                  yield* (spec.onStateDirOwned?.() ?? Effect.void).pipe(Effect.ignore);
-                  return;
-                }
-                yield* scheduleRestart(reason, exitCode);
-              }
-            }),
-          );
-        });
-
         const program = runBackendProcess({
-          ...config.value,
+          ...spawnConfig,
           ...(spec.trackProcess === undefined ? {} : { trackProcess: spec.trackProcess }),
           desktopTelemetryStream: desktopTelemetryPublisher.encoded,
           desktopBrowserStream: desktopBrowserHost.events,
@@ -1021,7 +1183,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
             yield* spec.onMigrationProgress?.(null) ?? Effect.void;
             outputDecoders = makeOutputDecoders();
             yield* backendOutputLog.beginSession({
-              details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,
+              details: `pid=${pid} port=${spawnConfig.bootstrap.port} cwd=${spawnConfig.cwd}`,
             });
           }),
           onExitObserved: () =>
@@ -1051,15 +1213,12 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
 
             yield* Ref.set(migrationProgress, null);
             yield* spec.onMigrationProgress?.(null) ?? Effect.void;
-            yield* spec.onReady?.(config.value.httpBaseUrl, pid) ?? Effect.void;
-            if (
-              config.value.runningDistro !== undefined &&
-              config.value.wslRuntimeId !== undefined
-            ) {
+            yield* spec.onReady?.(spawnConfig.httpBaseUrl, pid) ?? Effect.void;
+            if (spawnConfig.runningDistro !== undefined && spawnConfig.wslRuntimeId !== undefined) {
               yield* wslEnvironment.pruneRuntimes(
-                config.value.runningDistro,
-                config.value.wslRuntimeId,
-                config.value.wslT3Home ?? null,
+                spawnConfig.runningDistro,
+                spawnConfig.wslRuntimeId,
+                spawnConfig.wslT3Home ?? null,
               );
             }
           }),
@@ -1114,8 +1273,8 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Scope.provide(runScope),
           Effect.matchEffect({
-            onFailure: (error) => finalizeRun(error.message),
-            onSuccess: (exit) => finalizeRun(exit.reason, Option.getOrUndefined(exit.code)),
+            onFailure: (error) => finalizeRun(runId, error.message),
+            onSuccess: (exit) => finalizeRun(runId, exit.reason, Option.getOrUndefined(exit.code)),
           }),
           Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
         );
