@@ -259,6 +259,11 @@ export function canForkProjectedAssistantItem(input: {
   return canForkNatively || capabilities.context.supportsFullThreadHandoff;
 }
 
+/** Whether a failure is a refusal because another process was seen holding the session. */
+export function isHeldSessionFailure(failure: Pick<OrchestrationV2ProviderFailure, "code">) {
+  return failure.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE;
+}
+
 /**
  * This thread's runs refused because another process was seen holding its session, sorted. A
  * fork offered on one starts from it: a failed run is never forked natively, so the fork carries
