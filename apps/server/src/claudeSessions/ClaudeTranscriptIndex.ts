@@ -55,8 +55,8 @@ export const ClaudeTranscriptLineFlag = {
 
 type TypedArray = Int32Array | Uint32Array | Float64Array | Uint16Array | Uint8Array;
 
-// A growable typed array: the index keeps a fixed handful of numbers per line, not an object.
-class Column<T extends TypedArray> {
+/** A growable typed array, so per-line state is a fixed handful of numbers, not an object. */
+export class ClaudeTranscriptColumn<T extends TypedArray> {
   #data: T;
   readonly #make: (length: number) => T;
   constructor(make: (length: number) => T) {
@@ -68,8 +68,12 @@ class Column<T extends TypedArray> {
   }
   get(index: number): number {
     const value = this.#data[index];
-    if (value === undefined) throw new RangeError(`Index column has no slot ${index}.`);
+    if (value === undefined) throw new RangeError(`Column has no slot ${index}.`);
     return value;
+  }
+  /** The value at `index`, or `fallback` for a slot never set. */
+  read(index: number, fallback: number): number {
+    return index < this.#data.length ? (this.#data[index] ?? fallback) : fallback;
   }
   set(index: number, value: number): void {
     if (index >= this.#data.length) {
@@ -196,6 +200,7 @@ export interface ClaudeTranscriptLineLocation {
 /**
  * The minimum about each line of one transcript that turn structure needs, one entry per uuid: the first well-formed line with a uuid wins, a later copy is counted and dropped, and a line that could not be read keeps its slot only until a well-formed copy arrives. Sidechain lines and lines without a uuid are not entries. Memory is a fixed set of numbers per entry, plus each distinct uuid and prompt id string once.
  */
+const Column = ClaudeTranscriptColumn;
 const makeColumns = () => ({
   entryOf: new Column((length) => new Int32Array(length)),
   uuid: new Column((length) => new Int32Array(length)),
@@ -223,6 +228,11 @@ export class ClaudeTranscriptIndex {
   #customTitle: string | undefined = undefined;
   #derivedFrom: ReadonlyArray<{ readonly sessionId: string; readonly via: string }> = [];
   #version = 0;
+  #generation = 0;
+  #added: Array<number> = [];
+  #replaced = false;
+  #factsChanged = false;
+  #newMalformed: Array<number> = [];
   #decoder = new TextDecoder();
   /** Where the file has been read to, with the guard digests of its first and last bytes. */
   position: ClaudeTranscriptFilePosition = initialPosition;
@@ -239,7 +249,34 @@ export class ClaudeTranscriptIndex {
     this.#customTitle = undefined;
     this.#derivedFrom = [];
     this.#version += 1;
+    this.#generation += 1;
+    this.#added = [];
+    this.#replaced = false;
+    this.#factsChanged = true;
+    this.#newMalformed = [];
     this.position = initialPosition;
+  }
+
+  /** What changed since the last call: entries added in order, and whether any was replaced. */
+  takeChanges(): ClaudeTranscriptIndexChanges {
+    const changes: ClaudeTranscriptIndexChanges = {
+      generation: this.#generation,
+      added: this.#added,
+      replaced: this.#replaced,
+      factsChanged: this.#factsChanged,
+      malformedOffsets: this.#newMalformed,
+    };
+    this.#added = [];
+    this.#replaced = false;
+    this.#factsChanged = false;
+    this.#newMalformed = [];
+    return changes;
+  }
+
+  #malformedAt(offset: number): void {
+    this.#malformed.push(offset);
+    this.#newMalformed.push(offset);
+    this.#version += 1;
   }
 
   // Ids are stored plus one, so a zeroed slot means none.
@@ -268,7 +305,7 @@ export class ClaudeTranscriptIndex {
     const line = decodeClaudeTranscriptLine(this.#decoder.decode(bytes));
     if (line._tag === "Blank") return;
     if (line._tag === "Unparsed") {
-      this.#malformed.push(offset);
+      this.#malformedAt(offset);
       return;
     }
     const { header } = line;
@@ -278,16 +315,18 @@ export class ClaudeTranscriptIndex {
         if (record.source === "ai") this.#aiTitle = record.title ?? this.#aiTitle;
         else this.#customTitle = record.title;
         this.#version += 1;
+        this.#factsChanged = true;
         return;
       }
       if (record.kind === "derivedFrom") {
         this.#derivedFrom = record.sessions;
         this.#version += 1;
+        this.#factsChanged = true;
         return;
       }
     }
     if (header.uuid === undefined || header.isSidechain === true) {
-      if (line._tag === "Unreadable") this.#malformed.push(offset);
+      if (line._tag === "Unreadable") this.#malformedAt(offset);
       return;
     }
     const fields =
@@ -314,6 +353,8 @@ export class ClaudeTranscriptIndex {
       return;
     }
     const entry = existing >= 0 ? existing : this.#count++;
+    if (existing >= 0) this.#replaced = true;
+    else this.#added.push(entry);
     this.#c.entryOf.set(id, entry + 1);
     this.#c.uuid.set(entry, id);
     this.#c.parent.set(entry, this.#optional(fields.parentUuid));
@@ -333,7 +374,7 @@ export class ClaudeTranscriptIndex {
     this.#version += 1;
   }
 
-  /** Changes whenever an entry or a session fact does, so a caller can skip recomputing turns. */
+  /** Changes whenever an entry, a malformed line or a session fact does. */
   get version(): number {
     return this.#version;
   }
@@ -372,6 +413,18 @@ export class ClaudeTranscriptIndex {
   parentUuid(entry: number): string | null {
     const id = this.#c.parent.get(entry);
     return id === 0 ? null : this.#string(id - 1);
+  }
+  /** The uuid's string key: equal for every line naming the same uuid, entry or not. */
+  uuidKey(entry: number): number {
+    return this.#c.uuid.get(entry);
+  }
+  /** The parent uuid's string key, or -1 when the parent is null. */
+  parentKey(entry: number): number {
+    return this.#c.parent.get(entry) - 1;
+  }
+  /** One more than the greatest string key, so arrays indexed by key can be sized. */
+  get keyCount(): number {
+    return this.#strings.length;
   }
   /** The parent's entry, or -1 when the parent is null or has no entry. */
   parent(entry: number): number {
@@ -427,6 +480,16 @@ export class ClaudeTranscriptIndex {
   }
 }
 
+export interface ClaudeTranscriptIndexChanges {
+  /** Changes whenever the index is reset. */
+  readonly generation: number;
+  readonly added: ReadonlyArray<number>;
+  /** An unreadable entry was replaced by a well-formed copy, changing its fields in place. */
+  readonly replaced: boolean;
+  readonly factsChanged: boolean;
+  readonly malformedOffsets: ReadonlyArray<number>;
+}
+
 /** Where a sync resumes. A same-length rewrite between the two guard windows goes unseen. */
 export interface ClaudeTranscriptFilePosition {
   readonly offset: number;
@@ -469,11 +532,13 @@ export interface ClaudeTranscriptSync {
 }
 
 /**
- * Brings `index` up to date with the file: only bytes appended since the last sync are read, unless the file is another file, is shorter, or its first or last read bytes changed, when the index is rebuilt from the top. An unterminated last line waits for its newline. Memory beyond the index is one read chunk and the longest line.
+ * Brings `index` up to date with the file: only bytes appended since the last sync are read, unless the file is another file, is shorter, or its first or last read bytes changed, when the index is rebuilt from the top. An unterminated last line waits for its newline. Memory beyond the index is one read chunk and the longest line, and `afterChunk` runs between chunks.
  */
 export const syncClaudeTranscriptIndex = Effect.fn("syncClaudeTranscriptIndex")(function* (input: {
   readonly filePath: string;
   readonly index: ClaudeTranscriptIndex;
+  /** Runs after each read chunk's lines are indexed, so work done on them stays bounded. */
+  readonly afterChunk: Effect.Effect<void>;
 }) {
   const { index } = input;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -554,6 +619,7 @@ export const syncClaudeTranscriptIndex = Effect.fn("syncClaudeTranscriptIndex")(
       pending.push(bytes.subarray(lineStart));
       pendingLength += bytes.length - lineStart;
     }
+    yield* input.afterChunk;
   }
   const tailBytes = concatenate(tailPieces, tailLength);
   index.position = {
