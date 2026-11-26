@@ -9420,7 +9420,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         status: "failed",
         lastErrorClass: "usage_limit",
         usageLimitResetAt: limitFailure.resetAt,
-      };
+      } as const;
       assert.deepEqual(yield* presented, {
         runIds: [original.id, original.id, original.id],
         shells: [limited, limited],
@@ -9461,7 +9461,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         status: "failed",
         lastErrorClass: null,
         usageLimitResetAt: null,
-      };
+      } as const;
       assert.deepEqual(yield* presented, {
         runIds: [transcriptRun.id, transcriptRun.id, transcriptRun.id],
         shells: [external, external],
