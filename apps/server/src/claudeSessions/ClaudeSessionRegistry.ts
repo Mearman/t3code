@@ -96,23 +96,25 @@ const startSeconds = (procStart: string) =>
   );
 
 /**
- * Live holders per session id, matched by pid and start time, excluding `ownRootPids` and their
- * descendants (a launcher may run `claude` as a child). Read `processes` with `LC_ALL=C TZ=UTC`,
- * which is how `procStart` is written.
+ * Live holders per session id, excluding `ownRootPids` and their descendants (a launcher may run
+ * `claude` as a child). With `matchStartTime`, a live pid holds only when `procStart` names its
+ * start, so a reused pid does not; read `processes` with `LC_ALL=C TZ=UTC`, how `procStart` is
+ * written. An unparseable `procStart`, or no `matchStartTime`, leaves liveness alone to decide.
  */
 export function externalClaudeSessionHolders(input: {
   readonly entries: ReadonlyArray<ClaudeSessionRegistryEntry>;
   readonly processes: ReadonlyArray<ClaudeProcessRow>;
   readonly ownRootPids: ReadonlyArray<number>;
+  readonly matchStartTime: boolean;
 }): ReadonlyMap<string, ClaudeSessionRegistryEntry> {
   const table = indexClaudeProcessTable(input.processes);
   const ownPids = claudeProcessTree(table, input.ownRootPids);
   const holders = new Map<string, ClaudeSessionRegistryEntry>();
   for (const entry of input.entries) {
     const started = table.byPid.get(entry.pid)?.startTimeSeconds;
-    if (started === undefined || Option.getOrNull(startSeconds(entry.procStart)) !== started) {
-      continue;
-    }
+    if (started === undefined) continue;
+    const recorded = input.matchStartTime ? startSeconds(entry.procStart) : Option.none();
+    if (Option.isSome(recorded) && recorded.value !== started) continue;
     if (ownPids.has(entry.pid)) continue;
     // A resumed session can briefly have two live entries; the later one is current.
     const known = holders.get(entry.sessionId);
