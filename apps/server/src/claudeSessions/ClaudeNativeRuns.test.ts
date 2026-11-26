@@ -93,6 +93,7 @@ function parse(records: ReadonlyArray<unknown>, state = initialClaudeTranscriptP
     sessionId: SESSION,
     state,
     lines: records.map((record, index) => ({ text: JSON.stringify(record), offset: index })),
+    known: new Set(),
   });
   expect(result.malformed).toEqual([]);
   return result;
@@ -431,6 +432,41 @@ describe("planClaudeNativeRuns", () => {
       createdBy: "user",
       runId: `claude-run:${SESSION}:p1`,
     });
+  });
+
+  it("adds an item to an earlier segment's run when the parser names that segment", () => {
+    const parsed = parse([...firstTurn, ...secondTurn]);
+    const first = plan(parsed.events);
+    const written = stored(first.groups.flat());
+    const late = plan(
+      [
+        {
+          _tag: "Item",
+          segmentId: "p1",
+          item: {
+            id: `x:${SESSION}:late:0`,
+            lineUuid: "late",
+            blockIndex: 0,
+            role: "assistant",
+            timestamp: LATER,
+            block: { type: "text", text: "A late part of the first reply.", citations: null },
+            model: "claude-test",
+            messageId: "msg-late",
+            forkedFrom: undefined,
+          },
+        },
+      ],
+      {
+        state: first.state,
+        storedRuns: written.storedRuns,
+        storedItems: written.storedItems,
+        nextRunOrdinal: 3,
+        nextProviderTurnOrdinal: 3,
+      },
+    );
+    const item = stored(late.groups.flat()).items.get(`x:${SESSION}:late:0`);
+    expect(item).toMatchObject({ type: "assistant_message", runId: `claude-run:${SESSION}:p1` });
+    expect(late.groups.flat().filter((event) => event.type === "run.created")).toEqual([]);
   });
 
   it("caps tool output and says how much the transcript still holds", () => {
