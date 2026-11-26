@@ -41,7 +41,7 @@ export const MAX_RUN_ORDINAL =
   Math.floor((Number.MAX_SAFE_INTEGER + 1) / TURN_ITEM_POSITIONS_PER_RUN) - 1;
 
 /** Run ordinals kept free above every run read back from a transcript, for the runs T3 Code starts after them. */
-export const RUN_ORDINAL_HEADROOM = 1_000_000;
+const RUN_ORDINAL_HEADROOM = 1_000_000;
 
 /** The largest ordinal a run read back from a transcript takes, leaving `RUN_ORDINAL_HEADROOM` above it. */
 export const MAX_NATIVE_RUN_ORDINAL = MAX_RUN_ORDINAL - RUN_ORDINAL_HEADROOM;
