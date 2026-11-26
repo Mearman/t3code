@@ -93,6 +93,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
 import * as SecretResolver from "./secrets/SecretResolver.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
+import * as ProviderOrchestrationAdapterInfrastructure from "./provider/ProviderOrchestrationAdapterInfrastructure.ts";
 import * as ProviderHostPathWatcher from "./provider/ProviderHostPathWatcher.ts";
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -698,7 +699,10 @@ const layerClaudeSessionSyncWorker = Layer.effectDiscard(
           ClaudeSessionProjects.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
           ClaudeSessionSyncState.layer,
           ClaudeSyncCapacity.layer,
-          ClaudeLiveSessions.layer,
+          // The send gate's own record of spawned CLIs: the same layer reference, so one instance.
+          ClaudeLiveSessions.layer.pipe(
+            Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer),
+          ),
           RuntimeLayer.layerEventSink,
           ProjectionStoreV2.layer,
           IdAllocator.layer,
