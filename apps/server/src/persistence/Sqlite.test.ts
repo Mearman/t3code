@@ -21,6 +21,7 @@ import { vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
+import { hasPendingForkMigrations, runForkMigrations } from "./ForkMigrations.ts";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
 
@@ -194,10 +195,12 @@ const ownT3Home = Effect.fn(function* () {
   );
 });
 
+// With no id, migrates as this build's server does: upstream's ledger, then the fork's.
 const migrateTo = (toMigrationInclusive?: number) =>
   Effect.gen(function* () {
     const { dbPath } = yield* ServerConfig.ServerConfig;
     yield* runMigrations({ toMigrationInclusive }).pipe(
+      Effect.andThen(toMigrationInclusive === undefined ? runForkMigrations() : Effect.void),
       Effect.provide(NodeSqliteClient.layer({ filename: dbPath })),
     );
   });
@@ -280,6 +283,29 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
       yield* ownT3Home();
 
       yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfigCurrentSchema));
+    }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
+  it.effect("does not run fork migrations behind a running server", () =>
+    Effect.gen(function* () {
+      const { dbPath } = yield* ServerConfig.ServerConfig;
+      yield* runMigrations().pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+      yield* ownT3Home();
+
+      const opened = yield* Effect.void.pipe(
+        Effect.provide(SqlitePersistence.layerCliConfig),
+        Effect.result,
+      );
+
+      assert.equal(opened._tag, "Failure");
+      if (opened._tag === "Failure") {
+        assert.instanceOf(opened.failure, SqlitePersistence.ServerOwnsDatabaseError);
+      }
+      assert.isTrue(
+        yield* hasPendingForkMigrations().pipe(
+          Effect.provide(NodeSqliteClient.layer({ filename: dbPath })),
+        ),
+      );
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
   );
 
