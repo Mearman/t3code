@@ -104,6 +104,8 @@ const summary = (events: ReadonlyArray<ClaudeTranscriptEvent>) =>
         return `item ${event.item.id}`;
       case "QueuedPrompt":
         return `queued ${event.id} in ${event.segmentId}`;
+      case "CommandOutput":
+        return `output ${event.id}`;
       case "SegmentEnded":
         return `end ${event.segmentId} ${event.reason} ${event.lastAssistantUuid}`;
       case "Branch":
@@ -247,7 +249,7 @@ describe("parseClaudeTranscriptLines", () => {
       `item ${id("i1", 0)}`,
       "end p2 interrupted b1",
       "end p2 interrupted b1",
-      `item ${id("o1")}`,
+      `output ${id("o1")}`,
       "end p2 interrupted b1",
       "start m1",
       `item ${id("c1", 0)}`,
@@ -255,7 +257,7 @@ describe("parseClaudeTranscriptLines", () => {
       "start lc1",
       `item ${id("lc1")}`,
       "end lc1 turn-end undefined",
-      `item ${id("lc2")}`,
+      `output ${id("lc2")}`,
       "end lc1 turn-end undefined",
       "start q2",
       `item ${id("q2")}`,
@@ -337,7 +339,7 @@ describe("parseClaudeTranscriptLines", () => {
       `item ${id("r1", 0)}`,
       `item ${id("a3", 0)}`,
       "end p1 turn-end a3",
-      `item ${id("h1")}`,
+      `output ${id("h1")}`,
       "end p1 turn-end a3",
     ]);
   });
@@ -417,7 +419,7 @@ describe("parseClaudeTranscriptLines", () => {
       }),
     ]);
 
-    expect(summary(events)).toEqual(["start p1", `item ${id("p1")}`, `item ${id("lc2")}`]);
+    expect(summary(events)).toEqual(["start p1", `item ${id("p1")}`, `output ${id("lc2")}`]);
   });
 
   it("reports a branch only when a prompt abandons the segment before it", () => {
@@ -757,6 +759,59 @@ describe("parseClaudeTranscriptLines", () => {
     ]);
   });
 
+  it("reports command output without its markup, in the turn that ran it", () => {
+    const { events } = parse([
+      user("p1", null, "<command-name>/status</command-name>", { promptId: "prompt-1" }),
+      user(
+        "o1",
+        "p1",
+        "<local-command-stdout>all good</local-command-stdout><local-command-stderr>one warning</local-command-stderr>",
+        { promptId: "prompt-9" },
+      ),
+      system("local_command", "o2", "o1", { content: "<bash-stdout>listing</bash-stdout>" }),
+    ]);
+
+    expect(events.filter((event) => event._tag === "CommandOutput")).toEqual([
+      {
+        _tag: "CommandOutput",
+        segmentId: "p1",
+        id: id("o1"),
+        lineUuid: "o1",
+        timestamp: AT,
+        output: [
+          { stream: "stdout", text: "all good" },
+          { stream: "stderr", text: "one warning" },
+        ],
+      },
+      {
+        _tag: "CommandOutput",
+        segmentId: "p1",
+        id: id("o2"),
+        lineUuid: "o2",
+        timestamp: LATER,
+        output: [{ stream: "stdout", text: "listing" }],
+      },
+    ]);
+  });
+
+  it("files lines read before their parent under the parent's turn once it arrives", () => {
+    const { events } = parse([
+      user("p0", null, "First", { promptId: "prompt-0" }),
+      assistant("a0", "p0", text("Done"), "end_turn"),
+      // Claude Code writes the prompt's attachments before the prompt they hang from.
+      attachment("x1", "p1", { type: "deferred_tools_delta" }),
+      user("p1", "a0", "Second", { promptId: "prompt-1" }),
+      attachment("x2", "x1", { type: "total_tokens_reminder" }),
+      assistant("a1", "x2", text("Answer"), "end_turn"),
+    ]);
+
+    expect(
+      events.find((event) => event._tag === "Item" && event.item.lineUuid === "a1"),
+    ).toMatchObject({
+      segmentId: "p1",
+    });
+  });
+
   it("keeps the duration of a timed end when later output ends the turn again", () => {
     const { events } = parse([
       user("p1", null, "Go", { promptId: "prompt-1" }),
@@ -816,7 +871,7 @@ describe("parseClaudeTranscriptLines", () => {
       user("p2", "a1", "Second", { promptId: "prompt-2" }),
       user("m1", "p2", "Hook context", { isMeta: true, promptId: "prompt-x" }),
       user("r1", "a1", [toolResult("tool-1")], { promptId: "prompt-x" }),
-      user("o1", null, "<local-command-stdout>output</local-command-stdout>", {
+      user("o1", null, "<task-notification>done</task-notification>", {
         promptId: "prompt-x",
       }),
     ]);
@@ -967,7 +1022,7 @@ describe("parseClaudeTranscriptLines", () => {
       `item ${id("p1")}`,
       `item ${id("a1", 0)}`,
       `item ${id("lc1")}`,
-      `item ${id("lc2")}`,
+      `output ${id("lc2")}`,
       `item ${id("r1", 0)}`,
       `item ${id("a2", 0)}`,
       "end p1 turn-end a2",
