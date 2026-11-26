@@ -194,7 +194,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
       Effect.flatMap((probed) => {
         if (Result.isSuccess(probed)) {
           const hold = probed.success;
-          if (hold === undefined) return Effect.succeed(undefined);
+          if (hold === undefined) return Effect.undefined;
           const refusal = holdRefusal(hold);
           return refusal.holderObserved || attemptsLeft === 0
             ? Effect.succeed(refusal)
