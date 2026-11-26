@@ -75,6 +75,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { TRANSCRIPT_WORK_RESTORE_MESSAGE } from "./CheckpointRestoreSafety.ts";
 import { ROLLBACK_FAILED_MESSAGE } from "./CheckpointRollbackService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -1927,6 +1928,124 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           }
         }
       }
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
+  );
+
+  it.effect("refuses to restore files over turns that ran outside T3", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("runtime-rollback-transcript");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-rollback-transcript-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-rollback-transcript-project"),
+        title: "Rollback over a transcript run",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-rollback-transcript-message"),
+        threadId,
+        messageId: MessageId.make("runtime-rollback-transcript-message"),
+        text: "Create the provider thread and checkpoint scope.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+      });
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      const scope = projection.checkpointScopes[0]!;
+      const run = projection.runs[0]!;
+      const now = yield* DateTime.now;
+      const checkpointId = CheckpointId.make("runtime-rollback-transcript-checkpoint");
+      const transcriptRunId = RunId.make("runtime-rollback-transcript-run");
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-rollback-transcript-seed"),
+        events: [
+          {
+            id: EventId.make("runtime-rollback-transcript-checkpoint"),
+            type: "checkpoint.captured",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: checkpointId,
+              threadId,
+              scopeId: scope.id,
+              runId: null,
+              nodeId: scope.nodeId,
+              parentCheckpointId: null,
+              ordinalWithinScope: 0,
+              appRunOrdinal: null,
+              ref: CheckpointRef.make("refs/t3/runtime-rollback-transcript"),
+              status: "ready",
+              files: [],
+              capturedAt: now,
+            },
+          },
+          {
+            id: EventId.make("runtime-rollback-transcript-run"),
+            type: "run.created",
+            threadId,
+            runId: transcriptRunId,
+            occurredAt: now,
+            payload: {
+              ...run,
+              id: transcriptRunId,
+              ordinal: Math.max(...projection.runs.map((candidate) => candidate.ordinal)) + 1,
+              userMessageId: MessageId.make("runtime-rollback-transcript-run-message"),
+              rootNodeId: null,
+              activeAttemptId: null,
+              status: "completed",
+              startedAt: now,
+              completedAt: now,
+              checkpointId: null,
+              nativeOrigin: {
+                kind: "claude_transcript",
+                nativeSessionId: "session-1",
+                promptUuid: "prompt-1",
+              },
+            },
+          },
+        ],
+      });
+      const commandId = CommandId.make("runtime-rollback-transcript-files");
+      const sequence = yield* orchestrator.getThreadEventSequence(threadId);
+
+      const refused = yield* orchestrator
+        .dispatch({
+          type: "checkpoint.rollback",
+          commandId,
+          threadId,
+          checkpointId,
+          scopeId: scope.id,
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(refused, Orchestrator.OrchestratorDispatchError);
+      assert.equal(refused.cause, TRANSCRIPT_WORK_RESTORE_MESSAGE);
+      assert.equal(yield* orchestrator.getThreadEventSequence(threadId), sequence);
+      assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+      const conversationOnly = yield* orchestrator.dispatch({
+        type: "checkpoint.rollback",
+        commandId: CommandId.make("runtime-rollback-transcript-conversation"),
+        threadId,
+        checkpointId,
+        scopeId: scope.id,
+        restoreFiles: false,
+      });
+      assert.include(
+        conversationOnly.storedEvents.map((stored) => stored.event.type),
+        "checkpoint.rollback-requested",
+      );
     }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 
