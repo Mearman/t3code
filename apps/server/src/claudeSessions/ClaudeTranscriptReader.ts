@@ -75,7 +75,10 @@ export interface ClaudeTranscriptRead {
   /** Lines stepped past because they could not be understood, with their byte offsets. */
   readonly malformed: ReadonlyArray<ClaudeTranscriptLineError>;
   readonly cursor: ClaudeTranscriptCursor;
-  /** The uuids this read consumed; store them with the cursor, replacing the set after a read from the top. */
+  /**
+   * The uuids this read consumed. Store them in the commit that stores the events and the cursor,
+   * replacing the stored set after a read from the top.
+   */
   readonly consumedUuids: ReadonlyArray<string>;
   /** The read restarted from the top; earlier events come again with the same ids. */
   readonly rewritten: boolean;
@@ -180,10 +183,8 @@ export const readClaudeTranscript = Effect.fn("readClaudeTranscript")(function* 
   }
 
   const decodedLines = decodeClaudeTranscriptLines(lines);
-  const known =
-    start.offset > 0
-      ? yield* input.knownUuids(claudeTranscriptLineUuids(decodedLines))
-      : new Set<string>();
+  const lineUuids = start.offset > 0 ? claudeTranscriptLineUuids(decodedLines) : [];
+  const known = lineUuids.length > 0 ? yield* input.knownUuids(lineUuids) : new Set<string>();
   const parsed = foldClaudeTranscriptLines({
     sessionId: input.sessionId,
     state: start.state,
