@@ -5709,5 +5709,18 @@
   "3ee30a50b70fffab": "Zurückgezogen von {by}: {reason}",
   "201490988858b511": "zurückgezogen von {by}",
   "46d614fa7b4bf1e5": "Workflow-Ausführungen",
-  "f62d17e3b1372e6b": "In eine neue Sitzung forken"
+  "f62d17e3b1372e6b": "In eine neue Sitzung forken",
+  "0b22fcece71e76cc": "Weitere Claude-Verzeichnisse, deren Sitzungen angezeigt werden, durch Kommas getrennt. Jedes erhält eine eigene Claude-Instanz, sodass beim Senden dessen Anmeldung verwendet wird.",
+  "1952f4a8c4e5179a": "Neuere Sitzungen zuerst lesen (Tage)",
+  "1bd735a2361cded8": "Claude-Code-Sitzungen anzeigen",
+  "32c95cfa14c87987": "Claude-Code-Sitzungen",
+  "38eac42344c31eb7": "Sitzungen in einem Ordner, der einem dieser durch Kommas getrennten Muster entspricht, werden archiviert und nicht verfolgt.",
+  "42ffe53b8bebdc2f": "Ausgeschlossene Sitzungsordner",
+  "7422040b91f90ec2": "Gelöschte Sitzung wiederherstellen",
+  "883bd460708a4d8c": "Den Verlauf nicht geöffneter Sitzungen lesen, während der Rechner im Leerlauf ist. Aus: Der Verlauf einer Sitzung wird beim Öffnen gelesen.",
+  "898cadc54aa22909": "Gib die ID einer Claude-Code-Sitzung ein, deren Thread du gelöscht hast, um sie wieder als neuen Thread anzuzeigen.",
+  "a2925da227d38e1b": "Mindestens freier Speicher (GB)",
+  "a863c1fb1edfc155": "Nicht geöffnete Sitzungen im Hintergrund lesen",
+  "e2ba25992774347f": "Weitere Claude-Verzeichnisse",
+  "f7a1136e93716b32": "Jede Claude-Code-Sitzung aus den Claude-Verzeichnissen dieses Rechners als Thread anzeigen und Sitzungen folgen, die ein Terminal ausführt."
 }

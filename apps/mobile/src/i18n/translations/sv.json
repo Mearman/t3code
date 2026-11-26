@@ -5709,5 +5709,18 @@
   "3ee30a50b70fffab": "Återkallad av {by}: {reason}",
   "201490988858b511": "återkallad av {by}",
   "46d614fa7b4bf1e5": "Arbetsflödeskörningar",
-  "f62d17e3b1372e6b": "Forka till en ny session"
+  "f62d17e3b1372e6b": "Forka till en ny session",
+  "0b22fcece71e76cc": "Fler Claude-mappar att visa sessioner från, avgränsade med kommatecken. Var och en får en egen Claude-instans, så att en sändning använder den mappens inloggning.",
+  "1952f4a8c4e5179a": "Läs nya sessioner först (dagar)",
+  "1bd735a2361cded8": "Visa Claude Code-sessioner",
+  "32c95cfa14c87987": "Claude Code-sessioner",
+  "38eac42344c31eb7": "Sessioner som körs i en mapp som matchar något av dessa mönster, avgränsade med kommatecken, arkiveras och följs inte.",
+  "42ffe53b8bebdc2f": "Undantagna sessionsmappar",
+  "7422040b91f90ec2": "Återställ en borttagen session",
+  "883bd460708a4d8c": "Läs historiken för sessioner som ingen har öppnat medan datorn är inaktiv. Av: en sessions historik läses när du öppnar den.",
+  "898cadc54aa22909": "Ange id för en Claude Code-session vars tråd du tog bort för att visa den igen som en ny tråd.",
+  "a2925da227d38e1b": "Minsta lediga diskutrymme (GB)",
+  "a863c1fb1edfc155": "Läs oöppnade sessioner i bakgrunden",
+  "e2ba25992774347f": "Ytterligare Claude-mappar",
+  "f7a1136e93716b32": "Visa varje Claude Code-session från den här datorns Claude-mappar som en tråd och följ sessioner som en terminal kör."
 }

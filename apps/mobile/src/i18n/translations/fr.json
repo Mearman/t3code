@@ -5703,5 +5703,18 @@
   "3ee30a50b70fffab": "Retirée par {by} : {reason}",
   "201490988858b511": "retirée par {by}",
   "46d614fa7b4bf1e5": "Exécutions de workflow",
-  "f62d17e3b1372e6b": "Forker dans une nouvelle session"
+  "f62d17e3b1372e6b": "Forker dans une nouvelle session",
+  "0b22fcece71e76cc": "D’autres dossiers Claude dont afficher les sessions, séparés par des virgules. Chacun a sa propre instance Claude, si bien qu’un envoi utilise la connexion de ce dossier.",
+  "1952f4a8c4e5179a": "Lire d’abord les sessions récentes (jours)",
+  "1bd735a2361cded8": "Afficher les sessions Claude Code",
+  "32c95cfa14c87987": "Sessions Claude Code",
+  "38eac42344c31eb7": "Les sessions exécutées dans un dossier correspondant à l’un de ces motifs, séparés par des virgules, sont archivées et non suivies.",
+  "42ffe53b8bebdc2f": "Dossiers de session exclus",
+  "7422040b91f90ec2": "Restaurer une session supprimée",
+  "883bd460708a4d8c": "Lire l’historique des sessions que personne n’a ouvertes pendant que la machine est inactive. Désactivé, l’historique d’une session est lu à son ouverture.",
+  "898cadc54aa22909": "Saisissez l’identifiant d’une session Claude Code dont vous avez supprimé le fil pour l’afficher de nouveau comme un nouveau fil.",
+  "a2925da227d38e1b": "Espace disque libre minimal (Go)",
+  "a863c1fb1edfc155": "Lire en arrière-plan les sessions non ouvertes",
+  "e2ba25992774347f": "Dossiers Claude supplémentaires",
+  "f7a1136e93716b32": "Afficher chaque session Claude Code des dossiers Claude de cette machine comme un fil, et suivre les sessions qu’un terminal exécute."
 }
