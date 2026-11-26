@@ -13,7 +13,7 @@ import {
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { threadIssueKeysEqual } from "@t3tools/contracts";
+import { isNativeOriginRun, threadIssueKeysEqual } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -126,6 +126,7 @@ import * as TaskFolderStore from "../workspace/TaskFolderStore.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
+  TRANSCRIPT_WORK_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import {
@@ -14916,6 +14917,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Checkpoint ${command.checkpointId} belongs to a tracked repository; roll back to the thread's own checkpoint instead.`,
         });
       }
+      if (
+        command.restoreFiles !== false &&
+        projection.runs.some(
+          (run) =>
+            run.ordinal > (targetCheckpoint.appRunOrdinal ?? 0) &&
+            run.status !== "rolled_back" &&
+            isNativeOriginRun(run),
+        )
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: TRANSCRIPT_WORK_RESTORE_MESSAGE,
+        });
+      }
       if (command.restoreFiles !== false) {
         const isolated = yield* isCheckpointRestoreIsolated(
           projection.thread,
@@ -16958,6 +16974,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (stored.event.type !== "run.updated") return;
       const threadId = stored.event.threadId;
       const run = stored.event.payload;
+      // A run read back from a provider transcript ended outside T3: it is not a turn the queue,
+      // its holds or a delegating parent wait on.
+      if (isNativeOriginRun(run)) return;
       // Take parent and child locks sequentially, never nested: delegation holds the parent
       // while writing child events, so nesting parent inside child would invert the order.
       // The keyed semaphores are neither reentrant nor deadlock-aware.

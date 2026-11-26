@@ -19,6 +19,9 @@ const UNFINISHED_RUN_STATUSES = new Set(["queued", "preparing", "starting", "run
 export const SHARED_WORKSPACE_RESTORE_MESSAGE =
   "File restore requires an isolated worktree. This workspace may contain changes from another thread or a side chat. Rewind the conversation without restoring files instead, or delete side chats you no longer need.";
 
+export const TRANSCRIPT_WORK_RESTORE_MESSAGE =
+  "File restore would discard changes from turns that ran outside T3 Code, which have no snapshot. Rewind the conversation without restoring files instead.";
+
 // Check isolation at admission and rollback; checkpoints restore whole checkouts, which may become shared.
 export const isCheckpointRestoreIsolated = Effect.fn("orchestrationV2.isCheckpointRestoreIsolated")(
   function* (

@@ -2,6 +2,7 @@ import {
   CheckpointId,
   CheckpointScopeId,
   type CommandId,
+  isNativeOriginRun,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   ProviderThreadId,
@@ -31,6 +32,7 @@ import {
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
+  TRANSCRIPT_WORK_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
 import { CheckpointRestoreError, CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
@@ -55,6 +57,7 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
       "provider-turn-unavailable",
       "unexpected-failure",
       "shared-workspace",
+      "transcript-work",
     ]),
     threadId: ThreadId,
     providerThreadId: ProviderThreadId,
@@ -72,6 +75,8 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
         return `Provider turn for rollback target ${this.checkpointId} is unavailable on provider thread ${this.providerThreadId}.`;
       case "shared-workspace":
         return SHARED_WORKSPACE_RESTORE_MESSAGE;
+      case "transcript-work":
+        return TRANSCRIPT_WORK_RESTORE_MESSAGE;
       case "unexpected-failure":
         return ROLLBACK_FAILED_MESSAGE;
     }
@@ -193,6 +198,14 @@ export const layer: Layer.Layer<
       ) {
         return yield* new CheckpointRollbackExecutionError({
           reason: "active-provider-changed",
+          threadId: input.threadId,
+          providerThreadId: input.providerThreadId,
+          checkpointId: input.checkpointId,
+        });
+      }
+      if (restoreFiles && runsToRollback.some(isNativeOriginRun)) {
+        return yield* new CheckpointRollbackExecutionError({
+          reason: "transcript-work",
           threadId: input.threadId,
           providerThreadId: input.providerThreadId,
           checkpointId: input.checkpointId,
