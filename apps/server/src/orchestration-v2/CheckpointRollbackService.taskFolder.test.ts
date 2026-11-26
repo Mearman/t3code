@@ -21,7 +21,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -239,17 +238,13 @@ const taskFolderThread = Effect.fn(function* (state: State, options: Options) {
     { path: path.join(tmp, "web"), name: "web" },
   ];
   const plan = yield* taskFolders.plan({ projectId });
-  // On the live clock a new worktree swaps in a refreshed index a second later, briefly holding
-  // index.lock; a rewind landing then fails. The test clock keeps that refresh in the foreground.
-  const { taskFolder } = yield* taskFolders
-    .create({
-      plan: plan!,
-      branch,
-      projectStart: { refName: "main", baseRefName: "main" },
-      startFromOrigin: false,
-      projectCommands: "permitted",
-    })
-    .pipe(Effect.provide(TestClock.layer()));
+  const { taskFolder } = yield* taskFolders.create({
+    plan: plan!,
+    branch,
+    projectStart: { refName: "main", baseRefName: "main" },
+    startFromOrigin: false,
+    projectCommands: "permitted",
+  });
   const worktreePath = taskFolder.projectPath;
   const folders = {
     shop: worktreePath,
