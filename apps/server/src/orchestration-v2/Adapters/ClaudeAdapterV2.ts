@@ -1616,6 +1616,7 @@ export const layerQueryRunner: Layer.Layer<
   never,
   | ChildProcessSpawner.ChildProcessSpawner
   | SecureRandom.SecureRandom
+  | FileSystem.FileSystem
   | Path.Path
   | PortScanner.PortDiscovery
   | ProviderEventLoggers.ProviderEventLoggers
@@ -1623,6 +1624,7 @@ export const layerQueryRunner: Layer.Layer<
   Effect.gen(function* () {
     const random = yield* SecureRandom.SecureRandom;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
     const agentScope = yield* AgentScope;
@@ -1637,7 +1639,7 @@ export const layerQueryRunner: Layer.Layer<
       platform === "darwin" ? monitor?.processIdentities : undefined,
     );
     const readProcessTable = readProcessesOrFail.pipe(Effect.orElseSucceed(() => []));
-    const spawnedProcesses = makeClaudeSpawnedProcesses(readProcessesOrFail);
+    const spawnedProcesses = makeClaudeSpawnedProcesses(readProcessesOrFail, fileSystem.realPath);
     // Without an agent scope, a job that left the CLI's group escapes the group kill and is
     // re-parented once the CLI exits. So the CLI's tree is recorded while it runs, and what is
     // still the same process (pid and start time) is stopped after it exits.
@@ -1731,6 +1733,13 @@ export const layerQueryRunner: Layer.Layer<
           [PortScanner.AGENT_THREAD_ENV]: input.threadId,
         },
       };
+      // Where this CLI writes its registry entry, which the send gate counts it as own in.
+      const sessionsDir = path.join(
+        yield* resolveClaudeHomePath({ homePath: "" }, queryOptions.env).pipe(
+          Effect.provideService(Path.Path, path),
+        ),
+        "sessions",
+      );
       // The SDK can prepend a scope wrapper to native binaries; script entries run through node.
       const binaryPath = queryOptions.pathToClaudeCodeExecutable;
       const launch =
@@ -1779,7 +1788,7 @@ export const layerQueryRunner: Layer.Layer<
               stderrDone,
               providerProcesses.register,
             );
-            trackSpawnedClaudeProcess(spawnedProcesses, child);
+            trackSpawnedClaudeProcess(spawnedProcesses, child, sessionsDir);
             if (unit === undefined && child.pid !== undefined) {
               const tracker = trackDescendants(child.pid);
               child.once("exit", () => runFork(tracker.stop));
@@ -1794,7 +1803,7 @@ export const layerQueryRunner: Layer.Layer<
             windowsHide: true,
           });
           child.stderr.setEncoding("utf8").on("data", (chunk: string) => options.stderr?.(chunk));
-          trackSpawnedClaudeProcess(spawnedProcesses, child);
+          trackSpawnedClaudeProcess(spawnedProcesses, child, sessionsDir);
           return child;
         });
       let spawnedProcess: ClaudeSpawnedProcess | undefined;
