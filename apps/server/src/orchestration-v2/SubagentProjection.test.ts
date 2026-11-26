@@ -239,6 +239,24 @@ function taskFixture() {
   return { projection: { ...projection, runs: [run] }, run };
 }
 
+it("never reports a run read back from the child's transcript as the task result", () => {
+  const { projection, run } = taskFixture();
+  const progress = delegatedTaskProgress({
+    ...projection,
+    runs: [
+      run,
+      {
+        ...run,
+        id: RunId.make("run:transcript"),
+        ordinal: 2,
+        completedAt: DateTime.makeUnsafe("2099-01-01T00:00:00.000Z"),
+        nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+      },
+    ],
+  });
+  assert.equal(progress.resultRun?.id, run.id);
+});
+
 it("reports the run that ended last, not the highest ordinal", () => {
   const { projection, run } = taskFixture();
   const ended = (ordinal: number, completedAt: string): OrchestrationV2Run => ({

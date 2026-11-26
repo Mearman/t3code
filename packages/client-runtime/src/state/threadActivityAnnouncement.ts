@@ -1,5 +1,5 @@
 import type { OrchestrationV2Run, OrchestrationV2RunStatus, RunId } from "@t3tools/contracts";
-import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
+import { latestT3ExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
 
@@ -86,14 +86,20 @@ export function isDetailBehindShell(detailRun: RunState | null, shellRun: RunSta
 /**
  * A queued message cancelled before it started keeps its place in line, so it
  * shows up as the thread's latest run. It never ran, so the turn ended however
- * the last run that did ran.
+ * the last run that did ran. A run read back from a provider transcript happened
+ * outside T3, so the announcer keeps following the last run T3 executed.
  */
 export function announcedRun(
   activityRun: (RunState & { readonly startedAt: string | null }) | null,
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): RunState | null {
-  if (activityRun?.status !== "cancelled" || activityRun.startedAt !== null) return activityRun;
-  const run = latestExecutedRun(runs);
+  const cancelledBeforeStart =
+    activityRun?.status === "cancelled" && activityRun.startedAt === null;
+  const external = runs.some(
+    (run) => run.id === activityRun?.runId && run.nativeOrigin !== undefined,
+  );
+  if (!cancelledBeforeStart && !external) return activityRun;
+  const run = latestT3ExecutedRun(runs);
   return run === null ? null : { runId: run.id, status: run.status };
 }
 

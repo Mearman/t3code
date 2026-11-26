@@ -21,6 +21,7 @@ import {
   OrchestrationV2ForceStopThreadError,
   type OrchestrationV2ForceStopThreadInput,
   type OrchestrationV2ForceStopThreadResult,
+  isNativeOriginRun,
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
@@ -1120,9 +1121,10 @@ const make = Effect.gen(function* () {
       .getThreadEventSequence(input.threadId)
       .pipe(Effect.mapError(loadError));
     const target = yield* getProjectThreadRecords(input, ["runs"]);
+    // Without a run named, wait on T3's own work: a transcript run already ended outside T3.
     const selectedRun =
       input.runId === undefined
-        ? latestRun(target)
+        ? latestRun({ runs: target.runs.filter((run) => !isNativeOriginRun(run)) })
         : target.runs.find((candidate) => candidate.id === input.runId);
     if (input.runId !== undefined && selectedRun === undefined) {
       return yield* new ThreadManagementRunNotFoundError({
@@ -1167,7 +1169,7 @@ const make = Effect.gen(function* () {
         progress.resultRun === undefined &&
         records.runs.every((run) => isTerminalRunStatus(run.status))
       ) {
-        return latestRun(records);
+        return latestRun({ runs: records.runs.filter((run) => !isNativeOriginRun(run)) });
       }
       if (progress.state !== "result_available") return undefined;
       const pending = yield* orchestrator

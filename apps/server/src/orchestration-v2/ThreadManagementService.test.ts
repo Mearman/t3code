@@ -315,6 +315,45 @@ it.effect.each([
   }).pipe(Effect.provide(layerTest));
 });
 
+it.effect("waitForThread waits on T3's own latest run, not one read back from a transcript", () =>
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("project:thread-management:wait-transcript");
+    const threadId = ThreadId.make("thread:thread-management:wait-transcript");
+    const t3RunId = RunId.make("run:thread-management:wait-transcript:t3");
+    const runs = [
+      { id: t3RunId, ordinal: 1, status: "completed" },
+      {
+        id: RunId.make("run:thread-management:wait-transcript:native"),
+        ordinal: 2,
+        status: "completed",
+        nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+      },
+    ];
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadEventSequence: () => Effect.succeed(0),
+          restartContinuationPending: () => Effect.succeed(false),
+          streamStoredEventsFrom: () => Stream.never,
+          // The wait reads only the thread's identity and its runs.
+          getThreadRecords: () =>
+            Effect.succeed({ thread: { id: threadId, projectId, deletedAt: null }, runs } as never),
+        }),
+      ),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(layerReceiptsTest),
+    );
+    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+      Effect.provide(layerTest),
+    );
+
+    const result = yield* service.waitForThread({ projectId, threadId, timeoutMs: 1_000 });
+
+    expect(result).toMatchObject({ timedOut: false, run: { id: t3RunId } });
+  }),
+);
+
 it.effect("waitForThread follows a restart continuation instead of the cut run", () =>
   Effect.gen(function* () {
     const projectId = ProjectId.make("project:thread-management:wait-restart");
