@@ -345,7 +345,8 @@ const make = Effect.gen(function* () {
           ? []
           : [
               {
-                key: `${store.projectsDir}\0${store.sessionsDir}`,
+                // Stored as text, so it holds no NUL: the SQLite client reads a text value back only up to one.
+                key: JSON.stringify([store.projectsDir, store.sessionsDir]),
                 projectsDir: store.projectsDir,
                 sessionsDir: store.sessionsDir,
                 providerInstanceId: first.instanceId,

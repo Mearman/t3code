@@ -221,7 +221,7 @@ const storeKeyOf = Effect.fn(function* (home: string) {
   const path = yield* Path.Path;
   const projects = yield* fileSystem.realPath(path.join(home, "projects"));
   const sessions = yield* fileSystem.realPath(path.join(home, "sessions"));
-  return `${projects}\0${sessions}`;
+  return JSON.stringify([projects, sessions]);
 });
 
 /** Sweeps, then runs every request the sweep made; both must report no failed session. */

@@ -96,7 +96,7 @@ const resolverLayer = (input: {
     Layer.provide(NodeServices.layer),
   );
 
-const STORE = "/claude/projects\0/claude/sessions";
+const STORE = JSON.stringify(["/claude/projects", "/claude/sessions"]);
 
 describe("ClaudeSessionProjects", () => {
   it.effect(
