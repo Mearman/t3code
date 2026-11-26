@@ -100,6 +100,7 @@ function parse(records: ReadonlyArray<unknown>, state = initialClaudeTranscriptP
 
 const target = {
   sessionId: SESSION,
+  idScope: SESSION,
   threadId: ThreadId.make(`claude:${SESSION}`),
   providerThreadId: ProviderThreadId.make("provider-thread:claude"),
   providerInstanceId: ProviderInstanceId.make("claudeAgent"),

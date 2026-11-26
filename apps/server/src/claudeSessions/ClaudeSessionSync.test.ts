@@ -10,6 +10,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2AppThread,
   type ServerSettings,
 } from "@t3tools/contracts";
@@ -97,9 +98,9 @@ const persistence = Layer.mergeAll(
   }),
 );
 
-const syncLayer = (
+const syncLayer = <E = never>(
   settings: DeepPartial<ServerSettings>,
-  capacity: Layer.Layer<ClaudeSyncCapacity.ClaudeSyncCapacity> = capacityFree,
+  capacity: Layer.Layer<ClaudeSyncCapacity.ClaudeSyncCapacity, E> = capacityFree,
 ) =>
   ClaudeSessionSync.layer.pipe(
     Layer.provideMerge(persistence),
@@ -446,7 +447,7 @@ describe("ClaudeSessionSync", () => {
           ...filler,
           line({ type: "ai-title", aiTitle: "Testing things" }),
         ]);
-        const written = new Date("2026-11-26T09:00:00.000Z");
+        const written = DateTime.toDateUtc(DateTime.makeUnsafe("2026-11-26T09:00:00.000Z"));
         yield* fileSystem.utimes(file, written, written);
         yield* Effect.gen(function* () {
           const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -492,7 +493,7 @@ describe("ClaudeSessionSync", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const home = yield* makeHome(root, "home");
         const older = yield* append(home, firstTurn, "-work-old");
-        const old = new Date("2026-11-20T00:00:00.000Z");
+        const old = DateTime.toDateUtc(DateTime.makeUnsafe("2026-11-20T00:00:00.000Z"));
         yield* fileSystem.utimes(older, old, old);
         const newer = yield* append(home, [...firstTurn, ...secondTurn]);
         yield* Effect.gen(function* () {
@@ -647,7 +648,14 @@ describe("ClaudeSessionSync", () => {
         yield* Effect.gen(function* () {
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
-          expect((yield* nativeRuns(claudeThreadId)).length).toBeLessThan(3);
+          // The first read ends inside the third turn; its reply, in the second read, is never written.
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          expect(
+            yield* projections.getTurnItem({
+              threadId: claudeThreadId,
+              itemId: TurnItemId.make(`x:${SESSION}:a3:0`),
+            }),
+          ).toBeNull();
           expect((yield* sessionRow(home))?.hydrationState).toBe("deleted");
         }).pipe(Effect.provide(syncLayer(settingsFor([home]), deleting)));
       }),
