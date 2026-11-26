@@ -2,6 +2,7 @@ import {
   presentThreadShell,
   type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import type { LocalThreadMessage } from "../lib/threadActivity";
 import { DEFAULT_PROVIDER_INTERACTION_MODE, DEFAULT_RUNTIME_MODE } from "@t3tools/contracts";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
@@ -58,7 +59,7 @@ export function resolvePendingThreadCreation(input: {
   readonly previous: PendingThreadCreation | null;
   readonly detail: {
     readonly messages: ReadonlyArray<{ readonly id: string }>;
-    readonly runs: ReadonlyArray<{ readonly status: string }>;
+    readonly runs: ReadonlyArray<{ readonly status: string; readonly nativeOrigin?: unknown }>;
   } | null;
 }): PendingThreadCreation | null {
   const creation = input.pending ?? input.previous;
@@ -70,7 +71,7 @@ export function resolvePendingThreadCreation(input: {
   }
   if (creation.outcome?.kind === "failed") return creation;
   const detail = input.detail;
-  const latestRun = detail?.runs.at(-1);
+  const latestRun = detail === null ? undefined : runsByOrigin(detail.runs, "t3").at(-1);
   const terminalStatus = latestRun?.status;
   if (
     terminalStatus === "failed" ||

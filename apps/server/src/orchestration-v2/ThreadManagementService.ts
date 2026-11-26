@@ -21,7 +21,6 @@ import {
   OrchestrationV2ForceStopThreadError,
   type OrchestrationV2ForceStopThreadInput,
   type OrchestrationV2ForceStopThreadResult,
-  isNativeOriginRun,
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
@@ -46,7 +45,7 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
-import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
+import { type RunOrigin, runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -596,10 +595,14 @@ export function isTerminalRunStatus(
   );
 }
 
+/** The highest-ordinal run among the runs `origin` reads. */
 export function latestRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
+  origin: RunOrigin,
 ): OrchestrationV2Run | undefined {
-  return projection.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0];
+  return runsByOrigin(projection.runs, origin).toSorted(
+    (left, right) => right.ordinal - left.ordinal,
+  )[0];
 }
 
 function latestRestartContinuation(
@@ -1066,7 +1069,7 @@ const make = Effect.gen(function* () {
     // A turn that ended without its result still owes it: the agent may have ended it to wait
     // for something, and answer from the turn that woke it. Only the newest started run asked for
     // one can owe it, and only while the agent's conversation still reaches it.
-    const asked = records.runs
+    const asked = runsByOrigin(records.runs, "t3")
       .filter(
         (candidate) =>
           candidate.outputSchema !== undefined &&
@@ -1077,7 +1080,9 @@ const make = Effect.gen(function* () {
     const owing = asked?.status === "completed" && asked.output === undefined ? asked : undefined;
     const forgotten =
       owing !== undefined &&
-      records.runs.some((later) => later.freshContext === true && later.ordinal > owing.ordinal) &&
+      runsByOrigin(records.runs, "t3").some(
+        (later) => later.freshContext === true && later.ordinal > owing.ordinal,
+      ) &&
       contextBoundaryOrdinal(
         yield* orchestrator.getThreadRecords(input.threadId, ["runs", "turnItems"]),
       ) > owing.ordinal;
@@ -1125,7 +1130,7 @@ const make = Effect.gen(function* () {
     // Without a run named, wait on T3's own work: a transcript run already ended outside T3.
     const selectedRun =
       input.runId === undefined
-        ? latestRun({ runs: target.runs.filter((run) => !isNativeOriginRun(run)) })
+        ? latestRun(target, "t3")
         : target.runs.find((candidate) => candidate.id === input.runId);
     if (input.runId !== undefined && selectedRun === undefined) {
       return yield* new ThreadManagementRunNotFoundError({
@@ -1170,7 +1175,7 @@ const make = Effect.gen(function* () {
         progress.resultRun === undefined &&
         records.runs.every((run) => isTerminalRunStatus(run.status))
       ) {
-        return latestRun({ runs: records.runs.filter((run) => !isNativeOriginRun(run)) });
+        return latestRun(records, "t3");
       }
       if (progress.state !== "result_available") return undefined;
       const pending = yield* orchestrator
@@ -1285,7 +1290,9 @@ const make = Effect.gen(function* () {
         )
       )
         return true;
-      const later = records.runs.filter((candidate) => candidate.ordinal > run.ordinal);
+      const later = runsByOrigin(records.runs, "any").filter(
+        (candidate) => candidate.ordinal > run.ordinal,
+      );
       const cancelledMessageIds = later
         .filter((candidate) => candidate.status === "cancelled")
         .map((candidate) => candidate.userMessageId);
@@ -1341,7 +1348,8 @@ const make = Effect.gen(function* () {
         )
           return true;
       }
-      const latest = latestRun(records);
+      // As the settle guard reads it: a transcript run since the request means the session went on.
+      const latest = latestRun(records, "any");
       if (latest === undefined) return true;
       return yield* dispatch({
         type: "thread.settle",
@@ -1769,7 +1777,7 @@ const make = Effect.gen(function* () {
     child: ProjectionRecords<"runs" | "providerThreads" | "turnItems" | "subagents">,
   ): boolean => {
     if (child.thread.deletedAt !== null) return false;
-    const latestRun = child.runs.findLast((run) => run.status !== "queued");
+    const latestRun = runsByOrigin(child.runs, "t3").findLast((run) => run.status !== "queued");
     const hasStoppableRun = child.runs.some(
       (run) =>
         run.status === "preparing" ||

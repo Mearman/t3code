@@ -598,7 +598,7 @@ function hasPendingChildRuns(
   childProjection: Pick<OrchestrationV2ThreadProjection, "runs">,
   delegatedRun: OrchestrationV2Run | undefined,
 ): boolean {
-  return childProjection.runs.some(
+  return runsByOrigin(childProjection.runs, "t3").some(
     (run) =>
       !ThreadManagementService.isTerminalRunStatus(run.status) &&
       !(run.status === "queued" && run.queueHeld === true) &&
@@ -1059,7 +1059,7 @@ function threadDetail(
   nowMs: number,
   firstPage: boolean,
 ): OrchestratorMcpThreadDetail {
-  const latest = ThreadManagementService.latestRun(projection);
+  const latest = ThreadManagementService.latestRun(projection, "any");
   const active = ThreadManagementService.latestActiveRun(projection);
   return {
     threadId: projection.thread.id,
@@ -3499,7 +3499,7 @@ const make = Effect.gen(function* () {
                   );
               }
               const projection = yield* loadThreadRecords(threadId, ["runs"]);
-              const run = projection.runs.at(-1);
+              const run = runsByOrigin(projection.runs, "t3").at(-1);
               yield* threadManagement
                 .dispatch({
                   type: "thread.created.record",
@@ -3688,7 +3688,7 @@ const make = Effect.gen(function* () {
           input.itemId === undefined &&
           (input.beforePosition === undefined || input.beforePosition >= timeline.totalItems),
       );
-      const recentRuns = target.runs
+      const recentRuns = runsByOrigin(target.runs, "any")
         .toSorted((left, right) => right.ordinal - left.ordinal)
         .slice(0, runLimit)
         .map((run) => threadRun(target, run));

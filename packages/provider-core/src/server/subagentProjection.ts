@@ -19,7 +19,7 @@ import type {
   TurnItemId,
 } from "@t3tools/contracts";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { runRanAfter, runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { derive } from "./IdAllocator.ts";
@@ -261,7 +261,8 @@ export function delegatedTaskReportRuns(
 ): ReadonlyArray<OrchestrationV2Run> {
   if (run.status !== "completed") return [];
   const monitorRuns = monitorUpdateRunIds(projection.messages);
-  const earlier = projection.runs
+  // A delegated report is T3's work; a transcript turn is not part of it.
+  const earlier = runsByOrigin(projection.runs, "t3")
     .filter(
       (candidate) =>
         candidate.id !== run.id &&

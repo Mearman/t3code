@@ -12,6 +12,7 @@ import {
   getProviderOptionCurrentValue,
 } from "@t3tools/shared/model";
 
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { isReasoningSelect } from "./modelTraits.ts";
 import type { ThreadStructure } from "./state/models.ts";
 import { REASONING_EFFORT_OPTION_IDS } from "./state/threadExecution.ts";
@@ -33,7 +34,7 @@ export function resolvePendingHandoff(
   if (!projection?.visibleTurnItems.length) return null;
   // The handoff row is committed before the provider starts. Use its destination
   // during startup so the footer does not duplicate the committed handoff.
-  const from = projection.runs.findLast(
+  const from = runsByOrigin(projection.runs, "any").findLast(
     (run) =>
       run.status !== "rolled_back" &&
       (run.startedAt !== null || (run.status === "starting" && run.contextHandoffId !== null)),
@@ -81,7 +82,7 @@ function latestRunModelBefore(
   beforeOrdinal: number | undefined,
 ): string | undefined {
   let latest: HandoffTimelineRun | undefined;
-  for (const run of runs) {
+  for (const run of runsByOrigin(runs, "any")) {
     if (run.providerInstanceId !== instanceId) continue;
     if (beforeOrdinal !== undefined && run.ordinal >= beforeOrdinal) continue;
     if (latest === undefined || run.ordinal > latest.ordinal) latest = run;

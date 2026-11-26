@@ -334,6 +334,7 @@ function matchJoinedWords(field: SearchField, token: string): TokenMatch | null 
         break;
       }
     }
+    // oxlint-disable-next-line t3code/explicit-run-origin -- text runs, not orchestration runs
     const last = runs.at(-1);
     if (rest.length > 0 || last === undefined || runs.length < 2) continue;
     if (

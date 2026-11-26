@@ -56,22 +56,40 @@ function memberName(node: Node): string | undefined {
   return node.property.type === "Identifier" ? node.property.name : undefined;
 }
 
-/** "undecided" for a bare run collection, "decided" once it went through runsByOrigin. */
-function runCollection(node: Node): "undecided" | "decided" | undefined {
+/**
+ * "undecided" for a bare run collection, "decided" once it went through runsByOrigin, directly or
+ * through a variable initialised from it (`decided` holds those names for the file).
+ */
+function runCollection(
+  node: Node,
+  decided: ReadonlySet<string>,
+): "undecided" | "decided" | undefined {
   const expression = unwrap(node);
   if (expression.type === "Identifier") {
+    if (decided.has(expression.name)) return "decided";
     return RUN_COLLECTION_NAME.test(expression.name) ? "undecided" : undefined;
   }
   if (expression.type === "MemberExpression") {
     const name = memberName(expression);
     return name !== undefined && RUN_COLLECTION_NAME.test(name) ? "undecided" : undefined;
   }
+  // An empty array holds no runs to choose among.
+  if (expression.type === "ArrayExpression" && expression.elements.length === 0) return "decided";
+  if (expression.type === "ConditionalExpression" || expression.type === "LogicalExpression") {
+    const branches =
+      expression.type === "ConditionalExpression"
+        ? [expression.consequent, expression.alternate]
+        : [expression.left, expression.right];
+    const states = branches.map((branch) => runCollection(branch as Node, decided));
+    if (states.includes("undecided")) return "undecided";
+    return states.every((state) => state === "decided") ? "decided" : undefined;
+  }
   if (expression.type === "CallExpression") {
     const callee = unwrap(expression.callee as Node);
     if (callee.type === "Identifier" && callee.name === ORIGIN_SELECTOR) return "decided";
     const method = memberName(callee);
     if (callee.type === "MemberExpression" && method && RUN_PRESERVING_METHODS.has(method)) {
-      return runCollection(callee.object as Node);
+      return runCollection(callee.object as Node, decided);
     }
   }
   return undefined;
@@ -124,6 +142,36 @@ const isMinusOne = (node: Node | undefined) =>
   node.argument.type === "Literal" &&
   node.argument.value === 1;
 
+const RUNS_FROM = /\bFROM\s+orchestration_v2_projection_runs\b/gu;
+const ORIGIN_MARK = "\u0000ORIGIN\u0000";
+
+/**
+ * Whether a SELECT over the runs table, at its own nesting level, orders and keeps one row without
+ * an origin mark. Clauses inside nested parentheses belong to subqueries and are skipped.
+ */
+function picksRunWithoutOrigin(text: string): boolean {
+  for (const match of text.matchAll(RUNS_FROM)) {
+    let depth = 0;
+    let ordered = false;
+    let marked = false;
+    for (let index = match.index; index < text.length; index++) {
+      const char = text[index];
+      if (char === "(") depth++;
+      else if (char === ")" && --depth < 0) break;
+      if (depth !== 0) continue;
+      const rest = text.slice(index, index + 16);
+      if (rest.startsWith(ORIGIN_MARK)) marked = true;
+      else if (/^UNION\b/u.test(rest)) break;
+      else if (/^ORDER\s+BY\b/u.test(rest)) ordered = true;
+      else if (/^LIMIT\s+1\b/u.test(rest)) {
+        if (ordered && !marked) return true;
+        break;
+      }
+    }
+  }
+  return false;
+}
+
 export default defineRule({
   meta: {
     type: "problem",
@@ -134,13 +182,29 @@ export default defineRule({
   },
   create(context) {
     if (TEST_FILE.test(context.filename) || SELECTOR_MODULE.test(context.filename)) return {};
+    const decided = new Set<string>();
+    const collectDecided = (node: Node) => {
+      if (
+        node.type === "VariableDeclarator" &&
+        node.id.type === "Identifier" &&
+        node.init != null &&
+        runCollection(node.init as Node, decided) === "decided"
+      ) {
+        decided.add(node.id.name);
+      }
+      for (const child of children(node)) collectDecided(child);
+    };
     return {
+      // Runs first, so a variable is known to be decided wherever it is used.
+      Program(node) {
+        collectDecided(node as Node);
+      },
       CallExpression(node) {
         const callee = unwrap(node.callee as Node);
         if (callee.type !== "MemberExpression") return;
         const method = memberName(callee);
         if (method === undefined) return;
-        if (runCollection(callee.object as Node) !== "undecided") return;
+        if (runCollection(callee.object as Node, decided) !== "undecided") return;
         const [first] = node.arguments as Node[];
         const picksLast = PICK_LAST_METHODS.has(method) || (method === "at" && isMinusOne(first));
         const orders =
@@ -156,7 +220,7 @@ export default defineRule({
       },
       MemberExpression(node) {
         // runs[runs.length - 1]
-        if (!node.computed || runCollection(node.object as Node) !== "undecided") return;
+        if (!node.computed || runCollection(node.object as Node, decided) !== "undecided") return;
         const index = unwrap(node.property as Node);
         if (
           index.type === "BinaryExpression" &&
@@ -167,7 +231,7 @@ export default defineRule({
         }
       },
       ForOfStatement(node) {
-        if (runCollection(node.right as Node) !== "undecided") return;
+        if (runCollection(node.right as Node, decided) !== "undecided") return;
         if (comparesRunOrder(node.body as Node)) context.report({ node, message: MESSAGE });
       },
       TaggedTemplateExpression(node) {
@@ -183,15 +247,7 @@ export default defineRule({
           const marks = calls(unwrap(expression), SQL_ORIGIN_SELECTOR);
           text += marks ? "\u0000ORIGIN\u0000" : "\u0000VALUE\u0000";
         });
-        const subqueries = text.split(/(?=FROM\s+orchestration_v2_projection_runs\b)/u).slice(1);
-        for (const subquery of subqueries) {
-          const end = subquery.search(/\bLIMIT\s+1\b/u);
-          if (end === -1) continue;
-          const scope = subquery.slice(0, end);
-          if (!/\bORDER\s+BY\b/u.test(scope) || scope.includes("\u0000ORIGIN\u0000")) continue;
-          context.report({ node, message: SQL_MESSAGE });
-          return;
-        }
+        if (picksRunWithoutOrigin(text)) context.report({ node, message: SQL_MESSAGE });
       },
     };
   },

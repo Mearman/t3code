@@ -373,7 +373,7 @@ export function delegatedTaskAwaitsWork(
 export function delegatedTaskResultRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): OrchestrationV2Run | undefined {
-  const taskRuns = runs.toSorted((a, b) => b.ordinal - a.ordinal);
+  const taskRuns = runsByOrigin(runs, "t3").toSorted((a, b) => b.ordinal - a.ordinal);
   const awaited = taskRuns.filter(
     (run) => !cancelledBeforeStart(run) && !(run.status === "queued" && run.queueHeld === true),
   );

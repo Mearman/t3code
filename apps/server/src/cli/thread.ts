@@ -16,6 +16,7 @@ import {
   type OrchestratorMcpThreadTimelineItem,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -611,7 +612,8 @@ const runsAfter = Effect.fn("cli.thread.runsAfter")(function* (
   );
   const own = recentRuns.find((run) => run.runId === runId);
   if (own === undefined) return { later: [], sent: true };
-  const later = recentRuns.filter((run) => run.ordinal > own.ordinal);
+  // A turn sent from the CLI's own session is another request too.
+  const later = runsByOrigin(recentRuns, "any").filter((run) => run.ordinal > own.ordinal);
   if (later.length === 0) return { later, sent: false };
   const { items } = yield* readTimeline(tools, threadId, "messages");
   const sent = items.some(

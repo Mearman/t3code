@@ -11,7 +11,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { isSlashCommand } from "@t3tools/shared/composerTrigger";
-import { latestT3ExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
+import { latestT3ExecutedRun, runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -173,8 +173,9 @@ export function followUpOwnerRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): OrchestrationV2Run | null {
   return (
-    runs.filter(isActiveRun).toSorted((a, b) => b.ordinal - a.ordinal)[0] ??
-    latestT3ExecutedRun(runs)
+    runsByOrigin(runs, "t3")
+      .filter(isActiveRun)
+      .toSorted((a, b) => b.ordinal - a.ordinal)[0] ?? latestT3ExecutedRun(runs)
   );
 }
 
@@ -211,7 +212,7 @@ function resolveDeliveryIntent(
 ): MessageDispatchMode {
   if (deliveryIntent === undefined) return requestedMode;
 
-  const activeRun = projection.runs.findLast(isActiveRun);
+  const activeRun = runsByOrigin(projection.runs, "t3").findLast(isActiveRun);
   if (activeRun === undefined) return { type: "start_immediately" };
   if (deliveryIntent === "steer") {
     return { type: "steer_active", targetRunId: activeRun.id };

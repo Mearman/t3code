@@ -24,6 +24,7 @@ import {
   selectHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
 import { turnItemsSinceContextBoundary } from "./contextBoundary.ts";
 import type { ProjectionStoreV2Shape } from "./ProjectionStore.ts";
@@ -159,7 +160,8 @@ const readOwnHistoryItems = Effect.fn("orchestrationV2.contextHandoff.readOwnHis
     const inheritedRunIds = fork.lineage.sideChat
       ? null
       : new Set(yield* projectionStore.getForkSourceRunIds(fork.id));
-    const throughRuns = source.runs
+    // A fork inherits the conversation, transcript turns included.
+    const throughRuns = runsByOrigin(source.runs, "any")
       .filter((run) => run.ordinal <= throughRun.ordinal && (inheritedRunIds?.has(run.id) ?? true))
       .map((run) =>
         run.status === "rolled_back" && inheritedRunIds !== null

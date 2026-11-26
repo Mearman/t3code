@@ -1,5 +1,6 @@
 import {
   latestT3ExecutedRun,
+  runsByOrigin,
   latestRootProviderFailure,
   latestRootProviderFailureItem,
   latestUnheldRun,
@@ -106,7 +107,9 @@ function latestMatchingRun(
   projection: ThreadStructure,
   predicate: (run: OrchestrationV2ThreadProjection["runs"][number]) => boolean,
 ): OrchestrationV2ThreadProjection["runs"][number] | null {
-  return projection.runs.reduce<OrchestrationV2ThreadProjection["runs"][number] | null>(
+  return runsByOrigin(projection.runs, "any").reduce<
+    OrchestrationV2ThreadProjection["runs"][number] | null
+  >(
     (latest, candidate) =>
       predicate(candidate) && (latest === null || candidate.ordinal > latest.ordinal)
         ? candidate

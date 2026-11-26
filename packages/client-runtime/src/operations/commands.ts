@@ -1,3 +1,4 @@
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { msg } from "gt-i18n";
 import { translatableMessage } from "../errors/translatable.ts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
@@ -960,7 +961,8 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
   }
   if (runId === undefined) {
     const projection = yield* getProjection(threadId);
-    runId = projection.runs.findLast(
+    // Stop acts on T3's own turns; a transcript run ended outside T3.
+    runId = runsByOrigin(projection.runs, "t3").findLast(
       (run) =>
         run.status === "preparing" ||
         run.status === "starting" ||
@@ -968,7 +970,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
         run.status === "waiting",
     )?.id;
     if (runId === undefined) {
-      const latestRun = projection.runs.at(-1);
+      const latestRun = runsByOrigin(projection.runs, "t3").at(-1);
       if (
         derivePendingBackgroundWork({
           latestRun,

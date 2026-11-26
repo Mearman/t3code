@@ -1404,10 +1404,10 @@ function reportRunsRead(
 ): boolean {
   const floor = controls.runsFloor;
   if (floor === undefined || run.status !== "completed") return true;
-  const oldest = reportRuns.at(-1) ?? run;
+  const oldest = runsByOrigin(reportRuns, "t3").at(-1) ?? run;
   if (!ranSince(oldest, floor)) return false;
   const monitorRuns = monitorUpdateRunIds(controls.messages);
-  return controls.runs.some(
+  return runsByOrigin(controls.runs, "t3").some(
     (candidate) =>
       candidate.id !== run.id &&
       candidate.startedAt !== null &&
@@ -1672,7 +1672,8 @@ function lastDeliveredRunForProviderThread(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "providerTurns">,
   providerThreadId: OrchestrationV2ProviderThread["id"],
 ): OrchestrationV2Run | undefined {
-  return projection.runs.findLast(
+  // A transcript turn ran in that provider thread's own session, so the thread saw it.
+  return runsByOrigin(projection.runs, "any").findLast(
     (run) =>
       isHandoffSourceRun(run) &&
       run.providerThreadId === providerThreadId &&
@@ -2742,7 +2743,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       // Move queued ordinals after runs that started while they waited to preserve transcript and checkpoint order.
       // Started runs have prompts; cancelled queued messages do not.
-      const newerRunIds = projection.runs
+      const newerRunIds = runsByOrigin(projection.runs, "any")
         .filter((run) => run.status !== "queued" && run.ordinal > queuedRun.ordinal)
         .map((run) => run.id);
       const startedAhead =
@@ -2971,8 +2972,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");
-      const latestHandoffRun = projection.runs.findLast(isHandoffSourceRun);
+      // Handoffs carry the whole conversation, transcript turns included.
+      const conversationRuns = runsByOrigin(projection.runs, "any");
+      const latestCompletedRun = conversationRuns.findLast((run) => run.status === "completed");
+      const latestHandoffRun = conversationRuns.findLast(isHandoffSourceRun);
       const targetLastCompletedRun = lastDeliveredRunForProviderThread(
         projection,
         queuedProviderThread.id,
@@ -2983,7 +2986,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         latestHandoffRun === undefined ||
         latestHandoffRun.providerInstanceId === queuedRun.providerInstanceId
           ? []
-          : projection.runs.filter(
+          : conversationRuns.filter(
               (run) =>
                 isHandoffSourceRun(run) &&
                 run.ordinal >= contextBoundary &&
@@ -4763,7 +4766,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (
         command.expectedLatestRunId !== undefined &&
-        projection.runs.reduce<OrchestrationV2Run | undefined>(
+        // As settleAfterRun reads it: a transcript run since the request means the session went on.
+        runsByOrigin(projection.runs, "any").reduce<OrchestrationV2Run | undefined>(
           (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
           undefined,
         )?.id !== command.expectedLatestRunId
@@ -4813,7 +4817,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         !runningRunExists &&
         backgroundWorkHoldsCompletion(
           derivePendingBackgroundWork({
-            latestRun: projection.runs.findLast((run) => run.status !== "queued"),
+            latestRun: runsByOrigin(projection.runs, "t3").findLast(
+              (run) => run.status !== "queued",
+            ),
             providerThreads: projection.providerThreads,
             turnItems: projection.turnItems.filter(
               (item) => item.type !== "subagent" || item.origin !== "app_owned",
@@ -7235,7 +7241,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const steeringOrdinal = yield* nextTurnItemOrdinal(input.projection);
     if (restartHandoff !== null) {
       const covered = restartHandoff.coveredRunOrdinals;
-      const coveredRuns = input.projection.runs.filter(
+      const coveredRuns = runsByOrigin(input.projection.runs, "any").filter(
         (run) => run.ordinal >= covered.from && run.ordinal <= covered.to,
       );
       yield* emitEvent({
@@ -7809,7 +7815,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         resolvedMode.type === "steer_active" || resolvedMode.type === "restart_active"
           ? projection.runs.find((run) => run.id === resolvedMode.targetRunId)
           : resolvedMode.type === "queue_after_active" && command.deliveryIntent !== undefined
-            ? projection.runs.findLast(isLiveRun)
+            ? runsByOrigin(projection.runs, "t3").findLast(isLiveRun)
             : undefined;
       if (target !== undefined) {
         const goal = projection.providerThreads.find(
@@ -8617,8 +8623,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const ordinal = nextRunOrdinal(projection);
     const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
     const contextBoundary = freshContext ? ordinal : contextBoundaryOrdinal(projection);
-    const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");
-    const latestHandoffRun = projection.runs.findLast(isHandoffSourceRun);
+    // Handoffs carry the whole conversation, transcript turns included.
+    const conversationRuns = runsByOrigin(projection.runs, "any");
+    const latestCompletedRun = conversationRuns.findLast((run) => run.status === "completed");
+    const latestHandoffRun = conversationRuns.findLast(isHandoffSourceRun);
     const legacyImportItems =
       projection.thread.historyOrigin === "v1_import" && contextBoundary === 0
         ? yield* readHandoffItems(command.threadId, [null])
@@ -9177,7 +9185,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sourceRunsAfterFork =
       sourceProjection === null
         ? []
-        : sourceProjection.runs.filter(
+        : runsByOrigin(sourceProjection.runs, "any").filter(
             (candidate) => sourceRun === null || candidate.ordinal > sourceRun.ordinal,
           );
     const forkExecution =
@@ -9347,7 +9355,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const providerSwitchCoveredRuns =
       !isProviderSwitch || canResumeAcrossInstances || latestHandoffRun === undefined
         ? []
-        : projection.runs.filter(
+        : conversationRuns.filter(
             (run) =>
               isHandoffSourceRun(run) &&
               run.ordinal >= contextBoundary &&
@@ -9530,7 +9538,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       mergeBackSourceProjection === null || mergeBackSourceRun === null
         ? []
         : yield* Effect.gen(function* () {
-            const sourceRuns = mergeBackSourceProjection.runs.filter(
+            const sourceRuns = runsByOrigin(mergeBackSourceProjection.runs, "any").filter(
               (run) => run.ordinal <= mergeBackSourceRun.ordinal,
             );
             const rawItems = yield* readHandoffItems(
@@ -10452,7 +10460,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       .getThreadRecords(parentThreadId, ["runs", "subagents"], {
         // Every run followUpOwnerRun can pick, so a long parent's history stays unread.
         runStatuses: ["preparing", "starting", "running", "waiting"],
-        includeLatestExecutedRun: true,
+        // followUpOwnerRun picks T3's last run.
+        includeLatestExecutedRun: "t3",
         subagentIds: [
           ...(child.forkedFrom?.type === "node" ? [child.forkedFrom.nodeId] : []),
           ...(latestFollowupId === undefined ? [] : [latestFollowupId]),
@@ -15138,7 +15147,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     settledContinuationOf?: RunId,
   ) =>
     Effect.forEach(
-      runs.filter(
+      runsByOrigin(runs, "t3").filter(
         (run) =>
           run.id !== settledContinuationOf &&
           (run.id === resultRun.id || runRanAfter(run, resultRun)),

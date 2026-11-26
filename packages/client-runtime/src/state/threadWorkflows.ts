@@ -4,6 +4,7 @@ import {
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderCapabilities,
 } from "@t3tools/contracts";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { copySorted } from "@t3tools/shared/Array";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
@@ -45,7 +46,10 @@ export interface ThreadQueueWorkflowState {
 }
 
 export function resolveActiveThreadRun(projection: Pick<Projection, "runs">): Run | null {
-  return projection.runs.findLast((run) => ACTIVE_RUN_STATUSES.has(run.status)) ?? null;
+  return (
+    runsByOrigin(projection.runs, "t3").findLast((run) => ACTIVE_RUN_STATUSES.has(run.status)) ??
+    null
+  );
 }
 
 /**
@@ -54,7 +58,9 @@ export function resolveActiveThreadRun(projection: Pick<Projection, "runs">): Ru
  * instead of falling through to an older fully checkpointed run.
  */
 export function resolveLatestMergeBackRun(projection: Projection): Run | null {
-  const latestProviderFinishedRun = projection.runs.reduce<Run | null>(
+  // Merge-back carries the conversation back, transcript turns included.
+  const conversationRuns = runsByOrigin(projection.runs, "any");
+  const latestProviderFinishedRun = conversationRuns.reduce<Run | null>(
     (latest, run) =>
       MERGE_BACK_RUN_STATUSES.has(run.status) && (latest === null || run.ordinal > latest.ordinal)
         ? run
@@ -63,7 +69,7 @@ export function resolveLatestMergeBackRun(projection: Projection): Run | null {
   );
   if (latestProviderFinishedRun === null) return null;
 
-  const hasNewerActiveRun = projection.runs.some(
+  const hasNewerActiveRun = conversationRuns.some(
     (run) =>
       run.ordinal > latestProviderFinishedRun.ordinal &&
       MERGE_BACK_BLOCKING_RUN_STATUSES.has(run.status),
