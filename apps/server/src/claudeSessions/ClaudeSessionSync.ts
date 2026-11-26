@@ -59,16 +59,21 @@ import { forkParked } from "../serverActivation.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
 import { matchesCwdGlob } from "./claudeCwdGlobs.ts";
 import {
+  claimClaudeOwnTurnByText,
   claudeNativeItemLineUuid,
+  claudeNativeResultsNeedWholeTurn,
   claudeNativeRunIds,
-  claudeOwnTurnIds,
+  claudeNativeTurnItemIds,
   claudePromptTextKey,
+  isClaudeOwnTurn,
   NATIVE_PROVIDER_TURN_PREFIX,
+  newClaudeNativeTurnCache,
   parseTranscriptTime,
   planClaudeNativeTurn,
   planClaudeRemovedItems,
   REMOVED_TURN_ID,
   type ClaudeNativeRunTarget,
+  type ClaudeNativeTurnCache,
   type ClaudeOwnTurns,
   type StoredNativeItem,
 } from "./ClaudeNativeRuns.ts";
@@ -77,21 +82,20 @@ import * as ClaudeLiveSessions from "./ClaudeLiveSessions.ts";
 import { resolveClaudeSessionStores } from "./ClaudeSessionStore.ts";
 import * as ClaudeSyncCapacity from "./ClaudeSyncCapacity.ts";
 import { readClaudeTranscriptTurn } from "./ClaudeTranscriptContent.ts";
-import {
-  claudeTranscriptSessionId,
-  ClaudeTranscriptIndex,
-  syncClaudeTranscriptIndex,
-} from "./ClaudeTranscriptIndex.ts";
+import { claudeTranscriptSessionId } from "./ClaudeTranscriptIndex.ts";
 import { CLAUDE_SYNTHETIC_MODEL, decodeClaudeTranscriptLine } from "./ClaudeTranscriptLine.ts";
 import {
-  claudeTranscriptStructure,
-  type ClaudeTranscriptStructure,
-} from "./ClaudeTranscriptTurns.ts";
+  ClaudeTranscriptTurnTracker,
+  syncClaudeTranscript,
+} from "./ClaudeTranscriptTurnTracker.ts";
+import type { ClaudeTranscriptStructure } from "./ClaudeTranscriptTurns.ts";
 
 /** Bytes of transcript lines one step reads and writes while holding the thread's lock. */
 const READ_BUDGET_BYTES = 64 * 1024;
-/** Index memory kept for sessions neither live nor queued; the least recently used go first. */
+/** Tracker memory kept for sessions neither live nor loading; the least recently used go first. */
 const INDEX_MEMORY_BUDGET_BYTES = 256 * 1024 ** 2;
+/** A turn tracker's measured memory per indexed line, its index included. */
+const TRACKER_BYTES_PER_LINE = 207;
 /** Events in one database transaction, so a long transcript never holds the writer for long. */
 const MAX_EVENTS_PER_WRITE = 200;
 /** A session's entry is read from its head in chunks of this size until its first prompt. */
@@ -109,7 +113,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * `urgent` is what a person or a running terminal is waiting on: an opened thread, a live session, one T3 Code drives, a read after a T3 Code run. It never waits on host load. `fill` is background work and runs only when nothing is urgent and the host is idle.
  */
-type Lane = "urgent" | "fill";
+type Lane = "live" | "open" | "fill";
+// Lower is more urgent; a session asked for in two lanes is queued in the more urgent one.
+const LANE_RANK: Readonly<Record<Lane, number>> = { live: 0, open: 1, fill: 2 };
+/** Opened sessions loading in turn at once; more would interleave and leave every one unfinished for longer. */
+const LOADS_AT_ONCE = 2;
 
 export class ClaudeSessionSyncError extends Schema.TaggedError<ClaudeSessionSyncError>()(
   "ClaudeSessionSyncError",
@@ -466,7 +474,12 @@ const make = Effect.gen(function* () {
       if (line.kind === "title") {
         if (line.source === "ai") aiTitle = line.title ?? aiTitle;
         else customTitle = line.title;
-      } else if (line.kind === "conversation" && line.line.type === "assistant") {
+        return;
+      }
+      // Any exchange is a conversation, whatever its prompt shows: an image, a queued or meta prompt, shell output, a reply alone.
+      if (line.kind === "conversation" || line.kind === "queued") hasConversation = true;
+      if (line.kind === "localCommand") hasConversation = true;
+      if (line.kind === "conversation" && line.line.type === "assistant") {
         const reported = line.line.message.model;
         if (model === undefined && reported !== undefined && reported !== CLAUDE_SYNTHETIC_MODEL) {
           model = modelSlug(reported);
@@ -477,10 +490,7 @@ const make = Effect.gen(function* () {
         line.line.isCompactSummary !== true &&
         line.visible.text.length > 0
       ) {
-        hasConversation = true;
         promptTitle ??= deriveTitle("claudeAgent", line.visible.titleText);
-      } else if (line.kind === "localCommand" && line.input !== undefined) {
-        hasConversation = true;
       }
     };
     yield* Effect.scoped(
@@ -504,7 +514,46 @@ const make = Effect.gen(function* () {
         }
       }),
     );
-    return { cwd, startedAt, model, title: customTitle ?? aiTitle ?? promptTitle, hasConversation };
+    return { cwd, startedAt, model, customTitle, aiTitle, promptTitle, hasConversation };
+  });
+
+  /**
+   * The titles in a transcript's last chunk, where Claude Code writes a rename or a new AI title; the latest of each kind wins. A line cut by the chunk's start is skipped.
+   */
+  const scanTail = Effect.fn("ClaudeSessionSync.scanTail")(function* (transcript: Transcript) {
+    let customTitle: string | undefined;
+    let aiTitle: string | undefined;
+    const start = Math.max(0, transcript.size - HEAD_CHUNK_BYTES);
+    const bytes = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* fileSystem.open(transcript.filePath, { flag: "r" });
+        yield* handle.seek(BigInt(start), "start");
+        return yield* handle.readAlloc(transcript.size - start);
+      }),
+    );
+    if (Option.isNone(bytes)) return { customTitle, aiTitle };
+    const text = new TextDecoder().decode(bytes.value);
+    const lines = text.split("\n");
+    for (const lineText of start === 0 ? lines : lines.slice(1)) {
+      const decoded = decodeClaudeTranscriptLine(lineText);
+      if (decoded._tag !== "Record" || decoded.record.kind !== "title") continue;
+      if (decoded.record.source === "ai") aiTitle = decoded.record.title ?? aiTitle;
+      else customTitle = decoded.record.title;
+    }
+    return { customTitle, aiTitle };
+  });
+
+  /** The title an entry shows: a rename first, then Claude's own title, then the first prompt's. */
+  const entryTitle = Effect.fn("ClaudeSessionSync.entryTitle")(function* (
+    transcript: Transcript,
+    head: {
+      readonly customTitle: string | undefined;
+      readonly aiTitle: string | undefined;
+      readonly promptTitle: string | undefined;
+    },
+  ) {
+    const tail = yield* scanTail(transcript);
+    return tail.customTitle ?? head.customTitle ?? tail.aiTitle ?? head.aiTitle ?? head.promptTitle;
   });
 
   const isExcluded = (globs: ReadonlyArray<string>, cwd: string | null) =>
@@ -524,6 +573,8 @@ const make = Effect.gen(function* () {
         readonly threadId: ThreadId;
         readonly providerThreadId: ProviderThreadId;
         readonly cwd: string | null;
+        /** The title the entry was made with; null for a thread that already existed. */
+        readonly title: string | null;
       }
     | { readonly _tag: "Deleted"; readonly threadId: ThreadId }
     | { readonly _tag: "Skipped"; readonly cwd: string | null; readonly excluded: boolean };
@@ -563,6 +614,7 @@ const make = Effect.gen(function* () {
               threadId: baseId,
               providerThreadId: existing.activeProviderThreadId,
               cwd: head.cwd ?? null,
+              title: null,
             } satisfies EntryOutcome;
           }
         }
@@ -590,12 +642,13 @@ const make = Effect.gen(function* () {
         transcript.mtimeMs <
           DateTime.toEpochMillis(yield* DateTime.now) - sidebarAutoSettleAfterDays * DAY_MS);
     const model = head.model ?? defaultModel;
+    const title = (yield* entryTitle(transcript, head)) ?? "Untitled thread";
     const thread: OrchestrationV2AppThread = {
       createdBy: "system",
       creationSource: "server",
       id: threadId,
       projectId: placement.projectId,
-      title: head.title ?? "Untitled thread",
+      title,
       providerInstanceId: store.providerInstanceId,
       modelSelection: { instanceId: store.providerInstanceId, model },
       runtimeMode,
@@ -686,6 +739,7 @@ const make = Effect.gen(function* () {
       threadId,
       providerThreadId,
       cwd: head.cwd ?? null,
+      title,
     } satisfies EntryOutcome;
   });
 
@@ -753,22 +807,41 @@ const make = Effect.gen(function* () {
     return { promptUuids, assistantUuids, promptTexts } satisfies ClaudeOwnTurns;
   });
 
-  /** The ordinals of the run the sync wrote for a turn, or undefined when it wrote none. */
+  /** The run the sync wrote for a turn and its ordinals, or undefined when it wrote none. */
   const storedRunFor = Effect.fn("ClaudeSessionSync.storedRunFor")(function* (
-    idScope: string,
+    target: ClaudeNativeRunTarget,
     turnId: string,
   ) {
-    const ids = claudeNativeRunIds(idScope, turnId);
-    const [run] = yield* sql<{ readonly ordinal: number }>`
-      SELECT ordinal FROM orchestration_v2_projection_runs WHERE run_id = ${ids.runId}
-    `;
+    const ids = claudeNativeRunIds(target.idScope, turnId);
+    const run = yield* projections.getRun(target.threadId, ids.runId);
     const [turn] = yield* sql<{ readonly ordinal: number }>`
       SELECT ordinal FROM orchestration_v2_projection_provider_turns
       WHERE provider_turn_id = ${ids.providerTurnId}
     `;
     return run === undefined || turn === undefined
       ? undefined
-      : { ordinal: run.ordinal, providerTurnOrdinal: turn.ordinal };
+      : { run, ordinal: run.ordinal, providerTurnOrdinal: turn.ordinal };
+  });
+
+  /** The items a run holds for these lines: `x:<scope>:<line>` and its blocks `x:<scope>:<line>:<n>`. */
+  const itemIdsOfLines = Effect.fn("ClaudeSessionSync.itemIdsOfLines")(function* (
+    target: ClaudeNativeRunTarget,
+    turnId: string,
+    lineUuids: ReadonlyArray<string>,
+  ) {
+    const runId = claudeNativeRunIds(target.idScope, turnId).runId;
+    const found: Array<string> = [];
+    for (const lineUuid of lineUuids) {
+      const base = `x:${target.idScope}:${lineUuid}`;
+      // ";" follows ":" in code order, so the range holds exactly the line's block ids.
+      const rows = yield* sql<{ readonly id: string }>`
+        SELECT turn_item_id AS "id" FROM orchestration_v2_projection_turn_items
+        WHERE run_id = ${runId}
+          AND (turn_item_id = ${base} OR (turn_item_id > ${`${base}:`} AND turn_item_id < ${`${base};`}))
+      `;
+      for (const row of rows) found.push(row.id);
+    }
+    return found;
   });
 
   const storedItemsById = Effect.fn("ClaudeSessionSync.storedItemsById")(function* (
@@ -815,7 +888,7 @@ const make = Effect.gen(function* () {
 
   const updateThreadAfterRead = Effect.fn("ClaudeSessionSync.updateThreadAfterRead")(function* (
     target: ClaudeNativeRunTarget,
-    structure: ClaudeTranscriptStructure,
+    structure: Omit<ClaudeTranscriptStructure, "turns">,
     written: {
       readonly firstRunOrdinal: number | undefined;
       readonly lastRunOrdinal: number | undefined;
@@ -962,78 +1035,161 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /** Which turns are T3 Code's own, and the text matches still to claim; see `isClaudeOwnTurn`. */
+  interface OwnState {
+    readonly turns: Set<string>;
+    readonly unclaimed: Map<number, number>;
+  }
+
   /**
-   * A session's transcript index, held in memory between steps so a live or opened session reads only what its file gains. Sessions neither live nor queued are let go, least recently used first, once all held indexes exceed `INDEX_MEMORY_BUDGET_BYTES`; letting one go only costs reading its file again.
+   * A session held in memory between steps, so a live or opened session reads only what its file gains: its turn tracker, the turns still to write, newest first, and the turns gone since they were written. A cache is kept only for a turn that has not ended. Sessions neither live nor being loaded are let go, least recently used first, once all held sessions exceed `INDEX_MEMORY_BUDGET_BYTES`; letting one go only costs reading its file again.
    */
-  interface HeldIndex {
+  interface HeldSession {
     readonly storeKey: string;
     readonly sessionId: string;
-    readonly index: ClaudeTranscriptIndex;
+    readonly tracker: ClaudeTranscriptTurnTracker;
     filePath: string;
-    structure: { readonly version: number; readonly value: ClaudeTranscriptStructure } | undefined;
-    digests: { readonly threadId: ThreadId; readonly byTurn: Map<string, string> } | undefined;
-    own: { readonly version: number; readonly turnIds: ReadonlySet<string> } | undefined;
+    thread:
+      | {
+          readonly threadId: ThreadId;
+          readonly digests: Map<string, string>;
+          own: OwnState | undefined;
+          // Written turns the file no longer has are rolled back once a restart's first pass ends.
+          reconciled: boolean;
+        }
+      | undefined;
+    readonly pending: Set<string>;
+    order: Array<string> | undefined;
+    readonly removed: Set<string>;
+    readonly caches: Map<string, ClaudeNativeTurnCache>;
     bytes: number;
-    malformedLogged: number;
   }
-  const heldIndexes = new Map<string, HeldIndex>();
+  const heldSessions = new Map<string, HeldSession>();
 
-  const holdIndex = (storeKey: string, transcript: Transcript): HeldIndex => {
+  const holdSession = (storeKey: string, transcript: Transcript): HeldSession => {
     const key = requestKey(storeKey, transcript.sessionId);
-    const known = heldIndexes.get(key);
+    const known = heldSessions.get(key);
     // Re-inserted, so the map's order is least recently used first.
-    heldIndexes.delete(key);
-    const held: HeldIndex = known ?? {
-      storeKey,
-      sessionId: transcript.sessionId,
-      index: new ClaudeTranscriptIndex(),
-      filePath: transcript.filePath,
-      structure: undefined,
-      digests: undefined,
-      own: undefined,
-      bytes: 0,
-      malformedLogged: 0,
-    };
-    if (held.filePath !== transcript.filePath) {
-      held.index.reset();
-      held.filePath = transcript.filePath;
-      held.malformedLogged = 0;
-    }
-    heldIndexes.set(key, held);
+    heldSessions.delete(key);
+    const held: HeldSession =
+      known !== undefined && known.filePath === transcript.filePath
+        ? known
+        : {
+            storeKey,
+            sessionId: transcript.sessionId,
+            tracker: new ClaudeTranscriptTurnTracker(),
+            filePath: transcript.filePath,
+            thread: undefined,
+            pending: new Set(),
+            order: undefined,
+            removed: new Set(),
+            caches: new Map(),
+            bytes: 0,
+          };
+    heldSessions.set(key, held);
     return held;
   };
 
-  /** The session's turns, derived again only when its index changed. */
-  const structureOf = Effect.fn("ClaudeSessionSync.structureOf")(function* (held: HeldIndex) {
-    const { index } = held;
-    const malformed = index.malformedOffsets;
-    if (malformed.length > held.malformedLogged) {
+  /** Reads what the file gained into the tracker, and notes which turns now need writing or rolling back. */
+  const syncHeld = Effect.fn("ClaudeSessionSync.syncHeld")(function* (held: HeldSession) {
+    const result = yield* syncClaudeTranscript({
+      filePath: held.filePath,
+      tracker: held.tracker,
+    }).pipe(withHost);
+    if (result.malformedOffsets.length > 0) {
       yield* Effect.logWarning("Skipped Claude transcript lines that could not be read", {
         sessionId: held.sessionId,
-        offsets: malformed.slice(held.malformedLogged),
+        offsets: result.malformedOffsets,
       });
-      held.malformedLogged = malformed.length;
     }
-    if (held.structure?.version === index.version) return held.structure.value;
-    yield* Effect.yieldNow;
-    const value = claudeTranscriptStructure(index);
-    held.structure = { version: index.version, value };
-    const footprint = index.footprint();
-    held.bytes = footprint.columnBytes + 2 * footprint.stringCharacters;
-    yield* Effect.yieldNow;
-    return value;
+    for (const turnId of result.removedTurnIds) {
+      held.pending.delete(turnId);
+      held.caches.delete(turnId);
+      held.removed.add(turnId);
+    }
+    const fresh = result.changedTurnIds.filter((turnId) => !held.pending.has(turnId));
+    for (const turnId of result.changedTurnIds) {
+      held.pending.add(turnId);
+      held.removed.delete(turnId);
+    }
+    // One new turn is written next; more, as on a first read, are put in turn order once.
+    if (held.order !== undefined && fresh.length === 1) held.order.push(...fresh);
+    else if (fresh.length > 0) held.order = undefined;
+    held.bytes = held.tracker.index.entryCount * TRACKER_BYTES_PER_LINE;
+    return result;
   });
 
-  const releaseIndexes = () => {
+  /** The turns still to write, oldest first, so the newest is taken from the end. */
+  const pendingInOrder = (held: HeldSession): Array<string> => {
+    held.order ??= held.tracker.turnIds().filter((turnId) => held.pending.has(turnId));
+    return held.order;
+  };
+
+  const releaseSessions = () => {
     let total = 0;
-    for (const held of heldIndexes.values()) total += held.bytes;
-    for (const [key, held] of heldIndexes) {
+    for (const held of heldSessions.values()) total += held.bytes;
+    for (const [key, held] of heldSessions) {
       if (total <= INDEX_MEMORY_BUDGET_BYTES) return;
-      if (queued.has(key) || live.get(held.storeKey)?.has(held.sessionId) === true) continue;
-      heldIndexes.delete(key);
+      if (
+        loading.has(key) ||
+        queued.get(key)?.lane === "live" ||
+        live.get(held.storeKey)?.has(held.sessionId) === true
+      ) {
+        continue;
+      }
+      heldSessions.delete(key);
       total -= held.bytes;
     }
   };
+
+  /**
+   * The ordinal a new native run takes: its turn's start in whole seconds, or the next free one after it, so runs sort by when their turns started whatever order they are written in, and a run T3 Code starts later sorts after them all. A run's ordinal only needs to be unique in its thread, and a provider turn's in its provider thread.
+   */
+  const allocateOrdinal = Effect.fn("ClaudeSessionSync.allocateOrdinal")(function* (
+    target: ClaudeNativeRunTarget,
+    startedAt: DateTime.Utc,
+  ) {
+    for (
+      let ordinal = Math.max(1, Math.floor(DateTime.toEpochMillis(startedAt) / 1000));
+      ;
+      ordinal++
+    ) {
+      const taken = yield* sql<{ readonly found: number }>`
+        SELECT 1 AS found FROM orchestration_v2_projection_runs
+        WHERE thread_id = ${target.threadId} AND ordinal = ${ordinal}
+        UNION ALL
+        SELECT 1 AS found FROM orchestration_v2_projection_provider_turns
+        WHERE provider_thread_id = ${target.providerThreadId} AND ordinal = ${ordinal}
+        LIMIT 1
+      `;
+      if (taken.length === 0) return { ordinal, providerTurnOrdinal: ordinal };
+    }
+  });
+
+  const rollBack = Effect.fn("ClaudeSessionSync.rollBack")(function* (
+    target: ClaudeNativeRunTarget,
+    turnId: string,
+    eventId: () => EventId,
+  ) {
+    const run = yield* projections.getRun(
+      target.threadId,
+      claudeNativeRunIds(target.idScope, turnId).runId,
+    );
+    if (run === undefined || run.status === "rolled_back") return;
+    yield* eventSink.write({
+      events: [
+        {
+          id: eventId(),
+          type: "run.updated",
+          threadId: target.threadId,
+          runId: run.id,
+          ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+          occurredAt: run.completedAt ?? run.requestedAt,
+          payload: { ...run, status: "rolled_back" },
+        },
+      ],
+    });
+  });
 
   type IngestStep =
     | {
@@ -1046,17 +1202,17 @@ const make = Effect.gen(function* () {
     | { readonly _tag: "Deleted" };
 
   /**
-   * One bounded pass over a session's turns under the thread's lock: each turn whose digest differs from the one stored is read and written, until the read budget is spent. A turn the sync wrote that no longer exists, or is now T3 Code's own, has its run rolled back once every turn is written.
+   * One bounded pass under the thread's lock: the session's turns still to write are read and written newest first until the read budget is spent, reading only the lines of a turn the cache does not hold. A turn that is gone, or turns out to be T3 Code's own, has its run rolled back.
    */
   const ingestOnce = Effect.fn("ClaudeSessionSync.ingestOnce")(function* (input: {
     readonly row: ClaudeSessionSyncState.ClaudeSessionSyncState;
     readonly target: ClaudeNativeRunTarget;
-    readonly held: HeldIndex;
-    readonly structure: ClaudeTranscriptStructure;
+    readonly held: HeldSession;
     readonly fallbackAt: DateTime.Utc;
   }) {
-    const { row, target, held, structure } = input;
-    const { index } = held;
+    const { row, target, held } = input;
+    const { tracker } = held;
+    const { index } = tracker;
     // Deletion can land between steps; nothing is written into a deleted thread.
     const thread = yield* projections.findThread(target.threadId);
     if (thread === null || thread.deletedAt !== null) {
@@ -1072,80 +1228,160 @@ const make = Effect.gen(function* () {
     // T3 Code's live stream owns a turn it is running; its settling asks for a read again.
     if (active.length > 0) return { _tag: "Deferred" } satisfies IngestStep;
 
-    if (held.digests?.threadId !== target.threadId) {
-      held.digests = {
+    if (held.thread?.threadId !== target.threadId) {
+      held.thread = {
         threadId: target.threadId,
-        byTurn: new Map(yield* syncState.turnDigests(target.threadId)),
+        digests: new Map(yield* syncState.turnDigests(target.threadId)),
+        own: undefined,
+        reconciled: false,
       };
     }
-    const digests = held.digests.byTurn;
-    if (held.own?.version !== index.version) {
-      held.own = {
-        version: index.version,
-        turnIds: claudeOwnTurnIds({
-          structure,
-          index,
-          own: yield* ownTurns(target.providerThreadId),
-          skipCopied: target.skipCopied,
-          writtenTurnIds: new Set(digests.keys()),
-        }),
-      };
+    const state = held.thread;
+    const { digests } = state;
+    const ownTurnsNow = yield* Effect.cached(ownTurns(target.providerThreadId));
+    if (state.own === undefined) {
+      // Every turn is checked again, as on a first read or after a T3 Code run settled.
+      const own = yield* ownTurnsNow;
+      const next: OwnState = { turns: new Set(), unclaimed: new Map(own.promptTexts) };
+      for (const turnId of tracker.turnIds()) {
+        const turn = tracker.turn(turnId);
+        if (turn === undefined) continue;
+        if (
+          isClaudeOwnTurn({ turn, index, own, skipCopied: target.skipCopied }) ||
+          claimClaudeOwnTurnByText({
+            turnId,
+            index,
+            unclaimed: next.unclaimed,
+            written: digests.has(turnId),
+          })
+        ) {
+          next.turns.add(turnId);
+          if (digests.has(turnId)) held.removed.add(turnId);
+        }
+      }
+      state.own = next;
     }
-    const ownIds = held.own.turnIds;
+    const ownState = state.own;
 
     // Event ids only need to be unique; one random token per pass and a counter make them so.
     const readToken = yield* random.uuidV4();
     let nextEvent = 0;
     const eventId = () => EventId.make(`event:claude-sync:${readToken}:${nextEvent++}`);
-    let next: { run: number; turn: number } | undefined;
-    const allocate = Effect.gen(function* () {
-      if (next === undefined) {
-        const [run] = yield* sql<{ readonly next: number }>`
-          SELECT COALESCE(MAX(ordinal), 0) + 1 AS "next" FROM orchestration_v2_projection_runs
-          WHERE thread_id = ${target.threadId}
-        `;
-        const [turn] = yield* sql<{ readonly next: number }>`
-          SELECT COALESCE(MAX(ordinal), 0) + 1 AS "next"
-          FROM orchestration_v2_projection_provider_turns
-          WHERE provider_thread_id = ${target.providerThreadId}
-        `;
-        next = { run: run?.next ?? 1, turn: turn?.next ?? 1 };
-      }
-      const allocated = { ordinal: next.run++, providerTurnOrdinal: next.turn++ };
-      return allocated;
-    });
 
     let firstRunOrdinal: number | undefined;
     let lastRunOrdinal: number | undefined;
     let lastActivityAt: DateTime.Utc | undefined;
     let bytes = 0;
-    let atEnd = true;
-    // Lines of the turns the sync shows, built only when a rewritten run lost items.
-    let shownLines: ReadonlySet<string> | undefined;
-    const removed: Array<OrchestrationV2TurnItem> = [];
-
-    for (const turn of structure.turns) {
-      if (ownIds.has(turn.id) || digests.get(turn.id) === turn.digest) continue;
-      if (bytes >= READ_BUDGET_BYTES) {
-        atEnd = false;
-        break;
+    const gone: Array<OrchestrationV2TurnItem> = [];
+    const takeGone = Effect.fn("ClaudeSessionSync.takeGone")(function* (itemIds: Iterable<string>) {
+      for (const id of itemIds) {
+        // A line still in the file belongs to another turn, whose write moves its items.
+        const lineUuid = claudeNativeItemLineUuid(target.idScope, id);
+        if (lineUuid !== undefined && index.entryOf(lineUuid) !== undefined) continue;
+        const item = yield* projections.getTurnItem({
+          threadId: target.threadId,
+          itemId: TurnItemId.make(id),
+        });
+        if (item !== null) gone.push(item);
       }
-      const content = yield* readClaudeTranscriptTurn({
-        filePath: held.filePath,
-        index,
-        idScope: target.idScope,
-        turn,
-      }).pipe(
-        withHost,
-        Effect.asSome,
-        Effect.catchTags({ ClaudeTranscriptChangedError: () => Effect.succeedNone }),
-      );
+    });
+
+    const order = pendingInOrder(held);
+    // Newest first, each taken off the end once written or found to need nothing.
+    for (let turnId = order.at(-1); turnId !== undefined; turnId = order.at(-1)) {
+      if (!held.pending.has(turnId)) {
+        order.pop();
+        continue;
+      }
+      const turn = tracker.turn(turnId);
+      if (turn === undefined) {
+        held.pending.delete(turnId);
+        order.pop();
+        continue;
+      }
+      const written = digests.has(turnId);
+      if (
+        ownState.turns.has(turnId) ||
+        isClaudeOwnTurn({
+          turn,
+          index,
+          own: yield* ownTurnsNow,
+          skipCopied: target.skipCopied,
+        }) ||
+        claimClaudeOwnTurnByText({ turnId, index, unclaimed: ownState.unclaimed, written })
+      ) {
+        ownState.turns.add(turnId);
+        held.pending.delete(turnId);
+        held.caches.delete(turnId);
+        if (written) held.removed.add(turnId);
+        order.pop();
+        continue;
+      }
+      if (digests.get(turnId) === turn.digest) {
+        held.pending.delete(turnId);
+        order.pop();
+        continue;
+      }
+      if (bytes >= READ_BUDGET_BYTES) break;
+      const stored = yield* storedRunFor(target, turnId);
+      const read = Effect.fn("ClaudeSessionSync.readTurn")(function* (
+        cache: ClaudeNativeTurnCache,
+      ) {
+        return yield* readClaudeTranscriptTurn({
+          filePath: held.filePath,
+          index,
+          idScope: target.idScope,
+          turn,
+          known: cache.known,
+        }).pipe(
+          withHost,
+          Effect.asSome,
+          Effect.catchTags({ ClaudeTranscriptChangedError: () => Effect.succeedNone }),
+        );
+      });
+      let cache = held.caches.get(turnId);
+      const inMemory = cache !== undefined;
+      // Without a cache in memory the run's stored line hashes say what need not be read again.
+      let seeded = false;
+      if (cache === undefined) {
+        cache = newClaudeNativeTurnCache();
+        if (stored !== undefined) {
+          for (const [lineUuid, hash] of yield* syncState.lineHashes({
+            threadId: target.threadId,
+            turnId,
+          })) {
+            cache.known.set(lineUuid, hash);
+          }
+          seeded = cache.known.size > 0;
+          cache.model = stored.run.modelSelection.model;
+          cache.prompt = {
+            text: "",
+            createdBy: "system",
+            originKind: stored.run.nativeOrigin?.turnOrigin,
+          };
+        }
+      }
+      let content = yield* read(cache);
+      // A result for a tool on a line held only as a hash finishes that tool, so its turn is read whole.
+      if (
+        seeded &&
+        Option.isSome(content) &&
+        claudeNativeResultsNeedWholeTurn(content.value, cache)
+      ) {
+        cache = newClaudeNativeTurnCache();
+        seeded = false;
+        content = yield* read(cache);
+      }
       if (Option.isNone(content)) {
+        // The next sync reads the file again from the top and finds every turn anew.
         index.reset();
+        held.caches.clear();
+        held.pending.clear();
+        held.order = undefined;
         return { _tag: "Changed" } satisfies IngestStep;
       }
-      const unreadable = content.value.items.flatMap((item) =>
-        item._tag === "Unreadable" ? [item.offset] : [],
+      const unreadable = content.value.lines.flatMap((line) =>
+        line.items.flatMap((item) => (item._tag === "Unreadable" ? [item.offset] : [])),
       );
       if (unreadable.length > 0) {
         yield* Effect.logWarning("Skipped Claude transcript lines that could not be read", {
@@ -1153,48 +1389,60 @@ const make = Effect.gen(function* () {
           offsets: unreadable,
         });
       }
-      const ids = claudeNativeRunIds(target.idScope, turn.id);
-      const stored = yield* storedRunFor(target.idScope, turn.id);
-      const ordinals = stored ?? (yield* allocate);
-      const itemIds = new Set([ids.promptItemId, ...content.value.items.map((item) => item.id)]);
+      // Read from the index, where an unreadable opener time stays NaN, so such a turn sorts last.
+      const openerEntry = index.entryOf(turnId);
+      const startMs = openerEntry === undefined ? Number.NaN : index.timestamp(openerEntry);
+      const ordinals =
+        stored ??
+        (yield* allocateOrdinal(
+          target,
+          Number.isNaN(startMs) ? input.fallbackAt : DateTime.makeUnsafe(startMs),
+        ));
       const plan = planClaudeNativeTurn({
         target,
         content: content.value,
+        cache,
         ...ordinals,
         stored: stored !== undefined,
-        storedItems: yield* storedItemsById([...itemIds]),
+        storedItems: yield* storedItemsById(claudeNativeTurnItemIds(target, content.value)),
         eventId,
         modelSlug,
         fallbackAt: input.fallbackAt,
       });
       yield* writeGroups([plan.events]);
-      if (stored !== undefined) {
-        // Items the run held before whose lines are now elsewhere move with them; the rest leave it.
-        const leftovers = yield* sql<{ readonly id: string }>`
-          SELECT turn_item_id AS "id" FROM orchestration_v2_projection_turn_items
-          WHERE run_id = ${ids.runId}
-        `;
-        for (const { id } of leftovers) {
-          if (itemIds.has(id)) continue;
-          shownLines ??= new Set(
-            structure.turns.flatMap((shown) => (ownIds.has(shown.id) ? [] : shown.lineUuids)),
-          );
-          const lineUuid = claudeNativeItemLineUuid(target.idScope, id);
-          if (lineUuid !== undefined && shownLines.has(lineUuid)) continue;
-          const item = yield* projections.getTurnItem({
-            threadId: target.threadId,
-            itemId: TurnItemId.make(id),
-          });
-          if (item !== null) removed.push(item);
-        }
+      yield* takeGone(plan.leftItemIds);
+      if (plan.leftLineUuids.length > 0) {
+        yield* takeGone(yield* itemIdsOfLines(target, turnId, plan.leftLineUuids));
       }
+      if (!inMemory && !seeded && stored !== undefined) {
+        // A turn read whole for a run already stored: its run may hold items of lines since gone.
+        const planned = new Set([
+          claudeNativeRunIds(target.idScope, turnId).promptItemId,
+          ...[...cache.itemIds.values()].flat(),
+        ]);
+        const runItems = yield* sql<{ readonly id: string }>`
+          SELECT turn_item_id AS "id" FROM orchestration_v2_projection_turn_items
+          WHERE run_id = ${claudeNativeRunIds(target.idScope, turnId).runId}
+        `;
+        yield* takeGone(runItems.flatMap(({ id }) => (planned.has(id) ? [] : [id])));
+      }
+      yield* syncState.setLineHashes({
+        threadId: target.threadId,
+        turnId,
+        hashes: content.value.lines.map((line) => [line.lineUuid, line.hash] as const),
+        removed: content.value.removedLineUuids,
+      });
       // Recorded only once the run's events are written, so an interrupted write is written again.
       yield* syncState.setTurnDigest({
         threadId: target.threadId,
-        turnId: turn.id,
+        turnId,
         digest: turn.digest,
       });
-      digests.set(turn.id, turn.digest);
+      digests.set(turnId, turn.digest);
+      held.pending.delete(turnId);
+      order.pop();
+      if (turn.end === undefined) held.caches.set(turnId, cache);
+      else held.caches.delete(turnId);
       firstRunOrdinal = Math.min(firstRunOrdinal ?? ordinals.ordinal, ordinals.ordinal);
       lastRunOrdinal = Math.max(lastRunOrdinal ?? 0, ordinals.ordinal);
       if (
@@ -1203,19 +1451,20 @@ const make = Effect.gen(function* () {
       ) {
         lastActivityAt = plan.lastActivityAt;
       }
-      for (const uuid of turn.lineUuids) {
-        const entry = index.entryOf(uuid);
+      for (const line of content.value.lines) {
+        const entry = index.entryOf(line.lineUuid);
         if (entry !== undefined) bytes += index.location(entry).length + 1;
       }
     }
+    const atEnd = held.pending.size === 0;
 
-    if (removed.length > 0) {
-      const removedRun = yield* storedRunFor(target.idScope, REMOVED_TURN_ID);
-      const ordinals = removedRun ?? (yield* allocate);
+    if (gone.length > 0) {
+      const removedRun = yield* storedRunFor(target, REMOVED_TURN_ID);
+      const ordinals = removedRun ?? (yield* allocateOrdinal(target, thread.createdAt));
       yield* writeGroups([
         planClaudeRemovedItems({
           target,
-          items: removed,
+          items: gone,
           created: removedRun !== undefined,
           ...ordinals,
           at: thread.createdAt,
@@ -1223,39 +1472,22 @@ const make = Effect.gen(function* () {
         }),
       ]);
     }
-    if (atEnd) {
-      const shown = new Set(
-        structure.turns.flatMap((turn) => (ownIds.has(turn.id) ? [] : [turn.id])),
-      );
-      const stale = [...digests.keys()].filter((turnId) => !shown.has(turnId));
-      for (const turnId of stale) {
-        const run = yield* projections.getRun(
-          target.threadId,
-          claudeNativeRunIds(target.idScope, turnId).runId,
-        );
-        if (run === undefined || run.status === "rolled_back") continue;
-        yield* eventSink.write({
-          events: [
-            {
-              id: eventId(),
-              type: "run.updated",
-              threadId: target.threadId,
-              runId: run.id,
-              ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
-              occurredAt: run.completedAt ?? run.requestedAt,
-              payload: { ...run, status: "rolled_back" },
-            },
-          ],
-        });
-      }
-      if (stale.length > 0) {
-        yield* syncState.deleteTurnDigests({ threadId: target.threadId, turnIds: stale });
-        for (const turnId of stale) digests.delete(turnId);
-      }
+    if (atEnd && !state.reconciled) {
+      for (const turnId of digests.keys()) if (!tracker.hasTurn(turnId)) held.removed.add(turnId);
+      state.reconciled = true;
+    }
+    const stale = [...held.removed].filter(
+      (turnId) => !tracker.hasTurn(turnId) || ownState.turns.has(turnId),
+    );
+    for (const turnId of stale) yield* rollBack(target, turnId, eventId);
+    held.removed.clear();
+    if (stale.length > 0) {
+      yield* syncState.deleteTurnDigests({ threadId: target.threadId, turnIds: stale });
+      for (const turnId of stale) digests.delete(turnId);
     }
     const appliedTitle = yield* updateThreadAfterRead(
       target,
-      structure,
+      tracker.facts(),
       { firstRunOrdinal, lastRunOrdinal, lastActivityAt },
       row.appliedTitle,
     );
@@ -1265,8 +1497,43 @@ const make = Effect.gen(function* () {
       hydrationState: "hydrating",
       updatedAt: yield* DateTime.now,
     };
-    yield* syncState.upsert(updated);
+    if (updated.appliedTitle !== row.appliedTitle || row.hydrationState !== "hydrating") {
+      yield* syncState.upsert(updated);
+    }
     return { _tag: "Read", row: updated, atEnd } satisfies IngestStep;
+  });
+
+  /** Brings an entry's title and update time up to its changed file; returns the title the sync applied. */
+  const refreshEntry = Effect.fn("ClaudeSessionSync.refreshEntry")(function* (
+    thread: OrchestrationV2AppThread,
+    transcript: Transcript,
+    appliedTitle: string | null,
+  ) {
+    const tail = yield* scanTail(transcript);
+    const title = tail.customTitle ?? tail.aiTitle;
+    // A title the user gave the thread in T3 Code is kept.
+    const untouched = appliedTitle === null || thread.title === appliedTitle;
+    const nextTitle = title !== undefined && untouched ? title : thread.title;
+    const activity = DateTime.makeUnsafe(transcript.mtimeMs);
+    const updatedAt =
+      DateTime.toEpochMillis(activity) > DateTime.toEpochMillis(thread.updatedAt)
+        ? activity
+        : thread.updatedAt;
+    if (nextTitle !== thread.title || updatedAt !== thread.updatedAt) {
+      yield* eventSink.write({
+        events: [
+          {
+            id: yield* idAllocator.allocate.event({ threadId: thread.id }),
+            type: "thread.metadata-updated",
+            threadId: thread.id,
+            providerInstanceId: thread.providerInstanceId,
+            occurredAt: updatedAt,
+            payload: { ...thread, title: nextTitle, updatedAt },
+          },
+        ],
+      });
+    }
+    return untouched && title !== undefined ? title : appliedTitle;
   });
 
   type StepOutcome =
@@ -1315,6 +1582,8 @@ const make = Effect.gen(function* () {
       let threadId = base.threadId;
       let providerThreadId = base.providerThreadId;
       let cwd = base.cwd;
+      let appliedTitle = base.appliedTitle;
+      const isNewEntry = threadId === null;
       let owned = false;
       if (threadId === null) {
         const owner = yield* syncState.findProviderThreadInInstances({
@@ -1346,6 +1615,7 @@ const make = Effect.gen(function* () {
         threadId = created.threadId;
         providerThreadId = created.providerThreadId;
         cwd = created.cwd;
+        appliedTitle = created.title ?? appliedTitle;
       }
       const thread = yield* projections.findThread(threadId);
       if (thread === null || thread.deletedAt !== null) {
@@ -1357,6 +1627,7 @@ const make = Effect.gen(function* () {
         threadId,
         providerThreadId,
         cwd,
+        appliedTitle,
       };
       // A directory excluded after its entry was made has its sync thread archived, and restored when the exclusion goes.
       const excluded = isSyncThread(thread) && isExcluded(options.excludedCwdGlobs, cwd);
@@ -1390,6 +1661,16 @@ const make = Effect.gen(function* () {
         return "pending" satisfies StepOutcome;
       }
       if (input.mode === "entry") {
+        // An entry whose file changed shows the session's latest title and activity.
+        const changed =
+          row !== undefined &&
+          (row.fileSize !== transcript.size || row.fileMtimeMs !== transcript.mtimeMs);
+        if (!isNewEntry && changed && linked.hydrationState === "entry" && isSyncThread(thread)) {
+          linked = {
+            ...linked,
+            appliedTitle: yield* refreshEntry(thread, transcript, linked.appliedTitle),
+          };
+        }
         const hydrationState =
           linked.hydrationState === "pending" || linked.hydrationState === "failed"
             ? "entry"
@@ -1424,25 +1705,36 @@ const make = Effect.gen(function* () {
         yield* syncState.upsert(linked);
         return "paused" satisfies StepOutcome;
       }
-      if (notice && linked.hydrationState !== "hydrating") {
-        yield* historyNotice(thread, target, {
-          status: "running",
-          message: "Loading this session's history from Claude Code.",
-        });
+      // A run in flight owns the thread's turns until it settles, which asks for a read again.
+      const active = yield* sql<{ readonly found: number }>`
+        SELECT 1 AS found FROM orchestration_v2_projection_runs
+        WHERE thread_id = ${threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}
+        LIMIT 1
+      `;
+      if (active.length > 0) {
+        yield* syncState.upsert(linked);
+        return "deferred" satisfies StepOutcome;
       }
-      // The file is indexed and its turns derived outside the thread's lock, which only writes wait on.
-      const held = holdIndex(store.key, transcript);
-      yield* syncClaudeTranscriptIndex({ filePath: held.filePath, index: held.index }).pipe(
-        withHost,
-      );
-      const structure = yield* structureOf(held);
+      if (linked.hydrationState !== "hydrating" && linked.hydrationState !== "full") {
+        if (notice) {
+          yield* historyNotice(thread, target, {
+            status: "running",
+            message: "Loading this session's history from Claude Code.",
+          });
+        }
+        // Recorded before anything is written, so a load stopped inside its first step resumes.
+        linked = { ...linked, hydrationState: "hydrating" };
+        yield* syncState.upsert(linked);
+      }
+      // The file is read into its tracker outside the thread's lock, which only writes wait on.
+      const held = holdSession(store.key, transcript);
+      yield* syncHeld(held);
       const read = yield* threadCommands.withLock(
         threadId,
         ingestOnce({
           row: linked,
           target,
           held,
-          structure,
           fallbackAt: DateTime.makeUnsafe(transcript.mtimeMs),
         }),
       );
@@ -1468,33 +1760,51 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(fail("sync a session", input.transcript.sessionId))),
   );
 
-  // Scheduler invariants: a session is queued once; a step that has more goes to the back of its
-  // lane, so appending sessions advance in turn; urgent work never waits on host load; each step
-  // waits for live subscribers outside any lock; a session is asked for again only when its
-  // file's size or mtime changed, or a T3 Code run on its thread settled.
+  // Scheduler invariants: one queue entry per session, in its most urgent lane (live, open, fill);
+  // at most `LOADS_AT_ONCE` opened sessions take turns while the rest wait in order; only the fill
+  // waits on host load; a session is asked for again only when its file's size or mtime changed,
+  // or a T3 Code run on its thread settled.
   const requestKey = (storeKey: string, sessionId: string) => `${storeKey}\0${sessionId}`;
   const queued = new Map<string, HydrationRequest>();
-  const lanes = { urgent: new Fifo<string>(), fill: new Fifo<string>() };
+  const lanes = {
+    live: new Fifo<string>(),
+    open: new Fifo<string>(),
+    waiting: new Fifo<string>(),
+    fill: new Fifo<string>(),
+  };
+  // Opened sessions taking turns in the open lane; the others wait in `lanes.waiting`.
+  const loading = new Set<string>();
   const wake = yield* Queue.unbounded<void>();
   // The size and mtime each session's file had at its last step that left nothing to read.
   const seen = new Map<string, string>();
   // Sessions paused below the free-disk floor; the sweep asks for them again.
   const paused = new Map<string, HydrationRequest>();
-  const signature = (transcript: Transcript) => `${transcript.size}:${transcript.mtimeMs}`;
+  const signature = (transcript: Pick<Transcript, "size" | "mtimeMs">) =>
+    `${transcript.size}:${transcript.mtimeMs}`;
+
+  const enqueue = (key: string, lane: Lane) => {
+    if (lane !== "open") return lanes[lane].push(key);
+    if (loading.has(key) || loading.size < LOADS_AT_ONCE) {
+      loading.add(key);
+      lanes.open.push(key);
+    } else {
+      lanes.waiting.push(key);
+    }
+  };
 
   const request = Effect.fn("ClaudeSessionSync.request")(function* (next: HydrationRequest) {
     const key = requestKey(next.store.key, next.sessionId);
     const known = queued.get(key);
-    if (known !== undefined && (known.lane === "urgent" || next.lane === "fill")) return;
+    if (known !== undefined && LANE_RANK[known.lane] <= LANE_RANK[next.lane]) return;
     queued.set(key, { ...next, filePath: next.filePath ?? known?.filePath });
-    lanes[next.lane].push(key);
+    enqueue(key, next.lane);
     yield* Queue.offer(wake, undefined);
   });
 
+  // A key moved to a more urgent lane is still in the one it left; it is taken from the new one only.
   const take = (lane: Lane): HydrationRequest | undefined => {
     for (let key = lanes[lane].shift(); key !== undefined; key = lanes[lane].shift()) {
       const next = queued.get(key);
-      // A key promoted to the urgent lane is still in the fill lane; it is taken from urgent only.
       if (next !== undefined && next.lane === lane) {
         queued.delete(key);
         return next;
@@ -1503,18 +1813,39 @@ const make = Effect.gen(function* () {
     return undefined;
   };
 
+  const finishLoad = (key: string) => {
+    loading.delete(key);
+    while (loading.size < LOADS_AT_ONCE) {
+      const next = lanes.waiting.shift();
+      if (next === undefined) return;
+      if (queued.get(next)?.lane !== "open") continue;
+      loading.add(next);
+      lanes.open.push(next);
+    }
+  };
+
   /** Runs one step of one request, and queues it again when it has more. */
   const runRequest = Effect.fn("ClaudeSessionSync.runRequest")(function* (next: HydrationRequest) {
+    const key = requestKey(next.store.key, next.sessionId);
+    const outcome = yield* stepRequest(next);
+    if (outcome !== "more") finishLoad(key);
+    if (outcome === "deleted") heldSessions.delete(key);
+    releaseSessions();
+  });
+
+  const stepRequest = Effect.fn("ClaudeSessionSync.stepRequest")(function* (
+    next: HydrationRequest,
+  ) {
     const { settings, stores } = yield* currentState;
-    if (!settings.claudeSessionSync.enabled) return;
+    if (!settings.claudeSessionSync.enabled) return undefined;
     const store = stores.find((candidate) => candidate.key === next.store.key);
-    if (store === undefined) return;
+    if (store === undefined) return undefined;
     const key = requestKey(store.key, next.sessionId);
     const row = yield* syncState
       .get({ storeKey: store.key, sessionId: next.sessionId })
       .pipe(Effect.mapError(fail("read a session", next.sessionId)));
     const filePath = next.filePath ?? row?.filePath;
-    if (filePath === undefined) return;
+    if (filePath === undefined) return undefined;
     const transcript = yield* statTranscript(next.sessionId, filePath);
     if (transcript === undefined) {
       if (row !== undefined) {
@@ -1522,7 +1853,7 @@ const make = Effect.gen(function* () {
           Effect.mapError(fail("mark a session", next.sessionId)),
         );
       }
-      return;
+      return undefined;
     }
     yield* capacity.subscribersReady;
     if (next.lane === "fill") yield* capacity.hostIdle;
@@ -1553,13 +1884,12 @@ const make = Effect.gen(function* () {
     );
     if (outcome === "more") {
       yield* request({ ...next, filePath: transcript.filePath });
-    } else if (outcome === "paused") {
-      paused.set(key, { ...next, filePath: transcript.filePath });
     } else {
+      // A paused session is asked for again by the sweep, not by every poll that sees it unchanged.
+      if (outcome === "paused") paused.set(key, { ...next, filePath: transcript.filePath });
       seen.set(key, signature(transcript));
     }
-    if (outcome === "deleted") heldIndexes.delete(key);
-    releaseIndexes();
+    return outcome;
   });
 
   const fillNext = Effect.fn("ClaudeSessionSync.fillNext")(function* () {
@@ -1581,7 +1911,7 @@ const make = Effect.gen(function* () {
   const drain: ClaudeSessionSync["Service"]["drain"] = Effect.gen(function* () {
     const failures: Array<ClaudeSessionSyncError> = [];
     for (;;) {
-      const next = take("urgent") ?? take("fill");
+      const next = take("live") ?? take("open") ?? take("fill");
       if (next === undefined) {
         const filled = yield* fillNext().pipe(Effect.orElseSucceed(() => false));
         if (filled) continue;
@@ -1590,7 +1920,12 @@ const make = Effect.gen(function* () {
       yield* runRequest(next).pipe(
         Effect.catch((error) =>
           Effect.logWarning("Could not hydrate a Claude session", { error }).pipe(
-            Effect.andThen(Effect.sync(() => failures.push(error))),
+            Effect.andThen(
+              Effect.sync(() => {
+                finishLoad(requestKey(next.store.key, next.sessionId));
+                failures.push(error);
+              }),
+            ),
           ),
         ),
       );
@@ -1646,7 +1981,7 @@ const make = Effect.gen(function* () {
         (row.hydrationState === "excluded") !== isExcluded(options.excludedCwdGlobs, row.cwd);
       const lookAgain = full && row?.hydrationState === "pending";
       if (unchanged && !exclusionChanged && !lookAgain) continue;
-      yield* capacity.hostIdle;
+      // Entries are cheap and bounded, so they never wait on host load; only the fill does.
       const isLive = liveIn(store).has(transcript.sessionId);
       const outcome = yield* syncStep({
         store,
@@ -1663,11 +1998,13 @@ const make = Effect.gen(function* () {
         ),
       );
       const lane: Lane | undefined =
-        outcome === "follow" || (outcome === "entry" && isLive)
-          ? "urgent"
-          : outcome === "entry" && options.backgroundFill && transcript.mtimeMs >= recentSince
-            ? "fill"
-            : undefined;
+        (outcome === "follow" || outcome === "entry") && isLive
+          ? "live"
+          : outcome === "follow"
+            ? "open"
+            : outcome === "entry" && options.backgroundFill && transcript.mtimeMs >= recentSince
+              ? "fill"
+              : undefined;
       if (lane !== undefined) {
         yield* request({
           store,
@@ -1680,7 +2017,7 @@ const make = Effect.gen(function* () {
     // A history whose reading stopped part-way, as at a shutdown, is finished whether or not its file changed.
     for (const row of rows.values()) {
       if (row.hydrationState !== "hydrating") continue;
-      yield* request({ store, sessionId: row.sessionId, filePath: row.filePath, lane: "urgent" });
+      yield* request({ store, sessionId: row.sessionId, filePath: row.filePath, lane: "open" });
     }
   });
 
@@ -1710,24 +2047,42 @@ const make = Effect.gen(function* () {
         const before = liveIn(store);
         const now = yield* liveSessions.read(store.sessionsDir);
         live.set(store.key, now);
-        // A session that just went live and has never been seen is looked for once.
         for (const sessionId of now) {
+          // A session registered before its transcript is written is looked for until it is.
           const key = requestKey(store.key, sessionId);
-          if (before.has(sessionId) || knownPaths.has(key)) continue;
+          if (knownPaths.has(key)) continue;
           const found = yield* findTranscript(store, sessionId);
           if (found !== undefined) knownPaths.set(key, found.filePath);
         }
+        // A session whose process ended may have written its last lines since the previous poll.
+        for (const sessionId of before) {
+          if (now.has(sessionId)) continue;
+          const filePath = knownPaths.get(requestKey(store.key, sessionId));
+          if (filePath !== undefined) yield* requestIfChanged(store, sessionId, filePath, "live");
+        }
       }
       for (const sessionId of liveIn(store)) {
-        const key = requestKey(store.key, sessionId);
-        const filePath = knownPaths.get(key);
-        if (filePath === undefined) continue;
-        const transcript = yield* statTranscript(sessionId, filePath);
-        if (transcript === undefined || seen.get(key) === signature(transcript)) continue;
-        yield* request({ store, sessionId, filePath, lane: "urgent" });
+        const filePath = knownPaths.get(requestKey(store.key, sessionId));
+        if (filePath !== undefined) yield* requestIfChanged(store, sessionId, filePath, "live");
       }
     }
   }).pipe(Effect.withSpan("ClaudeSessionSync.pollLive"));
+
+  /** Asks for a read when the file's size or mtime differs from the last step that read it all. */
+  const requestIfChanged = Effect.fn("ClaudeSessionSync.requestIfChanged")(function* (
+    store: SyncStore,
+    sessionId: string,
+    filePath: string,
+    lane: Lane,
+    readTo?: Pick<Transcript, "size" | "mtimeMs">,
+  ) {
+    const key = requestKey(store.key, sessionId);
+    const transcript = yield* statTranscript(sessionId, filePath);
+    if (transcript === undefined) return;
+    const last = seen.get(key) ?? (readTo === undefined ? undefined : signature(readTo));
+    if (last === signature(transcript)) return;
+    yield* request({ store, sessionId, filePath, lane });
+  });
 
   const requestForThread = Effect.fn("ClaudeSessionSync.requestForThread")(function* (
     threadId: ThreadId,
@@ -1739,18 +2094,24 @@ const make = Effect.gen(function* () {
       .findByThreadId(threadId)
       .pipe(Effect.mapError(fail("find a thread's session")));
     if (row === undefined || row.hydrationState === "deleted") return;
-    if (row.hydrationState === "full" && !forget) return;
     const store = stores.find((candidate) => candidate.key === row.storeKey);
     if (store === undefined) return;
     const key = requestKey(store.key, row.sessionId);
+    knownPaths.set(key, row.filePath);
+    const lane: Lane = liveIn(store).has(row.sessionId) ? "live" : "open";
     if (forget) {
       seen.delete(key);
       // A settled T3 Code run can change which turns are its own.
-      const held = heldIndexes.get(key);
-      if (held !== undefined) held.own = undefined;
+      const held = heldSessions.get(key);
+      if (held?.thread !== undefined) held.thread.own = undefined;
+    } else if (row.hydrationState === "full") {
+      // A loaded session is read again only when its file grew, as when a terminal continued it.
+      return yield* requestIfChanged(store, row.sessionId, row.filePath, lane, {
+        size: row.fileSize,
+        mtimeMs: row.fileMtimeMs,
+      });
     }
-    knownPaths.set(key, row.filePath);
-    yield* request({ store, sessionId: row.sessionId, filePath: row.filePath, lane: "urgent" });
+    yield* request({ store, sessionId: row.sessionId, filePath: row.filePath, lane });
   });
 
   const hydrateThread: ClaudeSessionSync["Service"]["hydrateThread"] = (threadId) =>
@@ -1785,7 +2146,7 @@ const make = Effect.gen(function* () {
       fileMtimeMs: transcript.mtimeMs,
       updatedAt: yield* DateTime.now,
     });
-    yield* request({ store, sessionId: row.sessionId, filePath: row.filePath, lane: "urgent" });
+    yield* request({ store, sessionId: row.sessionId, filePath: row.filePath, lane: "open" });
   });
 
   const applyRestores: ClaudeSessionSync["Service"]["applyRestores"] = Effect.gen(function* () {

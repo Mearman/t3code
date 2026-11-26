@@ -121,7 +121,19 @@ export class ClaudeSessionSyncStateRepository extends Context.Service<
       readonly turnId: string;
       readonly digest: string;
     }) => Effect.Effect<void, ClaudeSessionSyncStateRepositoryError>;
-    /** Forgets turns no longer written as native runs; with no turn ids, every turn of the thread. */
+    /** The hash of each line the written run of a turn read, by line uuid. */
+    readonly lineHashes: (input: {
+      readonly threadId: string;
+      readonly turnId: string;
+    }) => Effect.Effect<ReadonlyMap<string, number>, ClaudeSessionSyncStateRepositoryError>;
+    /** Records the hashes of lines a turn's run read and forgets the lines that left it. */
+    readonly setLineHashes: (input: {
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly hashes: ReadonlyArray<readonly [string, number]>;
+      readonly removed: ReadonlyArray<string>;
+    }) => Effect.Effect<void, ClaudeSessionSyncStateRepositoryError>;
+    /** Forgets turns no longer written as native runs, and their lines; with no turn ids, every turn of the thread. */
     readonly deleteTurnDigests: (input: {
       readonly threadId: string;
       readonly turnIds?: ReadonlyArray<string>;
@@ -130,12 +142,17 @@ export class ClaudeSessionSyncStateRepository extends Context.Service<
     readonly findByThreadId: (
       threadId: string,
     ) => Effect.Effect<ClaudeSessionSyncState | undefined, ClaudeSessionSyncStateRepositoryError>;
-    /** The most recently changed session in these stores that has only an entry. Reads one index range. */
+    /** The most recently changed session in these stores that has only an entry and no run in flight. */
     readonly nextEntryToHydrate: (
       storeKeys: ReadonlyArray<string>,
     ) => Effect.Effect<ClaudeSessionSyncState | undefined, ClaudeSessionSyncStateRepositoryError>;
   }
 >()("t3/persistence/ClaudeSessionSyncState/ClaudeSessionSyncStateRepository") {}
+
+const encodeLineUuids = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+const encodeLineHashes = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Array(Schema.Tuple([Schema.String, Schema.Number]))),
+);
 
 const toRepositoryError = (operation: string) => (cause: unknown) =>
   Schema.isSchemaError(cause)
@@ -195,7 +212,14 @@ const make = Effect.gen(function* () {
     Result: ClaudeSessionSyncState,
     execute: ({ storeKeys }) =>
       selectRows(
-        sql`hydration_state = 'entry' AND store_key IN ${sql.in(storeKeys)} ORDER BY file_mtime_ms DESC LIMIT 1`,
+        // A thread with a run in flight is read once the run settles, so the fill passes it by.
+        sql`hydration_state = 'entry' AND store_key IN ${sql.in(storeKeys)}
+          AND NOT EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_runs AS run
+            WHERE run.thread_id = fork_claude_session_sync_state.thread_id
+              AND run.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+          )
+          ORDER BY file_mtime_ms DESC LIMIT 1`,
       ),
   });
 
@@ -298,19 +322,57 @@ const make = Effect.gen(function* () {
         ON CONFLICT (thread_id, turn_id) DO UPDATE SET digest = excluded.digest
       `.pipe(Effect.asVoid, Effect.mapError(toRepositoryError("setClaudeSessionTurnDigest")));
     }),
+    lineHashes: Effect.fn("ClaudeSessionSyncStateRepository.lineHashes")(function* (input) {
+      const rows = yield* sql<{ readonly lineUuid: string; readonly hash: number }>`
+        SELECT line_uuid AS "lineUuid", hash FROM fork_claude_session_lines
+        WHERE thread_id = ${input.threadId} AND turn_id = ${input.turnId}
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.mapError(toRepositoryError("readClaudeSessionLines")),
+      );
+      return new Map(rows.map((row) => [row.lineUuid, row.hash]));
+    }),
+    setLineHashes: Effect.fn("ClaudeSessionSyncStateRepository.setLineHashes")(
+      function* (input) {
+        const { threadId, turnId } = input;
+        // Each list goes as one JSON parameter, so no statement nears SQLite's parameter limit.
+        if (input.removed.length > 0) {
+          yield* sql`
+            DELETE FROM fork_claude_session_lines
+            WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+              AND line_uuid IN (SELECT value FROM json_each(${yield* encodeLineUuids(input.removed)}))
+          `;
+        }
+        if (input.hashes.length > 0) {
+          yield* sql`
+            INSERT INTO fork_claude_session_lines (thread_id, turn_id, line_uuid, hash)
+            SELECT ${threadId}, ${turnId}, json_extract(value, '$[0]'), json_extract(value, '$[1]')
+            -- The WHERE keeps SQLite from reading ON CONFLICT as part of the SELECT.
+            FROM json_each(${yield* encodeLineHashes(input.hashes)}) WHERE true
+            ON CONFLICT (thread_id, turn_id, line_uuid) DO UPDATE SET hash = excluded.hash
+          `;
+        }
+      },
+      Effect.mapError(toRepositoryError("setClaudeSessionLines")),
+    ),
     deleteTurnDigests: Effect.fn("ClaudeSessionSyncStateRepository.deleteTurnDigests")(
       function* (input) {
         const turnIds = input.turnIds;
         if (turnIds === undefined) {
           yield* sql`DELETE FROM fork_claude_session_turns WHERE thread_id = ${input.threadId}`;
+          yield* sql`DELETE FROM fork_claude_session_lines WHERE thread_id = ${input.threadId}`;
           return;
         }
         // SQLite allows a few hundred bound parameters per statement; these stay well under.
         for (let start = 0; start < turnIds.length; start += 400) {
+          const chunk = turnIds.slice(start, start + 400);
           yield* sql`
             DELETE FROM fork_claude_session_turns
-            WHERE thread_id = ${input.threadId}
-              AND turn_id IN ${sql.in(turnIds.slice(start, start + 400))}
+            WHERE thread_id = ${input.threadId} AND turn_id IN ${sql.in(chunk)}
+          `;
+          yield* sql`
+            DELETE FROM fork_claude_session_lines
+            WHERE thread_id = ${input.threadId} AND turn_id IN ${sql.in(chunk)}
           `;
         }
       },

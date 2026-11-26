@@ -35,7 +35,7 @@ import {
   type ClaudeTranscriptIndex,
 } from "./ClaudeTranscriptIndex.ts";
 import { CLAUDE_SYNTHETIC_MODEL } from "./ClaudeTranscriptLine.ts";
-import type { ClaudeTranscriptStructure } from "./ClaudeTranscriptTurns.ts";
+import type { ClaudeTranscriptTurn } from "./ClaudeTranscriptTurns.ts";
 
 /** Tool input and output are copied up to this many characters; the transcript keeps the rest. */
 export const NATIVE_TOOL_TEXT_MAX_CHARS = 8 * 1024;
@@ -87,76 +87,56 @@ export function claudeNativeItemLineUuid(idScope: string, itemId: string): strin
   return itemId.slice(prefix.length).split(":")[0];
 }
 
+/** What `isClaudeOwnTurn` reads of a turn: its opener, prompt id and lines. */
+type OwnTurnView = Pick<ClaudeTranscriptTurn, "id" | "promptId" | "lineUuids">;
+
 /**
- * The turns T3 Code ran itself, which its own runs hold. A turn is T3 Code's when its opener's uuid or prompt id is one T3 Code allocated, when it holds a reply T3 Code saw, or when it is a line a T3 Code fork copied from its parent. A T3 Code turn that recorded neither claims, in turn order, one turn with its prompt text that the sync has not already written as its own run, so a terminal turn once shown is never hidden later.
+ * Whether T3 Code ran this turn itself, so its own run holds it: the opener's uuid or prompt id is one T3 Code allocated, the turn holds a reply T3 Code saw, or, in a T3 Code fork, its opener is a line copied from the parent.
  */
-export function claudeOwnTurnIds(input: {
-  readonly structure: ClaudeTranscriptStructure;
+export function isClaudeOwnTurn(input: {
+  readonly turn: OwnTurnView;
   readonly index: ClaudeTranscriptIndex;
   readonly own: ClaudeOwnTurns;
   readonly skipCopied: boolean;
-  readonly writtenTurnIds: ReadonlySet<string>;
-}): ReadonlySet<string> {
-  const { index, own } = input;
-  const owned = new Set<string>();
-  const unclaimed = new Map(own.promptTexts);
-  for (const turn of input.structure.turns) {
-    const entry = index.entryOf(turn.id);
-    const copied =
-      input.skipCopied && entry !== undefined && index.forkSessionId(entry) !== undefined;
-    if (
-      copied ||
-      own.promptUuids.has(turn.id) ||
-      (turn.promptId !== undefined && own.promptUuids.has(turn.promptId)) ||
-      (own.assistantUuids.size > 0 && turn.lineUuids.some((uuid) => own.assistantUuids.has(uuid)))
-    ) {
-      owned.add(turn.id);
-    }
-  }
-  if (unclaimed.size === 0) return owned;
-  for (const turn of input.structure.turns) {
-    if (owned.has(turn.id) || input.writtenTurnIds.has(turn.id)) continue;
-    const entry = index.entryOf(turn.id);
-    if (entry === undefined || index.kind(entry) !== ClaudeTranscriptLineKind.User) continue;
-    const text = index.textHash(entry);
-    const left = unclaimed.get(text) ?? 0;
-    if (left === 0) continue;
-    unclaimed.set(text, left - 1);
-    owned.add(turn.id);
-  }
-  return owned;
+}): boolean {
+  const { turn, index, own } = input;
+  const entry = index.entryOf(turn.id);
+  return (
+    (input.skipCopied && entry !== undefined && index.forkSessionId(entry) !== undefined) ||
+    own.promptUuids.has(turn.id) ||
+    (turn.promptId !== undefined && own.promptUuids.has(turn.promptId)) ||
+    (own.assistantUuids.size > 0 && turn.lineUuids.some((uuid) => own.assistantUuids.has(uuid)))
+  );
 }
 
-/** The prompt text key `claudeOwnTurnIds` matches a T3 Code turn's message by. */
+/**
+ * Claims a turn for a T3 Code turn that recorded no uuid, by its prompt text: `unclaimed` counts such turns per `claudePromptTextKey`, and a claim spends one. A turn the sync already wrote as its own run is never claimed, so a terminal turn once shown is never hidden later.
+ */
+export function claimClaudeOwnTurnByText(input: {
+  readonly turnId: string;
+  readonly index: ClaudeTranscriptIndex;
+  readonly unclaimed: Map<number, number>;
+  readonly written: boolean;
+}): boolean {
+  if (input.written || input.unclaimed.size === 0) return false;
+  const entry = input.index.entryOf(input.turnId);
+  if (entry === undefined || input.index.kind(entry) !== ClaudeTranscriptLineKind.User) {
+    return false;
+  }
+  const text = input.index.textHash(entry);
+  const left = input.unclaimed.get(text) ?? 0;
+  if (left === 0) return false;
+  input.unclaimed.set(text, left - 1);
+  return true;
+}
+
+/** The prompt text key `claimClaudeOwnTurnByText` matches a T3 Code turn's message by. */
 export const claudePromptTextKey = (text: string) => hashClaudeTranscriptText(text);
 
 /** A stored item as far as deciding whether to write it again needs; its position is the position store's, set when it was first written to its run. */
 export interface StoredNativeItem {
   readonly runId: string | null;
   readonly status: string;
-}
-
-export interface ClaudeNativeTurnPlanInput {
-  readonly target: ClaudeNativeRunTarget;
-  readonly content: ClaudeTranscriptTurnContent;
-  /** The run's ordinals: the stored ones when `stored`, else newly allocated. */
-  readonly ordinal: number;
-  readonly providerTurnOrdinal: number;
-  readonly stored: boolean;
-  /** Items already in the projection, by id, wherever they are. */
-  readonly storedItems: ReadonlyMap<string, StoredNativeItem>;
-  readonly eventId: () => EventId;
-  /** Maps a model id Claude Code recorded to the slug T3 Code selects it by. */
-  readonly modelSlug: (reported: string) => string;
-  /** Stands in for a line whose timestamp is missing or not a time, until a valid one follows. */
-  readonly fallbackAt: DateTime.Utc;
-}
-
-export interface ClaudeNativeTurnPlan {
-  /** The run's lifecycle, then its prompt, then every item that differs from the projection. */
-  readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
-  /** When the turn last changed, from the transcript. */
-  readonly lastActivityAt: DateTime.Utc;
 }
 
 const SETTLED_ITEM_STATUSES: ReadonlySet<string> = new Set([
@@ -377,52 +357,152 @@ export function planClaudeRemovedItems(input: {
 
 type ToolResult = { readonly output: string; readonly failed: boolean; readonly timestamp: string };
 
+/** The item types a tool call becomes. */
+type ToolItem = Extract<
+  OrchestrationV2TurnItem,
+  { readonly type: "command_execution" | "file_change" | "web_search" | "dynamic_tool" }
+>;
+
 /**
- * One finished run for one complete turn T3 Code did not run: its lifecycle, its prompt and its items. An item already stored in this run at the same position and status is not written again; one stored in another run is moved here, as when its line now belongs to this turn.
+ * What the planner keeps of an open turn between reads, so a read takes only the lines that are new or changed: the hash of each line it planned and the item ids each gave, the opener's prompt, the model, tools still waiting for their result and results read before their tool. Memory is the turn's line count plus its open tools.
+ */
+export interface ClaudeNativeTurnCache {
+  readonly known: Map<string, number>;
+  readonly itemIds: Map<string, ReadonlyArray<string>>;
+  prompt:
+    | {
+        readonly text: string;
+        readonly createdBy: "user" | "system";
+        readonly originKind: string | undefined;
+      }
+    | undefined;
+  model: string | undefined;
+  latest: DateTime.Utc | undefined;
+  nextOrdinal: number;
+  readonly openTools: Map<string, ToolItem>;
+  readonly earlyResults: Map<string, ToolResult>;
+}
+
+export const newClaudeNativeTurnCache = (): ClaudeNativeTurnCache => ({
+  known: new Map(),
+  itemIds: new Map(),
+  prompt: undefined,
+  model: undefined,
+  latest: undefined,
+  nextOrdinal: 1,
+  openTools: new Map(),
+  earlyResults: new Map(),
+});
+
+export interface ClaudeNativeTurnPlanInput {
+  readonly target: ClaudeNativeRunTarget;
+  /** The lines `cache.known` does not hold, read with `readClaudeTranscriptTurn`. */
+  readonly content: ClaudeTranscriptTurnContent;
+  /** Updated in place to what this plan writes; a new cache reads the whole turn. */
+  readonly cache: ClaudeNativeTurnCache;
+  /** The run's ordinals: the stored ones when `stored`, else newly allocated. */
+  readonly ordinal: number;
+  readonly providerTurnOrdinal: number;
+  readonly stored: boolean;
+  /** Items already in the projection, by id, wherever they are; only ids this plan may write are read. */
+  readonly storedItems: ReadonlyMap<string, StoredNativeItem>;
+  readonly eventId: () => EventId;
+  /** Maps a model id Claude Code recorded to the slug T3 Code selects it by. */
+  readonly modelSlug: (reported: string) => string;
+  /** Stands in for a line whose timestamp is missing or not a time, until a valid one follows. */
+  readonly fallbackAt: DateTime.Utc;
+}
+
+export interface ClaudeNativeTurnPlan {
+  /** The run's lifecycle, then its prompt, then every item that differs from the projection. */
+  readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+  /** Item ids this run held whose lines left it or were read again, as far as the cache knows them. */
+  readonly leftItemIds: ReadonlyArray<string>;
+  /** Lines that left the turn whose item ids the cache did not hold, as when it was seeded from stored hashes. */
+  readonly leftLineUuids: ReadonlyArray<string>;
+  /** When the turn last changed, from the transcript. */
+  readonly lastActivityAt: DateTime.Utc;
+}
+
+/**
+ * Whether these lines hold a tool result for a tool neither they nor the cache's open tools hold, so the turn must be read whole to finish that tool.
+ */
+export function claudeNativeResultsNeedWholeTurn(
+  content: ClaudeTranscriptTurnContent,
+  cache: ClaudeNativeTurnCache,
+): boolean {
+  const uses = new Set<string>();
+  const results: Array<string> = [];
+  for (const line of content.lines) {
+    for (const item of line.items) {
+      if (item._tag !== "Block") continue;
+      if (item.block.type === "tool_use") uses.add(item.block.id);
+      if (item.role === "user" && item.block.type === "tool_result") {
+        const toolUseId = field(item.block, "tool_use_id");
+        if (typeof toolUseId === "string") results.push(toolUseId);
+      }
+    }
+  }
+  return results.some((id) => !uses.has(id) && !cache.openTools.has(id));
+}
+
+/** The ids of the items `planClaudeNativeTurn` may write for these lines, so their stored state can be read first. */
+export function claudeNativeTurnItemIds(
+  target: ClaudeNativeRunTarget,
+  content: ClaudeTranscriptTurnContent,
+): ReadonlyArray<string> {
+  const ids = claudeNativeRunIds(target.idScope, content.turn.id);
+  return [ids.promptItemId, ...content.lines.flatMap((line) => line.items.map((item) => item.id))];
+}
+
+/**
+ * One finished run for one turn T3 Code did not run: its lifecycle, its prompt and its items. Only the lines in `content` are planned; the cache supplies the rest. An item already stored in this run with the same status is not written again; one stored in another run is moved here, as when its line now belongs to this turn. A tool written without a result is written again when its result arrives or the turn ends.
  */
 export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNativeTurnPlan {
-  const { target, content } = input;
+  const { target, content, cache } = input;
   const { turn } = content;
   const ids = claudeNativeRunIds(target.idScope, turn.id);
   const scope = { runId: ids.runId, nodeId: ids.nodeId };
 
-  let lastGood = input.fallbackAt;
+  let lastGood = cache.latest ?? input.fallbackAt;
   const at = (timestamp: string): DateTime.Utc => {
     const parsed = parseTranscriptTime(timestamp);
     if (parsed !== undefined) lastGood = parsed;
     return parsed ?? lastGood;
   };
   const requestedAt = at(turn.startedAt);
-  let latest = requestedAt;
+  let latest =
+    cache.latest !== undefined &&
+    DateTime.toEpochMillis(cache.latest) > DateTime.toEpochMillis(requestedAt)
+      ? cache.latest
+      : requestedAt;
   const note = (instant: DateTime.Utc) => {
     if (DateTime.toEpochMillis(instant) > DateTime.toEpochMillis(latest)) latest = instant;
   };
 
   const event = eventMaker(target, input.eventId);
-
   const unchanged = (id: string, status: string) => {
     const stored = input.storedItems.get(id);
     return stored !== undefined && stored.runId === ids.runId && stored.status === status;
   };
 
-  const results = new Map<string, ToolResult>();
-  for (const item of content.items) {
-    if (item._tag !== "Block" || item.role !== "user" || item.block.type !== "tool_result")
-      continue;
-    const toolUseId = field(item.block, "tool_use_id");
-    if (typeof toolUseId !== "string") continue;
-    results.set(toolUseId, {
-      output: capped(blockText(field(item.block, "content"))),
-      failed: field(item.block, "is_error") === true,
-      timestamp: item.timestamp,
-    });
+  // A line read again with other bytes, or one that left the turn, takes its old items with it.
+  const leftItemIds: Array<string> = [];
+  const leftLineUuids: Array<string> = [];
+  const forget = (lineUuid: string) => {
+    const known = cache.itemIds.get(lineUuid);
+    if (known === undefined) leftLineUuids.push(lineUuid);
+    else leftItemIds.push(...known);
+    cache.itemIds.delete(lineUuid);
+    cache.known.delete(lineUuid);
+  };
+  for (const lineUuid of content.removedLineUuids) forget(lineUuid);
+  for (const line of content.lines) {
+    // A line read again keeps its item ids, so only items it no longer gives are left behind.
+    if (cache.itemIds.has(line.lineUuid)) forget(line.lineUuid);
   }
 
   const items: Array<OrchestrationV2DomainEvent> = [];
-  let ordinal = 1;
-  let model: string | undefined;
-  const openerText: Array<string> = [];
-
   const base = (id: string, timestamp: string, status: OrchestrationV2TurnItem["status"]) => {
     const instant = at(timestamp);
     note(instant);
@@ -435,7 +515,7 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
       providerTurnId: ids.providerTurnId,
       nativeItemRef: { driver: CLAUDE_PROVIDER, nativeId: id, strength: "strong" as const },
       parentItemId: null,
-      ordinal: ordinal++,
+      ordinal: cache.nextOrdinal++,
       status,
       title: null,
       startedAt: instant,
@@ -498,38 +578,58 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
     }
   };
 
+  const toolStatus = (result: ToolResult | undefined): OrchestrationV2TurnItem["status"] =>
+    result === undefined
+      ? turn.end === undefined
+        ? "running"
+        : "interrupted"
+      : result.failed
+        ? "failed"
+        : "completed";
+
+  /** A tool's item with its result, or with the status the turn gives a tool still waiting for one. */
+  const settleTool = (item: ToolItem, result: ToolResult | undefined): ToolItem => {
+    const status = toolStatus(result);
+    const startedAt = item.startedAt ?? requestedAt;
+    const finishedAt = result === undefined ? startedAt : at(result.timestamp);
+    if (result !== undefined) note(finishedAt);
+    const times = {
+      status,
+      completedAt: isSettledItemStatus(status) ? finishedAt : null,
+      updatedAt: result === undefined ? item.updatedAt : finishedAt,
+    };
+    switch (item.type) {
+      case "command_execution":
+        return result === undefined
+          ? { ...item, ...times }
+          : {
+              ...item,
+              ...times,
+              output: result.output,
+              ...(result.failed ? { outputIndicatesFailure: true } : {}),
+            };
+      case "dynamic_tool":
+        return result === undefined
+          ? { ...item, ...times }
+          : { ...item, ...times, output: result.output };
+      case "file_change":
+      case "web_search":
+        return { ...item, ...times };
+    }
+  };
+
   const tool = (item: Extract<ClaudeTranscriptItem, { readonly _tag: "Block" }>) => {
     const { block } = item;
     if (block.type !== "tool_use") return;
-    const result = results.get(block.id);
-    const status =
-      result === undefined
-        ? turn.end === undefined
-          ? "running"
-          : "interrupted"
-        : result.failed
-          ? "failed"
-          : "completed";
-    const started = base(item.id, item.timestamp, status);
-    const finishedAt = result === undefined ? started.updatedAt : at(result.timestamp);
-    if (result !== undefined) note(finishedAt);
-    const common = {
-      ...started,
-      title: block.name,
-      completedAt: isSettledItemStatus(status) ? finishedAt : null,
-      updatedAt: finishedAt,
-    };
+    const common = { ...base(item.id, item.timestamp, "running"), title: block.name };
     const toolInput = claudeNativeToolInputFromUnknown(block.input);
     const { itemType } = classifyClaudeNativeTool(block.name);
-    const output = result?.output;
-    push(
+    const pending: ToolItem =
       itemType === "command_execution"
         ? {
             ...common,
             type: "command_execution",
             input: capped(commandInputFromClaudeTool(block.name, toolInput)),
-            ...(output === undefined ? {} : { output }),
-            ...(result?.failed === true ? { outputIndicatesFailure: true } : {}),
           }
         : itemType === "file_change"
           ? {
@@ -544,109 +644,174 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
                 type: "dynamic_tool",
                 toolName: block.name,
                 input: capped(JSON.stringify(block.input) ?? ""),
-                ...(output === undefined ? {} : { output }),
-              },
-    );
+              };
+    const result = cache.earlyResults.get(block.id);
+    cache.earlyResults.delete(block.id);
+    const written = settleTool(pending, result);
+    if (result === undefined) cache.openTools.set(block.id, written);
+    push(written);
   };
 
-  for (const item of content.items) {
-    if (item._tag === "Unreadable") continue;
-    if (item.lineUuid === turn.id && turn.opener !== "orphan") {
-      // The opener is the run's prompt, not an item of its own; an orphan line has no prompt.
-      if (item._tag === "Block" && item.block.type === "text") openerText.push(item.block.text);
-      if (item._tag === "QueuedPrompt") {
-        for (const block of item.blocks) if (block.type === "text") openerText.push(block.text);
-      }
-      continue;
+  const result = (item: Extract<ClaudeTranscriptItem, { readonly _tag: "Block" }>) => {
+    const toolUseId = field(item.block, "tool_use_id");
+    if (typeof toolUseId !== "string") return;
+    const outcome: ToolResult = {
+      output: capped(blockText(field(item.block, "content"))),
+      failed: field(item.block, "is_error") === true,
+      timestamp: item.timestamp,
+    };
+    const open = cache.openTools.get(toolUseId);
+    if (open === undefined) {
+      cache.earlyResults.set(toolUseId, outcome);
+      return;
     }
-    switch (item._tag) {
-      case "Block": {
-        const { block } = item;
-        if (item.role === "user") {
-          if (block.type === "text" && block.text.trim().length > 0) {
-            push({
-              ...base(item.id, item.timestamp, "completed"),
-              type: "system_notice",
-              message: capped(block.text),
-            });
-          }
-          break;
-        }
-        if (item.model !== undefined && item.model !== CLAUDE_SYNTHETIC_MODEL) {
-          model ??= input.modelSlug(item.model);
-        }
-        if (block.type === "text" && block.text.trim().length > 0) {
-          const reply: OrchestrationV2TurnItem = {
-            ...base(item.id, item.timestamp, "completed"),
-            type: "assistant_message",
-            messageId: MessageId.make(item.id),
-            text: block.text,
-            streaming: false,
-          };
-          if (push(reply)) {
-            items.push(
-              message({
-                id: item.id,
-                role: "assistant",
-                createdBy: "agent",
-                text: block.text,
-                at: reply.updatedAt,
-              }),
-            );
-          }
-        } else if (block.type === "thinking" && block.thinking.trim().length > 0) {
-          push({
-            ...base(item.id, item.timestamp, "completed"),
-            type: "reasoning",
-            text: block.thinking,
-            streaming: false,
-          });
-        } else if (block.type === "tool_use") {
-          tool(item);
-        }
-        break;
+    cache.openTools.delete(toolUseId);
+    push(settleTool(open, outcome));
+  };
+
+  // Results first, so a tool whose result line precedes it in the turn is written once, finished.
+  for (const line of content.lines) {
+    for (const item of line.items) {
+      if (item._tag === "Block" && item.role === "user" && item.block.type === "tool_result") {
+        const toolUseId = field(item.block, "tool_use_id");
+        if (typeof toolUseId === "string" && !cache.openTools.has(toolUseId)) result(item);
       }
-      case "QueuedPrompt": {
-        const text =
-          item.prompt.text.length > 0
-            ? item.prompt.text
-            : item.blocks
-                .flatMap((block) => (block.type === "text" ? [block.text] : []))
-                .join("\n");
-        steer(item.id, item.timestamp, text, item.prompt.hidden);
-        break;
-      }
-      case "Command":
-        steer(item.id, item.timestamp, item.text, false);
-        break;
-      case "CommandOutput": {
-        const text = item.output.map((part) => part.text).join("\n");
-        if (text.trim().length === 0) break;
-        push({
-          ...base(item.id, item.timestamp, "completed"),
-          type: "system_notice",
-          message: capped(text),
-          ...(item.output.some((part) => part.stream === "stderr")
-            ? { level: "warning" as const }
-            : {}),
-        });
-        break;
-      }
-      case "Compaction":
-        push({
-          ...base(item.id, item.timestamp, "completed"),
-          type: "compaction",
-          driver: CLAUDE_PROVIDER,
-          beforeTokenCount: item.preTokens,
-        });
-        break;
     }
   }
 
+  const openerText: Array<string> = [];
+  for (const line of content.lines) {
+    cache.known.set(line.lineUuid, line.hash);
+    cache.itemIds.set(
+      line.lineUuid,
+      line.items.map((item) => item.id),
+    );
+    for (const item of line.items) {
+      if (item._tag === "Unreadable") continue;
+      if (item.lineUuid === turn.id && turn.opener !== "orphan") {
+        // The opener is the run's prompt, not an item of its own; an orphan line has no prompt.
+        if (item._tag === "Block" && item.block.type === "text") openerText.push(item.block.text);
+        if (item._tag === "QueuedPrompt") {
+          for (const block of item.blocks) if (block.type === "text") openerText.push(block.text);
+        }
+        continue;
+      }
+      switch (item._tag) {
+        case "Block": {
+          const { block } = item;
+          if (item.role === "user") {
+            if (block.type === "tool_result") {
+              const toolUseId = field(block, "tool_use_id");
+              if (typeof toolUseId === "string" && cache.openTools.has(toolUseId)) result(item);
+            } else if (block.type === "text" && block.text.trim().length > 0) {
+              push({
+                ...base(item.id, item.timestamp, "completed"),
+                type: "system_notice",
+                message: capped(block.text),
+              });
+            }
+            break;
+          }
+          if (item.model !== undefined && item.model !== CLAUDE_SYNTHETIC_MODEL) {
+            cache.model ??= input.modelSlug(item.model);
+          }
+          if (block.type === "text" && block.text.trim().length > 0) {
+            const reply: OrchestrationV2TurnItem = {
+              ...base(item.id, item.timestamp, "completed"),
+              type: "assistant_message",
+              messageId: MessageId.make(item.id),
+              text: block.text,
+              streaming: false,
+            };
+            if (push(reply)) {
+              items.push(
+                message({
+                  id: item.id,
+                  role: "assistant",
+                  createdBy: "agent",
+                  text: block.text,
+                  at: reply.updatedAt,
+                }),
+              );
+            }
+          } else if (block.type === "thinking" && block.thinking.trim().length > 0) {
+            push({
+              ...base(item.id, item.timestamp, "completed"),
+              type: "reasoning",
+              text: block.thinking,
+              streaming: false,
+            });
+          } else if (block.type === "tool_use") {
+            tool(item);
+          }
+          break;
+        }
+        case "QueuedPrompt": {
+          const text =
+            item.prompt.text.length > 0
+              ? item.prompt.text
+              : item.blocks
+                  .flatMap((block) => (block.type === "text" ? [block.text] : []))
+                  .join("\n");
+          steer(item.id, item.timestamp, text, item.prompt.hidden);
+          break;
+        }
+        case "Command":
+          steer(item.id, item.timestamp, item.text, false);
+          break;
+        case "CommandOutput": {
+          const text = item.output.map((part) => part.text).join("\n");
+          if (text.trim().length === 0) break;
+          push({
+            ...base(item.id, item.timestamp, "completed"),
+            type: "system_notice",
+            message: capped(text),
+            ...(item.output.some((part) => part.stream === "stderr")
+              ? { level: "warning" as const }
+              : {}),
+          });
+          break;
+        }
+        case "Compaction":
+          push({
+            ...base(item.id, item.timestamp, "completed"),
+            type: "compaction",
+            driver: CLAUDE_PROVIDER,
+            beforeTokenCount: item.preTokens,
+          });
+          break;
+      }
+    }
+  }
+
+  // A tool whose line left the turn is no longer waited on; one still waiting takes the turn's end.
+  const left = new Set(leftItemIds);
+  for (const [toolUseId, open] of cache.openTools) {
+    if (left.has(open.id)) {
+      cache.openTools.delete(toolUseId);
+    } else if (toolStatus(undefined) !== open.status) {
+      const settled = settleTool(open, undefined);
+      cache.openTools.set(toolUseId, settled);
+      push(settled);
+    }
+  }
+
+  if (content.opener !== undefined) {
+    const { prompt } = content.opener;
+    // Claude Code writes some prompts itself, such as task notifications and command output.
+    cache.prompt = {
+      text: prompt !== undefined && prompt.text.length > 0 ? prompt.text : openerText.join("\n"),
+      createdBy:
+        prompt !== undefined && !prompt.hidden && (prompt.originKind ?? "human") === "human"
+          ? "user"
+          : "system",
+      originKind: prompt?.originKind,
+    };
+  }
   const completedAt = turn.end === undefined ? latest : at(turn.end.at);
   note(completedAt);
+  cache.latest = latest;
   const status = turn.end?.reason === "interrupted" ? "interrupted" : "completed";
-  const { prompt } = content;
   const events = lifecycleEvents({
     target,
     turnId: turn.id,
@@ -658,19 +823,18 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
     status,
     requestedAt,
     completedAt,
-    model,
+    model: cache.model,
     lastAssistantUuid: turn.lastAssistantUuid,
-    turnOrigin: prompt?.originKind,
+    turnOrigin: cache.prompt?.originKind,
     branchedFrom: turn.branchedFrom,
   });
-  if (!unchanged(ids.promptItemId, "completed")) {
-    const text =
-      prompt !== undefined && prompt.text.length > 0 ? prompt.text : openerText.join("\n");
-    // Claude Code writes some prompts itself, such as task notifications and command output.
-    const createdBy =
-      prompt !== undefined && !prompt.hidden && (prompt.originKind ?? "human") === "human"
-        ? "user"
-        : "system";
+  const promptItem = cache.prompt;
+  if (
+    content.opener !== undefined &&
+    promptItem !== undefined &&
+    !unchanged(ids.promptItemId, "completed")
+  ) {
+    const { text, createdBy } = promptItem;
     events.push(
       message({ id: ids.userMessageId, role: "user", createdBy, text, at: requestedAt }),
       event({
@@ -708,5 +872,5 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
     );
   }
   events.push(...items);
-  return { events, lastActivityAt: latest };
+  return { events, leftItemIds, leftLineUuids, lastActivityAt: latest };
 }

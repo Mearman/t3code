@@ -29,4 +29,14 @@ export default Effect.gen(function* () {
       PRIMARY KEY (thread_id, turn_id)
     ) WITHOUT ROWID
   `;
+  // The hash of each line a written run read, so a later read of its turn takes only new or changed lines.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS fork_claude_session_lines (
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      line_uuid TEXT NOT NULL,
+      hash INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, turn_id, line_uuid)
+    ) WITHOUT ROWID
+  `;
 });
