@@ -107,9 +107,11 @@ const LOOKUP_CHUNK = 500;
 /** A quick sweep lists only project directories that changed; every sixth one stats every file. */
 const SWEEP_INTERVAL = "5 minutes";
 const FULL_SWEEP_EVERY = 6;
-/** Live sessions' transcripts are polled this often; the registry is re-read every fifth poll. */
+/** Live sessions' transcripts are polled this often; the registry is re-read when its listing changes, and every fifth poll. */
 const LIVE_POLL_INTERVAL = "1 second";
 const REGISTRY_EVERY = 5;
+/** A live session's missing transcript is looked for again after at most this many polls; the sweep also finds it. */
+const MISSING_TRANSCRIPT_MAX_POLLS = 60;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 type Lane = ClaudeSyncLane;
@@ -180,6 +182,13 @@ const idScopeOf = (threadId: ThreadId, sessionId: string) =>
   threadId.startsWith(`claude:${sessionId}:`) ? threadId.slice("claude:".length) : sessionId;
 
 const NATIVE_RUN_PREFIX = "claude-run:";
+/** The events a native run's lifecycle is written as, with no items or messages. */
+const LIFECYCLE_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "run.updated",
+  "run-attempt.updated",
+  "node.updated",
+  "provider-turn.updated",
+]);
 
 const modelSlug = (reported: string) =>
   resolveClaudeReportedModelSlug(BUNDLED_CLAUDE_MODEL_CATALOG, reported);
@@ -437,6 +446,8 @@ const make = Effect.gen(function* () {
     let promptTitle: string | undefined;
     let aiTitle: string | undefined;
     let customTitle: string | undefined;
+    // The first text of any other kind, for a session whose prompts give no title: a queued prompt, a command, a reply.
+    let fallbackTitle: string | undefined;
     let hasConversation = false;
     const decoder = new TextDecoder();
     const readLine = (bytes: Uint8Array) => {
@@ -454,6 +465,8 @@ const make = Effect.gen(function* () {
       if (decoded._tag !== "Record" || decoded.header.isSidechain === true) return;
       const { record: line } = decoded;
       if (line.kind === "title") {
+        // A session someone or Claude named is shown, even with nothing else in it yet.
+        hasConversation = true;
         if (line.source === "ai") aiTitle = line.title ?? aiTitle;
         else customTitle = line.title;
         return;
@@ -461,10 +474,17 @@ const make = Effect.gen(function* () {
       // Any exchange is a conversation, whatever its prompt shows: an image, a queued or meta prompt, shell output, a reply alone.
       if (line.kind === "conversation" || line.kind === "queued") hasConversation = true;
       if (line.kind === "localCommand") hasConversation = true;
+      if (line.kind === "queued") fallbackTitle ??= deriveTitle("claudeAgent", line.visible.text);
+      if (line.kind === "localCommand" && line.input !== undefined) {
+        fallbackTitle ??= deriveTitle("claudeAgent", line.input.text);
+      }
       if (line.kind === "conversation" && line.line.type === "assistant") {
         const reported = line.line.message.model;
         if (model === undefined && reported !== undefined && reported !== CLAUDE_SYNTHETIC_MODEL) {
           model = modelSlug(reported);
+        }
+        if (line.visible.text.length > 0) {
+          fallbackTitle ??= deriveTitle("claudeAgent", line.visible.text);
         }
       } else if (
         line.kind === "conversation" &&
@@ -496,7 +516,15 @@ const make = Effect.gen(function* () {
         }
       }),
     );
-    return { cwd, startedAt, model, customTitle, aiTitle, promptTitle, hasConversation };
+    return {
+      cwd,
+      startedAt,
+      model,
+      customTitle,
+      aiTitle,
+      promptTitle: promptTitle ?? fallbackTitle,
+      hasConversation,
+    };
   });
 
   /**
@@ -796,13 +824,28 @@ const make = Effect.gen(function* () {
   ) {
     const ids = claudeNativeRunIds(target.idScope, turnId);
     const run = yield* projections.getRun(target.threadId, ids.runId);
-    const [turn] = yield* sql<{ readonly ordinal: number }>`
-      SELECT ordinal FROM orchestration_v2_projection_provider_turns
+    const [turn] = yield* sql<{
+      readonly ordinal: number;
+      readonly model: string | null;
+      readonly nativeTurnId: string | null;
+    }>`
+      SELECT
+        ordinal,
+        json_extract(payload_json, '$.model') AS "model",
+        json_extract(payload_json, '$.nativeTurnRef.nativeId') AS "nativeTurnId"
+      FROM orchestration_v2_projection_provider_turns
       WHERE provider_turn_id = ${ids.providerTurnId}
     `;
     return run === undefined || turn === undefined
       ? undefined
-      : { run, ordinal: run.ordinal, providerTurnOrdinal: turn.ordinal };
+      : {
+          run,
+          ordinal: run.ordinal,
+          providerTurnOrdinal: turn.ordinal,
+          // What the provider turn records, which a run's model selection does not: a turn with no real model has none.
+          model: turn.model ?? undefined,
+          nativeTurnId: turn.nativeTurnId ?? undefined,
+        };
   });
 
   /** The items a run holds for these lines: `x:<scope>:<line>` and its blocks `x:<scope>:<line>:<n>`. */
@@ -1437,7 +1480,9 @@ const make = Effect.gen(function* () {
             cache.known.set(lineUuid, hash);
           }
           seeded = cache.known.size > 0;
-          cache.model = stored.run.modelSelection.model;
+          cache.model = stored.model;
+          // An open turn's time is its latest line's; lines held as hashes are not read to find it.
+          cache.latest = stored.run.completedAt ?? undefined;
           cache.prompt = {
             text: "",
             createdBy: "system",
@@ -1487,7 +1532,23 @@ const make = Effect.gen(function* () {
         modelSlug,
         fallbackAt: input.fallbackAt,
       });
-      yield* writeGroups([plan.events]);
+      // A turn read again with nothing new, as after its digest was lost, is written only if its run differs.
+      const unchangedRun =
+        stored !== undefined &&
+        !moved &&
+        plan.events.every((event) => LIFECYCLE_EVENT_TYPES.has(event.type)) &&
+        plan.events.every((event) =>
+          event.type === "run.updated"
+            ? event.payload.status === stored.run.status &&
+              event.payload.ordinal === stored.run.ordinal &&
+              DateTime.toEpochMillis(event.payload.completedAt ?? event.payload.requestedAt) ===
+                DateTime.toEpochMillis(stored.run.completedAt ?? stored.run.requestedAt)
+            : event.type === "provider-turn.updated"
+              ? event.payload.model === stored.model &&
+                (event.payload.nativeTurnRef?.nativeId ?? undefined) === stored.nativeTurnId
+              : true,
+        );
+      if (!unchangedRun) yield* writeGroups([plan.events]);
       yield* takeGone(plan.leftItemIds);
       if (plan.leftLineUuids.length > 0) {
         yield* takeGone(yield* itemIdsOfLines(target, turnId, plan.leftLineUuids));
@@ -2025,6 +2086,10 @@ const make = Effect.gen(function* () {
   const liveIn = (store: SyncStore) => live.get(store.key) ?? new Set<string>();
   // Paths of sessions the sync has seen, so a poll stats one file rather than reading rows.
   const knownPaths = new Map<string, string>();
+  // Each store's registry listing at the last poll.
+  const registryListings = new Map<string, string>();
+  // Live sessions with no transcript yet: the poll to look again at, and the wait before the one after.
+  const missingTranscripts = new Map<string, { readonly next: number; readonly wait: number }>();
 
   const sweepStore = Effect.fn("ClaudeSessionSync.sweepStore")(function* (
     store: SyncStore,
@@ -2129,18 +2194,35 @@ const make = Effect.gen(function* () {
   const pollLive: ClaudeSessionSync["Service"]["pollLive"] = Effect.gen(function* () {
     const { settings, stores } = yield* currentState;
     if (!settings.claudeSessionSync.enabled) return;
-    const refresh = polls++ % REGISTRY_EVERY === 0;
+    const poll = polls++;
     for (const store of stores) {
-      if (refresh) {
+      // A changed listing is read at once, so a terminal that resumes a session is followed from its next poll.
+      const listing = (yield* fileSystem
+        .readDirectory(store.sessionsDir)
+        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])))
+        .toSorted()
+        .join("\n");
+      const listingChanged = registryListings.get(store.key) !== listing;
+      registryListings.set(store.key, listing);
+      // Every few polls it is read regardless, as a crashed process leaves its entry behind.
+      if (listingChanged || poll % REGISTRY_EVERY === 0) {
         const before = liveIn(store);
         const now = yield* liveSessions.read(store.sessionsDir);
         live.set(store.key, now);
         for (const sessionId of now) {
-          // A session registered before its transcript is written is looked for until it is.
+          // A session registered before its transcript is written is looked for until it is, less often the longer it is missing.
           const key = requestKey(store.key, sessionId);
           if (knownPaths.has(key)) continue;
+          const miss = missingTranscripts.get(key) ?? { next: poll, wait: 1 };
+          if (poll < miss.next) continue;
           const found = yield* findTranscript(store, sessionId);
-          if (found !== undefined) knownPaths.set(key, found.filePath);
+          if (found === undefined) {
+            const wait = Math.min(miss.wait * 2, MISSING_TRANSCRIPT_MAX_POLLS);
+            missingTranscripts.set(key, { next: poll + wait, wait });
+            continue;
+          }
+          missingTranscripts.delete(key);
+          knownPaths.set(key, found.filePath);
         }
         // A session whose process ended may have written its last lines since the previous poll.
         for (const sessionId of before) {
