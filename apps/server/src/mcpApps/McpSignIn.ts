@@ -60,7 +60,7 @@ export const toSignInError =
               Effect.fail(
                 fail(
                   input.server,
-                  Predicate.isTagged(cause, "ProviderAdapterThreadInUseError")
+                  Predicate.isTagged(cause, "NeverAnErrorTag")
                     ? heldSessionRequestDetail(
                         Predicate.hasProperty(cause, "holderObserved") &&
                           cause.holderObserved === true,
