@@ -165,6 +165,31 @@ it.layer(NodeServices.layer)("readClaudeTranscript", (it) => {
     }),
   );
 
+  it.effect.each([
+    [
+      "an earlier line, the last one unchanged",
+      (first: string) => first + reply("a1", "p1", "Middle") + prompt("p9", "a1", "Same last line"),
+    ],
+    ["the line before a blank last line", (first: string) => first + "\n"],
+  ] as const)("starts again from the top when %s is rewritten in place", ([_name, build]) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const filePath = yield* transcriptFile;
+      yield* fileSystem.writeFileString(filePath, build(prompt("p1", null, "First")));
+      const initial = yield* read(filePath);
+
+      // Same length, so only the bytes themselves show the change.
+      yield* fileSystem.writeFileString(
+        filePath,
+        build(prompt("q1", null, "Other")) + prompt("p2", "p9", "Appended"),
+      );
+      const next = yield* read(filePath, initial.cursor);
+
+      expect(next.rewritten).toBe(true);
+      expect(startedIds(next.events)[0]).toBe("q1");
+    }),
+  );
+
   it.effect("resumes when only bytes after the cursor changed", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

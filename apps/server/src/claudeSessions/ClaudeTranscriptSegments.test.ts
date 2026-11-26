@@ -438,14 +438,85 @@ describe("parseClaudeTranscriptLines", () => {
     ).toEqual([{ _tag: "Branch", lineUuid: "p3", parentUuid: "a3", previousUuid: "b1" }]);
   });
 
-  it("skips a line whose uuid it has already read", () => {
+  it("skips a line it has already read in the running segment", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      user("r1", "a1", [toolResult("tool-1")], { promptId: "prompt-1" }),
+      user("r1", "a1", [toolResult("tool-1")], { promptId: "prompt-1" }),
+    ]);
+
+    expect(summary(events)).toEqual([
+      "start p1",
+      `item ${id("p1")}`,
+      `item ${id("a1", 0)}`,
+      `item ${id("r1", 0)}`,
+    ]);
+  });
+
+  it("never attaches lines replayed from earlier segments, however far back", () => {
+    const at = (second: number) => ({
+      timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString(),
+    });
+    const earlier = [
+      user("p1", null, "First", { promptId: "prompt-1", ...at(1) }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use", "m1", at(2)),
+      user("r1", "a1", [toolResult("tool-1")], { promptId: "prompt-1", ...at(3) }),
+      assistant("a2", "r1", text("Done"), "end_turn", "m2", at(4)),
+      { ...turnDuration("d1", "a2"), ...at(5) },
+    ];
+    const { events } = parse([
+      ...earlier,
+      {
+        ...system("compact_boundary", "b1", null, {
+          compactMetadata: { trigger: "auto", preTokens: 9 },
+        }),
+        ...at(10),
+      },
+      user("p2", "b1", "After compaction", { promptId: "prompt-2", ...at(11) }),
+      assistant("a3", "p2", toolUse("tool-2"), "tool_use", "m3", at(12)),
+      // Claude Code writes the earlier lines again, unchanged, while the new turn runs.
+      ...earlier,
+      user("r2", "a3", [toolResult("tool-2")], { promptId: "prompt-2", ...at(13) }),
+      assistant("a4", "r2", text("New reply"), "end_turn", "m4", at(14)),
+    ]);
+
+    const after = summary(events).slice(summary(events).indexOf("CompactBoundary"));
+    expect(after).toEqual([
+      "CompactBoundary",
+      "start p2",
+      `item ${id("p2")}`,
+      `item ${id("a3", 0)}`,
+      `item ${id("r2", 0)}`,
+      `item ${id("a4", 0)}`,
+      "end p2 turn-end a4",
+    ]);
+  });
+
+  it("keeps its stored state bounded in a long segment", () => {
+    const records: Array<unknown> = [user("p1", null, "Go", { promptId: "prompt-1" })];
+    let parent = "p1";
+    for (let index = 0; index < 20_000; index += 1) {
+      records.push(attachment(`n${index}`, parent, { type: "hook_success" }));
+      parent = `n${index}`;
+    }
+
+    const { state } = parse(records);
+
+    expect(encodeState(state).length).toBeLessThan(64 * 1024);
+  });
+
+  it("ends a meta-opened turn that is interrupted before its reply, leaving the turn before it", () => {
     const { events } = parse([
       user("p1", null, "Go", { promptId: "prompt-1" }),
       assistant("a1", "p1", text("Done"), "end_turn"),
-      user("p2", "a1", "Next", { promptId: "prompt-2" }),
-      user("p1", null, "Go", { promptId: "prompt-1" }),
-      assistant("a2", "p2", text("Again"), "end_turn"),
-      assistant("a2", "p2", text("Again"), "end_turn"),
+      user("m1", "a1", "Peer message", {
+        isMeta: true,
+        promptId: "prompt-2",
+        origin: { kind: "peer" },
+      }),
+      user("i1", "m1", [text(INTERRUPT)], { promptId: "prompt-2" }),
     ]);
 
     expect(summary(events)).toEqual([
@@ -453,10 +524,97 @@ describe("parseClaudeTranscriptLines", () => {
       `item ${id("p1")}`,
       `item ${id("a1", 0)}`,
       "end p1 turn-end a1",
-      "start p2",
-      `item ${id("p2")}`,
+      "start m1",
+      `item ${id("i1", 0)}`,
+      "end m1 interrupted undefined",
+    ]);
+  });
+
+  it("keeps the first meta line of a turn as its opener", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", text("Done"), "end_turn"),
+      user("m1", "a1", "please review", {
+        isMeta: true,
+        promptId: "prompt-2",
+        origin: { kind: "peer" },
+      }),
+      user("m2", "m1", "[note]", { isMeta: true, promptId: "prompt-2" }),
+      assistant("a2", "m2", text("Reviewing"), "end_turn"),
+    ]);
+
+    expect(events.filter((event) => event._tag === "SegmentStarted").at(-1)).toMatchObject({
+      segmentId: "m1",
+      prompt: { text: "please review", originKind: "peer", hidden: true },
+    });
+  });
+
+  it("names the line before a meta opener as the one its branch abandons", () => {
+    const { events } = parse([
+      user("u1", null, "One", { promptId: "prompt-1" }),
+      assistant("a1", "u1", text("Done"), "end_turn"),
+      user("u2", "a1", "Two", { promptId: "prompt-2" }),
+      assistant("a2", "u2", text("Done"), "end_turn"),
+      user("m1", "a1", "Rewind", { isMeta: true, promptId: "prompt-3" }),
+      assistant("a3", "m1", text("Again"), "end_turn"),
+    ]);
+
+    expect(events.filter((event) => event._tag === "Branch")).toEqual([
+      { _tag: "Branch", lineUuid: "m1", parentUuid: "a1", previousUuid: "a2" },
+    ]);
+  });
+
+  it("keeps a slash command run while a turn waits on a tool in that turn", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      system("local_command", "lc1", "a1", { content: "<command-name>/status</command-name>" }),
+      system("local_command", "lc2", "lc1", {
+        content: "<local-command-stdout>ok</local-command-stdout>",
+      }),
+      user("r1", "lc2", [toolResult("tool-1")], { promptId: "prompt-1" }),
+      assistant("a2", "r1", text("Done"), "end_turn"),
+    ]);
+
+    expect(summary(events)).toEqual([
+      "start p1",
+      `item ${id("p1")}`,
+      `item ${id("a1", 0)}`,
+      `item ${id("lc1")}`,
+      `item ${id("lc2")}`,
+      `item ${id("r1", 0)}`,
       `item ${id("a2", 0)}`,
-      "end p2 turn-end a2",
+      "end p1 turn-end a2",
+    ]);
+  });
+
+  it("gives a queued prompt copied from another session its source", () => {
+    const forkedFrom = { sessionId: "source-session", messageUuid: "source-message" };
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      { ...queued("q1", "a1", "Also this"), forkedFrom },
+    ]);
+
+    expect(events.find((event) => event._tag === "QueuedPrompt")).toMatchObject({ forkedFrom });
+  });
+
+  it("reads a null prompt id as none, and a stepped-past line still parents what follows", () => {
+    const { events, malformed } = parse([
+      user("u1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "u1", text("Done"), "end_turn"),
+      user("x1", "a1", "Null prompt id", { promptId: null }),
+      assistant("a2", "x1", text("Fine"), "end_turn"),
+      user("y1", "a2", [{ type: "text", text: 3 }], { promptId: "prompt-3" }),
+      user("u2", "y1", "After a bad line", { promptId: "prompt-4" }),
+    ]);
+
+    expect(malformed.map((error) => error.offset)).toEqual([4000]);
+    expect(events.filter((event) => event._tag === "Branch")).toEqual([]);
+    expect(prompts(events).map((prompt) => prompt?.text)).toEqual([
+      "Go",
+      "Null prompt id",
+      "After a bad line",
     ]);
   });
 
