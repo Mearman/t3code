@@ -145,10 +145,15 @@ export class ClaudeTranscriptTurnTracker {
   // Times from which roots filed by time are checked again, and roots to check by name.
   #hostChecks: Array<HostCheck> = [];
   #rootChecks = new Set<number>();
-  #byPromptKey = new Map<number, Array<number>>();
+  // Turns by prompt key and in all, without those stamped before their own tree's root, which only
+  // a later root can host; those are kept by their root, so filing never steps over them.
+  #normalByKey = new Map<number, Array<number>>();
+  #normalOrder: Array<number> = [];
+  #earlyByRoot = new Map<number, Array<number>>();
+  #rootsWithEarly: Array<number> = [];
   #hostedBy = new Map<number, Set<number>>();
   #summaryKeys = new Map<number, number>();
-  #summaryRoots = new Map<number, Set<number>>();
+  #summaryRoots = new Map<number, Array<number>>();
   #decided = 0;
   #digested = 0;
   #hostVisits = 0;
@@ -246,7 +251,10 @@ export class ClaudeTranscriptTurnTracker {
     this.#provisional = new Set();
     this.#hostChecks = [];
     this.#rootChecks = new Set();
-    this.#byPromptKey = new Map();
+    this.#normalByKey = new Map();
+    this.#normalOrder = [];
+    this.#earlyByRoot = new Map();
+    this.#rootsWithEarly = [];
     this.#hostedBy = new Map();
     this.#summaryKeys = new Map();
     this.#summaryRoots = new Map();
@@ -381,21 +389,49 @@ export class ClaudeTranscriptTurnTracker {
     return this.#rules.summaryKey(root, (entry, visit) => this.#eachChild(entry, visit));
   }
 
-  // A root filed by time may join any turn of a true root's tree or an earlier root's tree.
+  // A root filed by time may join any turn of a true root's tree or an earlier root's tree. An
+  // ordinary turn stamped at or before the root is in such a tree unless it ties with the root; a
+  // turn stamped before its own tree's root is eligible exactly when that root ranks earlier.
   #hostFor(root: number): number {
-    return this.#rules.hostFor({
-      root,
-      summaryKey: this.#summaryKeyOf(root),
-      candidates: this.#order,
-      byPromptKey: this.#byPromptKey,
-      eligible: (turn) => {
-        const other = this.#s.rootOf.get(turn);
-        return other === NONE || this.#rules.compareTurns(other, root) < 0;
-      },
-      visit: () => {
-        this.#hostVisits += 1;
-      },
-    });
+    const key = this.#summaryKeyOf(root);
+    const named = key === 0 ? NONE : this.#latestHost(root, this.#normalByKey.get(key), key);
+    return named === NONE ? this.#latestHost(root, this.#normalOrder, 0) : named;
+  }
+
+  #latestHost(root: number, normal: ReadonlyArray<number> | undefined, key: number): number {
+    const visit = () => {
+      this.#hostVisits += 1;
+    };
+    let best =
+      normal === undefined
+        ? NONE
+        : this.#rules.latestEligible(
+            { root, visit, eligible: (turn) => this.#eligible(turn, root) },
+            normal,
+          );
+    for (const under of this.#rootsWithEarly) {
+      visit();
+      if (this.#rules.compareTurns(under, root) >= 0) break;
+      const early = this.#earlyByRoot.get(under) ?? [];
+      for (let position = early.length - 1; position >= 0; position--) {
+        const turn = early[position];
+        if (turn === undefined) break;
+        visit();
+        if (key !== 0 && this.#keyOf(this.#s.promptEntry.get(turn)) !== key) continue;
+        if (best === NONE || this.#rules.compareTurns(turn, best) > 0) best = turn;
+        break;
+      }
+    }
+    return best;
+  }
+
+  #eligible(turn: number, root: number): boolean {
+    const under = this.#s.rootOf.get(turn);
+    return under === NONE || this.#rules.compareTurns(under, root) < 0;
+  }
+
+  #isEarly(opener: number, rootOf: number): boolean {
+    return rootOf !== NONE && this.#rules.compareTurns(opener, rootOf) < 0;
   }
 
   // Which roots name each prompt key in their summary, so a turn carrying it finds them.
@@ -403,15 +439,13 @@ export class ClaudeTranscriptTurnTracker {
     const before = this.#summaryKeys.get(root) ?? 0;
     const after = this.#bit(root, DETACHED) ? this.#summaryKeyOf(root) : 0;
     if (before === after) return;
-    this.#summaryRoots.get(before)?.delete(root);
+    if (before !== 0) this.#inList(this.#summaryRoots, before, root, false);
     if (after === 0) {
       this.#summaryKeys.delete(root);
       return;
     }
     this.#summaryKeys.set(root, after);
-    const roots = this.#summaryRoots.get(after) ?? new Set<number>();
-    roots.add(root);
-    this.#summaryRoots.set(after, roots);
+    this.#inList(this.#summaryRoots, after, root, true);
   }
 
   #inList(map: Map<number, Array<number>>, key: number, entry: number, present: boolean): void {
@@ -636,11 +670,29 @@ export class ClaudeTranscriptTurnTracker {
     const wasOpener = old !== undefined && old.opens !== 0;
     const oldKey = wasOpener ? this.#keyOf(old.promptEntry) : 0;
     const newKey = isOpener ? this.#keyOf(promptEntry) : 0;
-    if (wasOpener && oldKey !== 0 && (!isOpener || oldKey !== newKey)) {
-      this.#inList(this.#byPromptKey, oldKey, entry, false);
+    const oldUnder = wasOpener ? old.rootOf : NONE;
+    const newUnder = isOpener ? placed.rootOf : NONE;
+    const wasEarly = wasOpener && this.#isEarly(entry, oldUnder);
+    const isEarly = isOpener && this.#isEarly(entry, newUnder);
+    const wasNormal = wasOpener && !wasEarly;
+    const isNormal = isOpener && !isEarly;
+    if (wasNormal && (!isNormal || oldKey !== newKey) && oldKey !== 0) {
+      this.#inList(this.#normalByKey, oldKey, entry, false);
     }
-    if (isOpener && newKey !== 0 && (!wasOpener || oldKey !== newKey)) {
-      this.#inList(this.#byPromptKey, newKey, entry, true);
+    if (isNormal && (!wasNormal || oldKey !== newKey) && newKey !== 0) {
+      this.#inList(this.#normalByKey, newKey, entry, true);
+    }
+    if (wasNormal && !isNormal) this.#rules.removeInTurnOrder(this.#normalOrder, entry);
+    if (isNormal && !wasNormal) this.#rules.insertInTurnOrder(this.#normalOrder, entry);
+    if (wasEarly && (!isEarly || oldUnder !== newUnder)) {
+      this.#inList(this.#earlyByRoot, oldUnder, entry, false);
+      if (!this.#earlyByRoot.has(oldUnder))
+        this.#rules.removeInTurnOrder(this.#rootsWithEarly, oldUnder);
+    }
+    if (isEarly && (!wasEarly || oldUnder !== newUnder)) {
+      if (!this.#earlyByRoot.has(newUnder))
+        this.#rules.insertInTurnOrder(this.#rootsWithEarly, newUnder);
+      this.#inList(this.#earlyByRoot, newUnder, entry, true);
     }
     if (
       wasOpener !== isOpener ||
@@ -739,9 +791,8 @@ export class ClaudeTranscriptTurnTracker {
   }
 
   // Roots filed by time move when a turn starts, stops, or changes prompt id or tree at or before
-  // them, up to the next turn every root may join, or when the summary they name arrives; a move
-  // can open or close turns that move later roots in turn. Roots with no readable time sort after
-  // every turn, so any change may move them.
+  // them, up to the next turn they may join, or when the summary they name arrives; a move can
+  // open or close turns that move later roots in turn.
   #refileByTime(forcedAnchors: ReadonlySet<number>): void {
     while (this.#hostChecks.length > 0 || this.#rootChecks.size > 0) {
       const candidates = new Set<number>();
@@ -752,21 +803,33 @@ export class ClaudeTranscriptTurnTracker {
       this.#rootChecks = new Set();
       const checks = this.#hostChecks;
       this.#hostChecks = [];
-      for (const check of checks) this.#rootsAfter(check.opener, candidates);
+      // One walk per changed opener, latest first: an earlier opener's roots that a later one's
+      // walk already reached are a subset of what that walk covered, so it stops there.
+      const openers = [...new Set(checks.map((check) => check.opener))].toSorted((left, right) =>
+        this.#rules.compareTurns(right, left),
+      );
+      let until = this.#detachedRoots.length;
+      for (const opener of openers) until = this.#rootsAfter(opener, candidates, until);
+      // Roots whose summary names a changed prompt id, from the round's earliest change on, each
+      // looked at once per round.
+      const keys = new Set<number>();
+      let earliest = Number.NaN;
       for (const check of checks) {
-        for (let position = this.#detachedRoots.length - 1; position >= 0; position--) {
-          const root = this.#detachedRoots[position];
-          if (root === undefined || !Number.isNaN(this.index.timestamp(root))) break;
+        for (const key of check.keys) if (key !== 0) keys.add(key);
+        const time = this.index.timestamp(check.opener);
+        if (compareTimes(time, earliest) < 0) earliest = time;
+      }
+      for (const key of keys) {
+        const named = this.#summaryRoots.get(key) ?? [];
+        for (
+          let position = this.#firstAfter(named, earliest, true);
+          position < named.length;
+          position++
+        ) {
+          const root = named[position];
+          if (root === undefined) break;
           this.#hostVisits += 1;
           candidates.add(root);
-        }
-        const time = this.index.timestamp(check.opener);
-        for (const key of check.keys) {
-          for (const root of this.#summaryRoots.get(key) ?? []) {
-            if (compareTimes(this.index.timestamp(root), time) < 0) continue;
-            this.#hostVisits += 1;
-            candidates.add(root);
-          }
         }
       }
       const roots = [...candidates].filter(
@@ -777,9 +840,10 @@ export class ClaudeTranscriptTurnTracker {
   }
 
   // The roots whose latest eligible turn by time can be `opener`: those at or after it, up to the
-  // first that a later turn it may join already sits before. A turn under a root is eligible for
-  // every later root, so once one is passed every later root stops too.
-  #rootsAfter(opener: number, candidates: Set<number>): void {
+  // first that a later turn it may join already sits before, or `until`. A turn under a root is
+  // eligible for every later root, so once one is passed every later root stops too. A root with
+  // no readable time sorts after every turn, so it is reached unless such a turn comes first.
+  #rootsAfter(opener: number, candidates: Set<number>, until: number): number {
     const roots = this.#detachedRoots;
     let low = 0;
     let high = this.#order.length;
@@ -795,11 +859,8 @@ export class ClaudeTranscriptTurnTracker {
     let least: number | undefined;
     const passed = (root: number) =>
       least !== undefined && (least === NONE || this.#rules.compareTurns(least, root) < 0);
-    for (
-      let position = this.#firstAfter(roots, this.index.timestamp(opener), true);
-      position < roots.length;
-      position++
-    ) {
+    const start = this.#firstAfter(roots, this.index.timestamp(opener), true);
+    for (let position = start; position < Math.min(roots.length, until); position++) {
       const root = roots[position];
       if (root === undefined) break;
       const time = this.index.timestamp(root);
@@ -824,6 +885,7 @@ export class ClaudeTranscriptTurnTracker {
       this.#hostVisits += 1;
       candidates.add(root);
     }
+    return Math.min(start, until);
   }
 
   // The first position whose time is after `time`, or at or after it when `inclusive`.

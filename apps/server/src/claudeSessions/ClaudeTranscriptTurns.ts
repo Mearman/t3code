@@ -303,11 +303,12 @@ export class ClaudeTranscriptTurnRules {
     readonly visit: () => void;
   }): number {
     const named = input.summaryKey === 0 ? undefined : input.byPromptKey.get(input.summaryKey);
-    const host = named === undefined ? NONE : this.#latestEligible(input, named);
-    return host === NONE ? this.#latestEligible(input, input.candidates) : host;
+    const host = named === undefined ? NONE : this.latestEligible(input, named);
+    return host === NONE ? this.latestEligible(input, input.candidates) : host;
   }
 
-  #latestEligible(
+  /** The latest of `turns` (in turn order) started at or before `root` that `eligible` accepts. */
+  latestEligible(
     input: {
       readonly root: number;
       readonly eligible: (turn: number) => boolean;
