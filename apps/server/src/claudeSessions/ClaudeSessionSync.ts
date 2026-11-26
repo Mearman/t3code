@@ -1028,7 +1028,7 @@ const make = Effect.gen(function* () {
     const next: ClaudeSessionSyncState.ClaudeSessionSyncState = {
       ...row,
       byteOffset: read.cursor.offset,
-      guardHash: read.cursor.guardHash,
+      guardHash: read.cursor.tailHash,
       lastUuid: read.cursor.state.lastUuid,
       parserState: encodeSyncCursorState({ cursor: read.cursor, runs: plan.state }),
       hydrationState: "hydrating",
