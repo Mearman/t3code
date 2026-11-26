@@ -8,6 +8,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   hasTranscriptRunAfter,
+  latestUnheldRun,
   latestRootProviderFailure,
   latestT3ExecutedRun,
   runsByOrigin,
@@ -10139,7 +10140,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         PRESENTED_RUN_RECORD_FIELDS,
         PRESENTED_RUN_RECORD_FILTER,
       );
-      return presentedShellRun(records, "t3")?.id === run.id;
+      return latestUnheldRun(runsByOrigin(records.runs, "t3"))?.id === run.id;
     },
     (effect, run) =>
       effect.pipe(

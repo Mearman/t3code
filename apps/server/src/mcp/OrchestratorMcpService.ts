@@ -69,7 +69,7 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { runRanAfter, runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
+import { latestUnheldRun, runRanAfter, runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { threadPullRequestUpdatedAtMs } from "@t3tools/shared/threadPullRequests";
@@ -1585,7 +1585,7 @@ const make = Effect.gen(function* () {
         PRESENTED_RUN_RECORD_FIELDS,
         PRESENTED_RUN_RECORD_FILTER,
       );
-      return presentedShellRun(records, "t3") ?? undefined;
+      return latestUnheldRun(runsByOrigin(records.runs, "t3")) ?? undefined;
     },
   );
 
