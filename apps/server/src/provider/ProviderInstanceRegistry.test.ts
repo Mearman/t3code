@@ -48,7 +48,8 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { makeClaudeProcessTableReader } from "../claudeSessions/ClaudeProcessTable.ts";
+import { ClaudeSessionRegistryEntry } from "../claudeSessions/ClaudeSessionRegistry.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
@@ -114,6 +115,8 @@ const makeCodexConfig = (overrides: Partial<CodexSettings>): CodexSettings => ({
   customModels: [],
   ...overrides,
 });
+
+const encodeRegistryEntry = Schema.encodeEffect(Schema.fromJsonString(ClaudeSessionRegistryEntry));
 
 const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings => ({
   enabled: false,
@@ -538,19 +541,19 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         const path = yield* Path.Path;
         const fixtures = yield* makeTildeProviderFixtures();
         // pid 1 is outside the server's process tree and outlives the test.
-        const init = (yield* yield* makeClaudeProcessTableReader).find((row) => row.pid === 1);
-        expect(init).toBeDefined();
-        if (init === undefined) return;
+        const procStart = yield* (yield* ProcessRunner.make())
+          .run({
+            command: "ps",
+            args: ["-o", "lstart=", "-p", "1"],
+            env: { LC_ALL: "C", TZ: "UTC0" },
+          })
+          .pipe(Effect.map((result) => result.stdout.trim()));
+        expect(procStart).not.toBe("");
         const sessionsDir = path.join(fixtures.claudeHomePath, "sessions");
         yield* fileSystem.makeDirectory(sessionsDir);
         yield* fileSystem.writeFileString(
           path.join(sessionsDir, "1.json"),
-          JSON.stringify({
-            pid: 1,
-            sessionId: "held-by-init",
-            cwd: "/",
-            procStart: new Date(init.startTimeSeconds * 1000).toUTCString().replace(" GMT", ""),
-          }),
+          yield* encodeRegistryEntry({ pid: 1, sessionId: "held-by-init", cwd: "/", procStart }),
         );
         const claudeId = ProviderInstanceId.make("claude_send_gate");
         const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
