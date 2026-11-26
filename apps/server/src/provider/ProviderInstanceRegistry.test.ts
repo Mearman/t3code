@@ -20,6 +20,7 @@ import {
   SettingsSecretValue,
   type SecretReference,
 } from "@t3tools/contracts";
+import { enrichProviderSnapshotWithVersionAdvisory } from "@t3tools/provider-core/server/maintenanceResolver";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import { OpenCodeSettings } from "@t3tools/provider-opencode/settings";
 import { PiDriver } from "@t3tools/provider-pi/server";
@@ -38,6 +39,8 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
@@ -481,10 +484,16 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         },
       };
 
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const spawned: Array<string> = [];
+      const recordingSpawner = ChildProcessSpawner.make((command) => {
+        if (ChildProcess.isStandardCommand(command)) spawned.push(command.command);
+        return spawner.spawn(command);
+      });
       const { registry } = yield* makeProviderInstanceRegistry<CodexDriverEnv | ClaudeDriverEnv>({
         drivers: [CodexDriver, ClaudeDriver],
         configMap,
-      });
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, recordingSpawner));
       const codex = yield* registry.getInstance(codexId);
       const claude = yield* registry.getInstance(claudeId);
       expect(codex).toBeDefined();
@@ -500,6 +509,19 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         installed: true,
         version: "2.1.219",
       });
+
+      // A refresh leaves the version advisory to a background fiber, so await the same call here.
+      // A real `npm view` reaches the registry and writes into the cache while teardown removes it.
+      const path = yield* Path.Path;
+      const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+      for (const [instance, snapshot] of [
+        [codex!, codexSnapshot],
+        [claude!, claudeSnapshot],
+      ] as const) {
+        const maintenance = yield* instance.snapshot.resolveMaintenance();
+        yield* enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenance, settings);
+      }
+      expect(spawned.map((command) => path.basename(command))).not.toContain("npm");
     }).pipe(Effect.provide(layerTest)),
   );
 
