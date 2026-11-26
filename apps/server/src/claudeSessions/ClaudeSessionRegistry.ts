@@ -7,7 +7,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import {
-  claudeDescendants,
+  claudeProcessTree,
   indexClaudeProcessTable,
   type ClaudeProcessRow,
 } from "./ClaudeProcessTable.ts";
@@ -30,9 +30,15 @@ export const ClaudeSessionRegistryEntry = Schema.Struct({
 });
 export type ClaudeSessionRegistryEntry = typeof ClaudeSessionRegistryEntry.Type;
 
+/** `pid` comes from the file name; `sessionId` is set when the entry names one anyway. */
 export class ClaudeSessionRegistryEntryError extends Schema.TaggedError<ClaudeSessionRegistryEntryError>()(
   "ClaudeSessionRegistryEntryError",
-  { file: Schema.String, cause: Schema.Defect() },
+  {
+    file: Schema.String,
+    pid: Schema.Int,
+    sessionId: Schema.optional(Schema.String),
+    cause: Schema.Defect(),
+  },
 ) {
   override get message(): string {
     return `Unrecognised Claude session registry entry: ${this.file}`;
@@ -43,6 +49,9 @@ export class ClaudeSessionRegistryEntryError extends Schema.TaggedError<ClaudeSe
 const ENTRY_FILE_NAME = /^\d+\.json$/;
 
 const decodeEntry = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaudeSessionRegistryEntry));
+const decodeSessionId = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ sessionId: Schema.String })),
+);
 
 /** Reads every entry of one registry. An entry that cannot be understood is returned, not dropped. */
 export const readClaudeSessionRegistry = Effect.fn("readClaudeSessionRegistry")(function* (
@@ -65,7 +74,15 @@ export const readClaudeSessionRegistry = Effect.fn("readClaudeSessionRegistry")(
     const decoded = yield* Effect.result(decodeEntry(text));
     if (Result.isSuccess(decoded)) entries.push(decoded.success);
     else {
-      unrecognised.push(new ClaudeSessionRegistryEntryError({ file, cause: decoded.failure }));
+      const sessionId = Option.getOrUndefined(decodeSessionId(text))?.sessionId;
+      unrecognised.push(
+        new ClaudeSessionRegistryEntryError({
+          file,
+          pid: Number(name.slice(0, -".json".length)),
+          ...(sessionId === undefined ? {} : { sessionId }),
+          cause: decoded.failure,
+        }),
+      );
     }
   }
   return { entries, unrecognised };
@@ -89,10 +106,7 @@ export function externalClaudeSessionHolders(input: {
   readonly ownRootPids: ReadonlyArray<number>;
 }): ReadonlyMap<string, ClaudeSessionRegistryEntry> {
   const table = indexClaudeProcessTable(input.processes);
-  const ownPids = new Set([
-    ...input.ownRootPids,
-    ...claudeDescendants(table, input.ownRootPids).map((row) => row.pid),
-  ]);
+  const ownPids = claudeProcessTree(table, input.ownRootPids);
   const holders = new Map<string, ClaudeSessionRegistryEntry>();
   for (const entry of input.entries) {
     const started = table.byPid.get(entry.pid)?.startTimeSeconds;
