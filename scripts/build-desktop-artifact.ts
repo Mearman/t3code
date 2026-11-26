@@ -74,6 +74,7 @@ const WorkspaceConfig = Schema.Struct({
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
+  minimumReleaseAgeExclude: Schema.optional(Schema.Array(Schema.String)),
 });
 type WorkspaceConfig = typeof WorkspaceConfig.Type;
 
@@ -99,6 +100,8 @@ const StageWorkspaceConfig = Schema.Struct({
     ),
   ),
   nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
+  // Without the repo's exemptions a build host's release-age policy refuses releases the repo already approved.
+  minimumReleaseAgeExclude: Schema.optional(Schema.Array(Schema.String)),
 });
 type StageWorkspaceConfig = typeof StageWorkspaceConfig.Type;
 
@@ -1590,8 +1593,10 @@ export function createStageWorkspaceConfig(input: {
   readonly allowBuilds?: Record<string, boolean>;
   readonly patchedDependencies?: Record<string, string>;
   readonly overrides?: Record<string, string>;
+  readonly minimumReleaseAgeExclude?: ReadonlyArray<string>;
 }): StageWorkspaceConfig {
   const { platform, arch, allowBuilds, patchedDependencies, overrides } = input;
+  const { minimumReleaseAgeExclude } = input;
   const hostOs = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
   const hostCpu = arch === "universal" ? ["arm64", "x64"] : [arch];
   // Linux AppImages require glibc native optional dependencies; tell pnpm explicitly.
@@ -1614,6 +1619,9 @@ export function createStageWorkspaceConfig(input: {
       ? { patchedDependencies }
       : {}),
     ...(overrides && Object.keys(overrides).length > 0 ? { overrides } : {}),
+    ...(minimumReleaseAgeExclude && minimumReleaseAgeExclude.length > 0
+      ? { minimumReleaseAgeExclude }
+      : {}),
     packageExtensions: STAGE_PACKAGE_EXTENSIONS,
   };
 }
@@ -3155,6 +3163,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   readonly allowBuilds: Record<string, boolean>;
   readonly patchedDependencies: Record<string, string>;
   readonly overrides: Record<string, string>;
+  readonly minimumReleaseAgeExclude: ReadonlyArray<string>;
   readonly asarPath: string;
   readonly verbose: boolean;
 }) {
@@ -3192,6 +3201,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
       allowBuilds: input.allowBuilds,
       patchedDependencies: sidecarPatchedDependencies,
       overrides: input.overrides,
+      minimumReleaseAgeExclude: input.minimumReleaseAgeExclude,
     }),
     // server.asar cannot carry pnpm symlinks or junctions; install physical hoisted dependencies.
     nodeLinker: "hoisted" as const,
@@ -3689,6 +3699,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const workspaceOverrides = workspaceConfig.overrides ?? {};
   const workspacePatchedDependencies = workspaceConfig.patchedDependencies ?? {};
   const workspaceAllowBuilds = workspaceConfig.allowBuilds ?? {};
+  const workspaceReleaseAgeExclude = workspaceConfig.minimumReleaseAgeExclude ?? [];
 
   const platformConfig = PLATFORM_CONFIG[options.platform];
   if (!platformConfig) {
@@ -4009,6 +4020,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     allowBuilds: workspaceAllowBuilds,
     patchedDependencies: stagePatchedDependencies,
     overrides: resolvedOverrides,
+    minimumReleaseAgeExclude: workspaceReleaseAgeExclude,
   });
   const stageWorkspaceConfigString = yield* encodeStageWorkspaceConfig(stageWorkspaceConfig);
   yield* fs.writeFileString(
@@ -4044,6 +4056,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       allowBuilds: workspaceAllowBuilds,
       patchedDependencies: workspacePatchedDependencies,
       overrides: resolvedOverrides,
+      minimumReleaseAgeExclude: workspaceReleaseAgeExclude,
       asarPath: windowsServerAsarPath,
       verbose: options.verbose,
     });

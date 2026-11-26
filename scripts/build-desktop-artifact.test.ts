@@ -30,6 +30,7 @@ import {
   parseWslRuntimeArchiveMembers,
   readWorkspaceConfig,
   createBuildConfig,
+  createStageWorkspaceConfig,
   DESKTOP_FILE_EXCLUSIONS,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
@@ -666,6 +667,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           `allowBuilds names a missing tarball: ${key}`,
         );
       }
+    }),
+  );
+
+  it.effect("carries the repo release-age exemptions into the staged install", () =>
+    Effect.gen(function* () {
+      const { minimumReleaseAgeExclude = [] } = yield* readWorkspaceConfig();
+      assert.isNotEmpty(minimumReleaseAgeExclude);
+      const staged = createStageWorkspaceConfig({
+        platform: "mac",
+        arch: "arm64",
+        minimumReleaseAgeExclude,
+      });
+      assert.deepStrictEqual(staged.minimumReleaseAgeExclude, minimumReleaseAgeExclude);
     }),
   );
 
