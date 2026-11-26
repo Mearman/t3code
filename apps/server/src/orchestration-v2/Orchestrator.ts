@@ -7,13 +7,14 @@ import type {
   ProjectId,
 } from "@t3tools/contracts";
 import {
+  hasTranscriptRunAfter,
   latestRootProviderFailure,
   latestT3ExecutedRun,
   orchestrationV2WorktreePending,
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { hasTranscriptRunAfter, isNativeOriginRun, threadIssueKeysEqual } from "@t3tools/contracts";
+import { isNativeOriginRun, threadIssueKeysEqual } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {

@@ -1,7 +1,6 @@
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
 import {
-  hasTranscriptRunAfter,
   repositoryRewindCheckpoint,
   TASK_FOLDER_DEFAULT_REPOSITORIES_MAX,
   type TaskFolder,
@@ -18,6 +17,7 @@ import type {
   VcsStatusResult,
   WorkspaceFolder,
 } from "@t3tools/contracts";
+import { hasTranscriptRunAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { isAbsolutePath } from "@t3tools/shared/path";
 
 type ChangedFiles = OrchestrationV2Checkpoint["files"];

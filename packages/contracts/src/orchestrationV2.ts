@@ -886,18 +886,6 @@ export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 export const isNativeOriginRun = (run: Pick<OrchestrationV2Run, "nativeOrigin">): boolean =>
   run.nativeOrigin !== undefined;
 
-/**
- * Whether a run read back from a provider transcript stands after run ordinal `appRunOrdinal`. T3
- * has no snapshot of what such a turn changed, so a rewind past it can rewind only the conversation.
- */
-export const hasTranscriptRunAfter = (
-  runs: ReadonlyArray<Pick<OrchestrationV2Run, "nativeOrigin" | "ordinal" | "status">>,
-  appRunOrdinal: number,
-): boolean =>
-  runs.some(
-    (run) => run.ordinal > appRunOrdinal && run.status !== "rolled_back" && isNativeOriginRun(run),
-  );
-
 export const OrchestrationV2RunOutputSubmitted = Schema.Struct({
   runId: RunId,
   output: OrchestrationV2RunOutput,
