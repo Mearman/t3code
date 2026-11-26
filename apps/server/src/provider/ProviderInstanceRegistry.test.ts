@@ -16,8 +16,11 @@ import {
   type ProviderInstanceConfigMap,
   type ResolvedProviderInstanceEnvironment,
   ProviderInstanceId,
+  ProviderSessionId,
+  ProviderThreadId,
   SecretProviderId,
   SettingsSecretValue,
+  ThreadId,
   type SecretReference,
 } from "@t3tools/contracts";
 import { enrichProviderSnapshotWithVersionAdvisory } from "@t3tools/provider-core/server/maintenanceResolver";
@@ -45,6 +48,8 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { makeClaudeProcessTableReader } from "../claudeSessions/ClaudeProcessTable.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -523,6 +528,92 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       }
       expect(spawned.map((command) => path.basename(command))).not.toContain("npm");
     }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live("refuses to send into a Claude session another process holds", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (yield* HostProcess.isWindows) return;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixtures = yield* makeTildeProviderFixtures();
+        // pid 1 is outside the server's process tree and outlives the test.
+        const init = (yield* yield* makeClaudeProcessTableReader).find((row) => row.pid === 1);
+        expect(init).toBeDefined();
+        if (init === undefined) return;
+        const sessionsDir = path.join(fixtures.claudeHomePath, "sessions");
+        yield* fileSystem.makeDirectory(sessionsDir);
+        yield* fileSystem.writeFileString(
+          path.join(sessionsDir, "1.json"),
+          JSON.stringify({
+            pid: 1,
+            sessionId: "held-by-init",
+            cwd: "/",
+            procStart: new Date(init.startTimeSeconds * 1000).toUTCString().replace(" GMT", ""),
+          }),
+        );
+        const claudeId = ProviderInstanceId.make("claude_send_gate");
+        const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
+          drivers: [ClaudeDriver],
+          configMap: {
+            [claudeId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              enabled: true,
+              config: makeClaudeConfig({
+                enabled: true,
+                binaryPath: fixtures.claudeBinaryPath,
+                homePath: fixtures.claudeHomePath,
+              }),
+            },
+          },
+        });
+        const claude = yield* registry.getInstance(claudeId);
+        const threadId = ThreadId.make("thread:send-gate");
+        const providerSessionId = ProviderSessionId.make("session:send-gate");
+        const runtime = yield* claude!.orchestrationAdapter.openSession({
+          threadId,
+          providerSessionId,
+          modelSelection: { instanceId: claudeId, model: "claude-opus-5" },
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: fixtures.claudeHomePath,
+          }),
+        });
+        const now = yield* DateTime.now;
+        const driver = ProviderDriverKind.make("claudeAgent");
+
+        const refusal = yield* Effect.flip(
+          runtime.resumeThread({
+            providerThread: {
+              id: ProviderThreadId.make("provider-thread:send-gate"),
+              driver,
+              providerInstanceId: claudeId,
+              providerSessionId,
+              appThreadId: threadId,
+              ownerNodeId: null,
+              nativeThreadRef: { driver, nativeId: "held-by-init", strength: "strong" },
+              nativeConversationHeadRef: null,
+              status: "idle",
+              firstRunOrdinal: null,
+              lastRunOrdinal: null,
+              handoffIds: [],
+              forkedFrom: null,
+              pendingBackgroundTasks: [],
+              contextUsage: null,
+              nativeMetadata: null,
+              goal: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }),
+        );
+
+        // Fails if the driver exposes the adapter without the send gate.
+        expect(refusal._tag).toBe("ProviderAdapterThreadInUseError");
+        expect(refusal.message).toContain("pid 1");
+      }),
+    ).pipe(Effect.provide(layerTest)),
   );
 
   it.live("runs Claude instance probes in the server state dir, not the server cwd", () =>
