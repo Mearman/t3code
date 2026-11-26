@@ -530,6 +530,8 @@ function makeLocalCommandHarness(input: {
     readonly acceptedResume?: boolean;
     readonly restartedResume?: boolean;
     readonly nativeForkFrom?: "idle" | "busy";
+    /** The fork's source run failed, as a run refused for a held session does. */
+    readonly sourceFailed?: boolean;
     readonly sourceBoundary?: "native" | "synthetic";
     readonly sourceRolledBack?: boolean;
     readonly switchedProvider?: boolean;
@@ -773,7 +775,9 @@ function makeLocalCommandHarness(input: {
         status:
           input.sideChat?.sourceRolledBack === true
             ? ("rolled_back" as const)
-            : ("completed" as const),
+            : input.sideChat?.sourceFailed === true
+              ? ("failed" as const)
+              : ("completed" as const),
         completedAt: now,
       },
       {
@@ -2667,13 +2671,24 @@ effectIt.effect.each([
     transferStatus: "consumed",
     handoffIds: [],
   },
+  // A run refused for a held session failed, so its fork copies nothing from the held transcript.
+  {
+    nativeForkFrom: "idle",
+    canForkWhileSourceRunning: false,
+    sourceBoundary: "native",
+    sourceFailed: true,
+    forks: false,
+    transferStatus: "resolved_portable",
+    handoffIds: ["side-chat-fork-context"],
+  },
 ] as const)(
   "runs a planned native side chat fork when the parent is $nativeForkFrom with canForkWhileSourceRunning=$canForkWhileSourceRunning, sourceBoundary=$sourceBoundary and exposesNativeTurnId=$exposesNativeTurnId",
-  ({ nativeForkFrom, sourceBoundary, forks, transferStatus, handoffIds, ...capability }) =>
+  ({ nativeForkFrom, sourceBoundary, forks, transferStatus, handoffIds, ...rest }) =>
     Effect.gen(function* () {
+      const { sourceFailed, ...capability } = { sourceFailed: false, ...rest };
       const harness = makeLocalCommandHarness({
         text: "What is the main thread doing?",
-        sideChat: { contextRun: "current", nativeForkFrom, sourceBoundary },
+        sideChat: { contextRun: "current", nativeForkFrom, sourceBoundary, sourceFailed },
         ...capability,
       });
 
