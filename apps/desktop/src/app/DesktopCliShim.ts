@@ -96,21 +96,26 @@ export const renderCliShim = (input: {
     "stop=",
     "mounter=",
     "mount=",
+    "work=",
     `trap 'if [ -n "$cli" ]; then kill -TERM "$cli" 2>/dev/null; else stop=TERM; fi' TERM`,
     `trap 'if [ -n "$cli" ]; then kill -HUP "$cli" 2>/dev/null; else stop=HUP; fi' HUP`,
     // The terminal sends Ctrl-C to the CLI itself. One that lands before $cli is known becomes TERM.
     `trap '[ -n "$cli" ] || stop=TERM' INT`,
-    "work=$(mktemp -d) || exit 1",
-    // The mounter unmounts itself on TERM, which it ignores here, so this trap unmounts it.
-    // Lazily, like the runtime: the server's own children may still be exiting.
-    `trap '[ -z "$mount" ] || fusermount3 -uz "$mount" 2>/dev/null || fusermount -uz "$mount" 2>/dev/null; kill -HUP "$mounter" 2>/dev/null; rm -rf "$work"' EXIT`,
-    // A new background process has these traps until the shell resets them, and dash drops a signal
-    // that arrives before then. Each touches a file first; wait for that before signalling it.
-    'await_start() { while [ ! -e "$1" ] && kill -0 "$!" 2>/dev/null; do sleep 0.01; done; }',
+    // The mounter unmounts itself on TERM, which it ignores here, so this trap unmounts it, lazily
+    // like the runtime since the server's children may still be exiting. It and the commands it
+    // runs ignore further stops, or a second Ctrl-C would leave the extracted image behind.
+    `trap 'trap "" INT TERM HUP; [ -z "$mount" ] || fusermount3 -uz "$mount" 2>/dev/null || fusermount -uz "$mount" 2>/dev/null; kill -HUP "$mounter" 2>/dev/null; rm -rf "$work"' EXIT`,
+    // A stop to the process group also kills mktemp or the extraction, which is then no failure.
+    'work=$(mktemp -d) || { [ -z "$stop" ] || exit 130; exit 1; }',
+    // dash drops a signal that reaches a background process before it resets these traps, so wait
+    // for the file each touches first. Sleep in a substitution: if Ctrl-C and then a second stop
+    // arrive during a plain `sleep`, bash answers every later `wait` with that stop.
+    'await_start() { while [ ! -e "$1" ] && kill -0 "$!" 2>/dev/null; do slept=$(sleep 0.01); done; }',
     // Its own session keeps a group signal (Ctrl-C, SSH hangup) from unmounting it under the
     // running server, and ignoring TERM survives a stop sent to every process (systemd's default).
     // Without setsid the extract fallback runs.
-    `{ trap '' TERM; : >"$work/mounter-started"; exec setsid "$app" --appimage-mount >"$work/mount" 2>/dev/null; } &`,
+    // Redirecting the group creates the mount file before the launcher is told to read it.
+    `{ trap '' TERM; : >"$work/mounter-started"; exec setsid "$app" --appimage-mount; } >"$work/mount" 2>/dev/null &`,
     'await_start "$work/mounter-started"',
     "mounter=$!",
     'while [ -z "$stop" ] && kill -0 "$mounter" 2>/dev/null; do',
@@ -122,7 +127,6 @@ export const renderCliShim = (input: {
     '[ -z "$stop" ] || exit 130',
     // Without FUSE the runtime cannot mount (it prints why and exits); extracting the image still works.
     'if [ -z "$mount" ]; then',
-    // A stop can kill the extraction, which is then no fault of the image.
     '  (cd "$work" && "$app" --appimage-extract >/dev/null) || { [ -z "$stop" ] || exit 130; echo "Could not open $app." >&2; exit 1; }',
     '  mount="$work/squashfs-root"',
     "fi",
@@ -145,6 +149,11 @@ export const renderCliShim = (input: {
     "  status=0",
     '  wait "$cli" || status=$?',
     "done",
+    // The CLI can also exit before that check, leaving the interrupted status, so ask once more.
+    // 127 means the shell has no status left to give: an earlier wait already took it.
+    "last=0",
+    'wait "$cli" 2>/dev/null || last=$?',
+    '[ "$last" -eq 127 ] || status=$last',
     'exit "$status"',
     "",
   ].join("\n");
