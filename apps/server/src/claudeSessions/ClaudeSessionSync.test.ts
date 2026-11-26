@@ -98,9 +98,9 @@ const persistence = Layer.mergeAll(
   }),
 );
 
-const syncLayer = <E = never>(
+const syncLayer = (
   settings: DeepPartial<ServerSettings>,
-  capacity: Layer.Layer<ClaudeSyncCapacity.ClaudeSyncCapacity, E> = capacityFree,
+  capacity: Layer.Layer<ClaudeSyncCapacity.ClaudeSyncCapacity> = capacityFree,
 ) =>
   ClaudeSessionSync.layer.pipe(
     Layer.provideMerge(persistence),
@@ -552,8 +552,30 @@ describe("ClaudeSessionSync", () => {
         const home = yield* makeHome(root, "home");
         const copied = { forkedFrom: { sessionId: "parent-session", messageUuid: "a1" } };
         yield* append(home, [
-          line({ ...JSON.parse(firstTurn[0] ?? "{}"), ...copied }),
-          line({ ...JSON.parse(firstTurn[1] ?? "{}"), ...copied }),
+          line({
+            type: "user",
+            uuid: "p1",
+            parentUuid: null,
+            promptId: "prompt-1",
+            timestamp: "2026-11-26T10:00:00.000Z",
+            origin: { kind: "human" },
+            message: { role: "user", content: "Prompt p1" },
+            ...copied,
+          }),
+          line({
+            type: "assistant",
+            uuid: "a1",
+            parentUuid: "p1",
+            timestamp: "2026-11-26T10:00:05.000Z",
+            message: {
+              id: "msg-a1",
+              model: "claude-test",
+              role: "assistant",
+              content: [{ type: "text", text: "Reply a1" }],
+              stop_reason: "end_turn",
+            },
+            ...copied,
+          }),
           ...secondTurn,
         ]);
         yield* Effect.gen(function* () {
@@ -644,7 +666,7 @@ describe("ClaudeSessionSync", () => {
               }).pipe(Effect.provideContext(context), Effect.orDie),
             };
           }),
-        ).pipe(Layer.provide(persistence));
+        ).pipe(Layer.provide(persistence), Layer.orDie);
         yield* Effect.gen(function* () {
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
