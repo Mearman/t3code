@@ -15,7 +15,6 @@ import { readClaudeTranscriptTurn } from "../src/claudeSessions/ClaudeTranscript
 import {
   ClaudeTranscriptIndex,
   claudeTranscriptSessionId,
-  syncClaudeTranscriptIndex,
 } from "../src/claudeSessions/ClaudeTranscriptIndex.ts";
 import {
   checkClaudeTranscriptTurns,
@@ -25,6 +24,10 @@ import {
   claudeTranscriptStructure,
   type ClaudeTranscriptStructure,
 } from "../src/claudeSessions/ClaudeTranscriptTurns.ts";
+import {
+  ClaudeTranscriptTurnTracker,
+  syncClaudeTranscript,
+} from "../src/claudeSessions/ClaudeTranscriptTurnTracker.ts";
 
 const USAGE = `Checks the Claude transcript parser against real transcripts, printing counts and line shapes only.
 
@@ -32,7 +35,7 @@ const USAGE = `Checks the Claude transcript parser against real transcripts, pri
   node --expose-gc apps/server/scripts/check-claude-transcripts.ts --synthetic-mib N [--payload-bytes N]
 
 root defaults to ~/.claude/projects. Exits 1 when no transcript was checked or any invariant is broken.
---synthetic-mib writes a synthetic transcript of that size and reports what indexing it holds and reads.`;
+--synthetic-mib writes a synthetic transcript of that size and reports the memory it holds and the work each append does.`;
 
 interface Options {
   readonly root: string;
@@ -156,6 +159,26 @@ function indexLines(lines: ReadonlyArray<string>): ClaudeTranscriptIndex {
   return index;
 }
 
+const readAll = Effect.fn("checkClaudeTranscripts.readAll")(function* (
+  filePath: string,
+  tracker: ClaudeTranscriptTurnTracker,
+  structure: ClaudeTranscriptStructure,
+) {
+  const contents = [];
+  for (const turn of structure.turns) {
+    contents.push(
+      yield* readClaudeTranscriptTurn({
+        filePath,
+        index: tracker.index,
+        idScope: "check",
+        turn,
+        known: new Map(),
+      }),
+    );
+  }
+  return contents;
+});
+
 const checkFile = Effect.fn("checkClaudeTranscripts.checkFile")(function* (
   filePath: string,
   options: Options,
@@ -170,15 +193,11 @@ const checkFile = Effect.fn("checkClaudeTranscripts.checkFile")(function* (
   const snapshot = NodePath.join(scratch, "whole.jsonl");
   yield* fileSystem.writeFile(snapshot, complete);
 
-  const index = new ClaudeTranscriptIndex();
-  yield* syncClaudeTranscriptIndex({ filePath: snapshot, index });
-  const structure = claudeTranscriptStructure(index);
-  const contents = [];
-  for (const turn of structure.turns) {
-    contents.push(
-      yield* readClaudeTranscriptTurn({ filePath: snapshot, index, idScope: "check", turn }),
-    );
-  }
+  // The definition over the whole file is what everything else must equal.
+  const whole = new ClaudeTranscriptTurnTracker();
+  yield* syncClaudeTranscript({ filePath: snapshot, tracker: whole });
+  const structure = claudeTranscriptStructure(whole.index);
+  const contents = yield* readAll(snapshot, whole, structure);
 
   // The same bytes appended in random pieces that can end mid-line, synced after each piece.
   const next = random(seed);
@@ -187,16 +206,19 @@ const checkFile = Effect.fn("checkClaudeTranscripts.checkFile")(function* (
   const cuts = Array.from({ length: options.splits - 1 }, () => next(complete.length)).toSorted(
     (left, right) => left - right,
   );
-  const split = new ClaudeTranscriptIndex();
+  const split = new ClaudeTranscriptTurnTracker();
   let written = 0;
   for (const cut of [...cuts, complete.length]) {
     NodeFS.appendFileSync(growing, complete.subarray(written, cut));
     written = cut;
-    const synced = yield* syncClaudeTranscriptIndex({ filePath: growing, index: split });
-    if (synced.rebuilt) return yield* Effect.die("An appended transcript was taken as rewritten.");
+    const synced = yield* syncClaudeTranscript({ filePath: growing, tracker: split });
+    if (synced.rewritten)
+      return yield* Effect.die("An appended transcript was taken as rewritten.");
   }
   const others: Array<{ readonly name: string; readonly structure: ClaudeTranscriptStructure }> = [
-    { name: "split read", structure: claudeTranscriptStructure(split) },
+    { name: "tracker over the whole read", structure: whole.structure() },
+    { name: "tracker over a split read", structure: split.structure() },
+    { name: "definition over a split read", structure: claudeTranscriptStructure(split.index) },
   ];
   // File order legitimately decides the titles and derivation, so they come from the whole read.
   for (let round = 0; round < options.permutations; round++) {
@@ -315,6 +337,9 @@ function* syntheticTurns(payloadBytes: number) {
   }
 }
 
+const sameStructure = (left: ClaudeTranscriptStructure, right: ClaudeTranscriptStructure) =>
+  JSON.stringify(left) === JSON.stringify(right);
+
 const heapMib = () => {
   if (typeof globalThis.gc === "function") globalThis.gc();
   return process.memoryUsage().heapUsed / (1024 * 1024);
@@ -341,38 +366,63 @@ const measure = Effect.fn("checkClaudeTranscripts.measure")(function* (
   NodeFS.closeSync(descriptor);
 
   const before = heapMib();
-  const index = new ClaudeTranscriptIndex();
-  const synced = yield* syncClaudeTranscriptIndex({ filePath, index });
-  const afterIndex = heapMib();
-  const structure = claudeTranscriptStructure(index);
-  const items = structure.turns.reduce((sum, turn) => sum + turn.lineUuids.length, 0);
-  const afterStructure = heapMib();
-  const last = structure.turns.at(-1);
-  const content =
-    last === undefined
-      ? undefined
-      : yield* readClaudeTranscriptTurn({ filePath, index, idScope: "measure", turn: last });
-  const appended = turns.next().value ?? "";
-  NodeFS.appendFileSync(filePath, appended);
-  const resync = yield* syncClaudeTranscriptIndex({ filePath, index });
-  const footprint = index.footprint();
-  const heldIndex = afterIndex - before;
+  const tracker = new ClaudeTranscriptTurnTracker();
+  const synced = yield* syncClaudeTranscript({ filePath, tracker });
+  const afterSync = heapMib();
+  const footprint = tracker.index.footprint();
+
+  // A live turn: each line appended alone, then synced, and the turn's new lines read.
+  const known = new Map<string, number>();
+  let worst = { decided: 0, digested: 0, changedTurns: 0, bytesRead: 0, lineBytesRead: 0 };
+  let appends = 0;
+  for (let round = 0; round < 3; round++) {
+    const next = turns.next().value;
+    if (next === undefined) break;
+    for (const line of next.split("\n").filter((part) => part.length > 0)) {
+      NodeFS.appendFileSync(filePath, `${line}\n`);
+      const update = yield* syncClaudeTranscript({ filePath, tracker });
+      appends += 1;
+      let lineBytesRead = 0;
+      for (const id of update.changedTurnIds) {
+        const turn = tracker.turn(id);
+        if (turn === undefined) continue;
+        const content = yield* readClaudeTranscriptTurn({
+          filePath,
+          index: tracker.index,
+          idScope: "measure",
+          turn,
+          known,
+        });
+        for (const read of content.lines) {
+          known.set(read.lineUuid, read.hash);
+          const entry = tracker.index.entryOf(read.lineUuid);
+          if (entry !== undefined) lineBytesRead += tracker.index.location(entry).length;
+        }
+      }
+      worst = {
+        decided: Math.max(worst.decided, update.decided),
+        digested: Math.max(worst.digested, update.digested),
+        changedTurns: Math.max(worst.changedTurns, update.changedTurnIds.length),
+        bytesRead: Math.max(worst.bytesRead, update.bytesRead),
+        lineBytesRead: Math.max(worst.lineBytesRead, lineBytesRead),
+      };
+    }
+  }
+  const equal = sameStructure(tracker.structure(), claudeTranscriptStructure(tracker.index));
+  const held = afterSync - before;
   return {
     fileBytes,
     linesRead: synced.linesRead,
-    entries: index.entryCount,
-    repeatedLines: index.repeatedLines,
-    indexHeapMib: Number(heldIndex.toFixed(1)),
-    indexHeapBytesPerLine: Math.round((heldIndex * 1024 * 1024) / synced.linesRead),
+    entries: tracker.index.entryCount,
+    repeatedLines: tracker.index.repeatedLines,
+    turns: tracker.turnIds().length,
+    heldHeapMib: Number(held.toFixed(1)),
+    heldHeapBytesPerLine: Math.round((held * 1024 * 1024) / synced.linesRead),
     indexColumnBytes: footprint.columnBytes,
     indexStringCharacters: footprint.stringCharacters,
-    structureHeapMib: Number((afterStructure - afterIndex).toFixed(1)),
-    turns: structure.turns.length,
-    itemLines: items,
-    lastTurnItems: content?.items.length,
-    appendedBytes: encoder.encode(appended).length,
-    resyncBytesRead: resync.bytesRead,
-    resyncRebuilt: resync.rebuilt,
+    appendsMeasured: appends,
+    worstPerAppend: worst,
+    trackerEqualsDefinition: equal,
     gcExposed: typeof globalThis.gc === "function",
   };
 }, Effect.scoped);

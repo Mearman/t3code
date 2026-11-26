@@ -11,6 +11,8 @@ export type ClaudeTranscriptViolationKind =
   | "line-in-two-turns"
   | "repeat-emitted"
   | "item-outside-its-chain"
+  | "items-not-one-per-block"
+  | "command-filed-wrongly"
   | "prompt-not-opened"
   | "opened-without-cause"
   | "queued-filed-wrongly"
@@ -52,7 +54,7 @@ const INTERRUPT_MARKERS = new Set([
   "[Request interrupted by user for tool use]",
 ]);
 const SYNTHETIC_MODEL = "<synthetic>";
-// A cycle or a chain this long is not a conversation; a walk gives up on it.
+// A chain this long is not a conversation; a walk gives up on it.
 const MAX_CHAIN_STEPS = 100_000;
 
 const text = (value: unknown) => (typeof value === "string" ? value : undefined);
@@ -203,6 +205,35 @@ function mustOpen(record: unknown): boolean {
   return joined.length > 0 && !joined.startsWith("<") && !INTERRUPT_MARKERS.has(joined);
 }
 
+// A user line a person typed: a later one shows that a tool call still waiting had died.
+function isPromptLike(record: unknown): boolean {
+  if (typeOf(record) !== "user" || isMeta(record) || field(record, "isCompactSummary") === true)
+    return false;
+  if (hasBlock(record, "tool_result") || isInterruptLine(record)) return false;
+  const joined = textsOf(record).join("\n").trim();
+  if (OUTPUT_TAG.test(joined)) return false;
+  return isString(field(record, "promptId")) || (joined.length > 0 && !joined.startsWith("<"));
+}
+
+const SHELL_OUTPUT = /^<bash-(?:stdout|stderr)>[\s\S]*<\/bash-(?:stdout|stderr)>$/;
+const COMMAND_OUTPUT = /^(?:<(local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>\s*)+$/;
+
+/** How many items a content line gives: one per block, or one for a whole command's output. */
+function expectedItems(record: unknown): number {
+  if (!isReadable(record)) return 1;
+  if (isQueued(record) || isLocalCommand(record)) return 1;
+  const blocks = blocksOf(contentOf(record));
+  if (
+    typeOf(record) === "user" &&
+    blocks.length > 0 &&
+    blocks.every((block) => field(block, "type") === "text")
+  ) {
+    const joined = textsOf(record).join("\n").trim();
+    if (SHELL_OUTPUT.test(joined) || COMMAND_OUTPUT.test(joined)) return 1;
+  }
+  return blocks.length;
+}
+
 function sameText(left: unknown, right: unknown): boolean {
   const commandText = text(field(right, "content"))?.trim();
   return commandText !== undefined && textsOf(left).join("").trim() === commandText;
@@ -261,17 +292,74 @@ export function checkClaudeTranscriptTurns(input: {
       ? text(field(raw.record, "logicalParentUuid"))
       : undefined;
   };
+  // A loop of parents is cut at its least uuid, which then stands as a root.
+  const cuts = new Set<string>();
+  const settled = new Set<string>();
+  for (const start of first.values()) {
+    const path: Array<string> = [];
+    const onPath = new Map<string, number>();
+    for (let raw: RawLine | undefined = start; raw !== undefined && !settled.has(raw.uuid);) {
+      const seenAt = onPath.get(raw.uuid);
+      if (seenAt !== undefined) {
+        cuts.add(path.slice(seenAt).toSorted()[0] ?? raw.uuid);
+        break;
+      }
+      onPath.set(raw.uuid, path.length);
+      path.push(raw.uuid);
+      const parent = parentOf(raw);
+      raw = parent === undefined ? undefined : first.get(parent);
+    }
+    for (const uuid of path) settled.add(uuid);
+  }
+  const upOf = (raw: RawLine): RawLine | undefined => {
+    if (cuts.has(raw.uuid)) return undefined;
+    const parent = parentOf(raw);
+    return parent === undefined ? undefined : first.get(parent);
+  };
+  const rootCache = new Map<string, RawLine>();
+  const rootOf = (raw: RawLine): RawLine => {
+    const path: Array<RawLine> = [];
+    let node = raw;
+    for (;;) {
+      const cached = rootCache.get(node.uuid);
+      if (cached !== undefined) {
+        node = cached;
+        break;
+      }
+      const up = upOf(node);
+      if (up === undefined) break;
+      path.push(node);
+      node = up;
+    }
+    for (const member of path) rootCache.set(member.uuid, node);
+    return node;
+  };
+  // A root whose parent is named but not in the file, or a compaction, is filed by time.
+  const filedByTime = (root: RawLine) =>
+    !cuts.has(root.uuid) &&
+    (field(root.record, "parentUuid") !== null || subtypeOf(root.record) === "compact_boundary");
   const children = new Map<string, Array<RawLine>>();
   for (const raw of first.values()) {
-    const parent = parentOf(raw);
-    if (parent === undefined) continue;
-    const list = children.get(parent) ?? [];
+    const up = upOf(raw);
+    if (up === undefined) continue;
+    const list = children.get(up.uuid) ?? [];
     list.push(raw);
-    children.set(parent, list);
+    children.set(up.uuid, list);
+  }
+  const timeOf = (raw: RawLine | undefined) => {
+    const time = Date.parse(text(field(raw?.record, "timestamp")) ?? "");
+    return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
+  };
+  let latestPrompt = Number.NEGATIVE_INFINITY;
+  for (const raw of first.values()) {
+    const time = timeOf(raw);
+    if (isPromptLike(raw.record) && Number.isFinite(time) && time > latestPrompt)
+      latestPrompt = time;
   }
 
   const turnIds = new Map<string, ClaudeTranscriptTurn>();
   const lineTurn = new Map<string, string>();
+  const lineItems = new Map<string, number>();
   const itemIds = new Set<string>();
   for (const turn of input.structure.turns) {
     turnIds.set(turn.id, turn);
@@ -279,9 +367,11 @@ export function checkClaudeTranscriptTurns(input: {
     count(`turns ended ${turn.end?.reason ?? "running"}`);
     if (turn.branchedFrom !== undefined) count("branches");
   }
+  const itemsOf = (content: ClaudeTranscriptTurnContent) =>
+    content.lines.flatMap((line) => line.items);
   for (const content of input.contents) {
     const turnId = content.turn.id;
-    for (const item of content.items) {
+    for (const item of itemsOf(content)) {
       count("items");
       if (itemIds.has(item.id)) report("repeat-emitted", first.get(item.lineUuid));
       itemIds.add(item.id);
@@ -289,18 +379,41 @@ export function checkClaudeTranscriptTurns(input: {
       if (owner !== undefined && owner !== turnId)
         report("line-in-two-turns", first.get(item.lineUuid));
       lineTurn.set(item.lineUuid, turnId);
+      lineItems.set(item.lineUuid, (lineItems.get(item.lineUuid) ?? 0) + 1);
     }
   }
   const turnOfLine = (uuid: string) => (turnIds.has(uuid) ? uuid : lineTurn.get(uuid));
 
+  // Turns reached from a true root, by start: a root filed by time joins the latest at or before it.
+  const rootedTurns = input.structure.turns
+    .flatMap((turn) => {
+      const opener = first.get(turn.id);
+      return opener !== undefined && !filedByTime(rootOf(opener))
+        ? [{ id: turn.id, start: timeOf(opener) }]
+        : [];
+    })
+    .toSorted(
+      (left, right) =>
+        left.start - right.start || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+    );
+  const hostOf = (root: RawLine) => {
+    const time = timeOf(root);
+    return rootedTurns.findLast((turn) => turn.start <= time)?.id;
+  };
+  // The turn a line's chain puts it in: that of the nearest line above with one, else by time.
+  const chainTurn = (raw: RawLine): string | undefined => {
+    let top = raw;
+    for (let up = upOf(raw); up !== undefined; up = upOf(up)) {
+      const turn = turnOfLine(up.uuid);
+      if (turn !== undefined) return turn;
+      top = up;
+    }
+    return filedByTime(top) ? hostOf(top) : undefined;
+  };
   // The nearest line up the chain that holds content or opens a turn, through lines that hold neither.
   const anchorOf = (raw: RawLine): RawLine | undefined => {
-    let uuid = parentOf(raw);
-    for (let steps = 0; uuid !== undefined && steps < MAX_CHAIN_STEPS; steps += 1) {
-      const up = first.get(uuid);
-      if (up === undefined) return undefined;
+    for (let up = upOf(raw); up !== undefined; up = upOf(up)) {
       if (turnIds.has(up.uuid) || !passesThrough(up.record)) return up;
-      uuid = parentOf(up);
     }
     return undefined;
   };
@@ -338,35 +451,45 @@ export function checkClaudeTranscriptTurns(input: {
       (opener !== undefined && isCommandInput(opener.record))
     );
   };
-  const waitsOnTool = (anchor: RawLine | undefined) =>
-    anchor !== undefined &&
-    isReply(anchor.record) &&
-    hasBlock(anchor.record, "tool_use") &&
-    (children.get(anchor.uuid) ?? []).some((child) => hasBlock(child.record, "tool_result"));
+  // A command chained to a tool call joins its turn once answered, or while nothing shows it died.
+  const joinsToolCall = (raw: RawLine) => {
+    const anchor = anchorOf(raw);
+    if (anchor === undefined || !isReply(anchor.record) || !hasBlock(anchor.record, "tool_use")) {
+      return false;
+    }
+    const answered = (children.get(anchor.uuid) ?? []).some((child) =>
+      hasBlock(child.record, "tool_result"),
+    );
+    return answered || !(latestPrompt > timeOf(raw));
+  };
+  const duplicateCommand = (raw: RawLine) => {
+    const parent = upOf(raw);
+    return (
+      isCommandInput(raw.record) &&
+      parent !== undefined &&
+      typeOf(parent.record) === "user" &&
+      sameText(parent.record, raw.record)
+    );
+  };
 
-  // Every content line is in exactly one turn, and every turn's lines follow its chain.
+  // Every content line is in exactly one turn, with an item per block, and follows its chain.
   for (const raw of first.values()) {
     if (!isContentLine(raw.record)) continue;
     count("first-occurrence content lines");
-    const parent = parentOf(raw);
-    const parentRaw = parent === undefined ? undefined : first.get(parent);
-    const duplicateCommand =
-      isCommandInput(raw.record) &&
-      parentRaw !== undefined &&
-      typeOf(parentRaw.record) === "user" &&
-      sameText(parentRaw.record, raw.record);
     const empty =
       Array.isArray(contentOf(raw.record)) && blocksOf(contentOf(raw.record)).length === 0;
     const turn = turnOfLine(raw.uuid);
-    if (turn === undefined) {
-      if (duplicateCommand || empty) count("content lines with nothing to show");
+    if (turn === undefined || !lineTurn.has(raw.uuid)) {
+      if (duplicateCommand(raw) || empty) count("content lines with nothing to show");
       else report("content-line-missing", raw);
       continue;
     }
+    const expected = expectedItems(raw.record);
+    if (lineItems.get(raw.uuid) !== expected) {
+      report("items-not-one-per-block", raw, `${lineItems.get(raw.uuid)} for ${expected}`);
+    }
     if (turnIds.has(raw.uuid)) continue;
-    const anchor = anchorOf(raw);
-    if (anchor === undefined || turnOfLine(anchor.uuid) !== turn)
-      report("item-outside-its-chain", raw);
+    if (chainTurn(raw) !== turn) report("item-outside-its-chain", raw);
   }
 
   // Turns open where the lines say a turn starts, and only there.
@@ -378,18 +501,13 @@ export function checkClaudeTranscriptTurns(input: {
       const startsTurn = anchor === undefined || endsTurn(anchor);
       if (startsTurn !== opened) report("queued-filed-wrongly", raw);
     }
-    if (isCommandInput(raw.record) && !opened) {
-      const parent = parentOf(raw);
-      const parentRaw = parent === undefined ? undefined : first.get(parent);
-      const duplicate =
-        parentRaw !== undefined &&
-        typeOf(parentRaw.record) === "user" &&
-        sameText(parentRaw.record, raw.record);
-      if (!duplicate && !waitsOnTool(anchor)) report("prompt-not-opened", raw);
+    if (isCommandInput(raw.record)) {
+      const opens = !duplicateCommand(raw) && !joinsToolCall(raw);
+      if (opens !== opened) report("command-filed-wrongly", raw);
     }
     if (!opened) continue;
     const record = raw.record;
-    const orphan = anchor === undefined;
+    const orphan = chainTurn(raw) === undefined;
     const cause =
       (typeOf(record) === "user" &&
         !isMeta(record) &&
@@ -419,7 +537,8 @@ export function checkClaudeTranscriptTurns(input: {
     if (turn.end !== undefined && Date.parse(turn.end.at) < Date.parse(turn.startedAt)) {
       report("end-before-start", opener);
     }
-    const lines = [...new Set(content.items.map((item) => item.lineUuid))].flatMap((uuid) => {
+    const items = itemsOf(content);
+    const lines = [...new Set(items.map((item) => item.lineUuid))].flatMap((uuid) => {
       const raw = first.get(uuid);
       return raw === undefined ? [] : [raw];
     });
@@ -438,7 +557,7 @@ export function checkClaudeTranscriptTurns(input: {
     ) {
       report("superseded-end-kept", opener);
     }
-    for (const item of content.items) {
+    for (const item of items) {
       const raw = first.get(item.lineUuid);
       if (item._tag === "Unreadable") {
         count("unreadable lines");
@@ -454,7 +573,7 @@ export function checkClaudeTranscriptTurns(input: {
         (item._tag === "CommandOutput" && item.output.some((part) => OUTPUT_TAG.test(part.text)));
       if (marked) report("raw-command-markup", raw, `${item._tag} of ${shapeOf(raw?.record)}`);
     }
-    const prompt = content.prompt;
+    const prompt = content.opener?.prompt;
     if (prompt !== undefined && (MARKUP.test(prompt.text) || MARKUP.test(prompt.title ?? ""))) {
       report("raw-command-markup", opener, `prompt of ${shapeOf(opener?.record)}`);
     }
@@ -467,8 +586,7 @@ export function checkClaudeTranscriptTurns(input: {
   >();
   for (const raw of first.values()) {
     if (typeOf(raw.record) !== "system" || subtypeOf(raw.record) !== "turn_duration") continue;
-    const anchor = anchorOf(raw);
-    const turnId = anchor === undefined ? undefined : turnOfLine(anchor.uuid);
+    const turnId = chainTurn(raw);
     if (turnId === undefined) continue;
     const list = durations.get(turnId) ?? [];
     list.push({ raw, durationMs: field(raw.record, "durationMs") });
