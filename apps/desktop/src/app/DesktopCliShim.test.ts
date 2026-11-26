@@ -80,16 +80,49 @@ const SLOW_SERVER = [
 // The launcher mounts only under setsid, which stock macOS and Windows lack; there it extracts instead.
 const hasSetsid = NodeChildProcess.spawnSync("setsid", ["true"]).status === 0;
 
-// Holds the launcher between starting the server and its next command until a line is written to
-// the returned pipe. The test holds both ends, so neither side blocks if the other is gone.
-const holdAfterServerStart = (root: string, shim: string) => {
+// The launcher's lines that start the mounter and, in the background, the server.
+const MOUNTER_LINE = /^.*setsid .*--appimage-mount.*&$/m;
+const SERVER_LINE = /^(.*) <&9 9<&- &$/m;
+
+type Edit = (script: string, hold: string) => string;
+
+// Edits the launcher to stop at a chosen place until a line is written to the returned pipe. The
+// test holds both ends of the pipe, so neither side blocks if the other is gone.
+const holdLauncher = (
+  { root, shim }: { readonly root: string; readonly shim: string },
+  edit: Edit,
+) => {
   const gate = NodePath.join(root, "gate");
   expect(NodeChildProcess.spawnSync("mkfifo", [gate]).status).toBe(0);
-  const parts = NodeFS.readFileSync(shim, "utf8").split(" <&9 9<&- &\n");
-  expect(parts).toHaveLength(2);
-  NodeFS.writeFileSync(shim, parts.join(` <&9 9<&- &\nhead -n 1 '${gate}' >/dev/null\n`));
+  const script = NodeFS.readFileSync(shim, "utf8");
+  const held = edit(script, `echo held >&3; head -n 1 '${gate}' >/dev/null`);
+  expect(held).not.toBe(script);
+  NodeFS.writeFileSync(shim, held);
   return NodeFS.openSync(gate, "r+");
 };
+
+const HOLDS: Record<string, Edit> = {
+  // Waits for the mount path first, so the mounter is up and able to report that it unmounted.
+  "right after it starts the mounter": (script, hold) =>
+    script.replace(
+      MOUNTER_LINE,
+      (line) => `${line}\nuntil [ -s "$work/mount" ]; do sleep 0.01; done; ${hold}`,
+    ),
+  // Ahead of the launcher's last check for a stop, where it has one.
+  "right before it starts the server": (script, hold) =>
+    script.replace(
+      /^(?:\[ -z "\$stop" \] \|\| exit 130\n)?(?=.* <&9 9<&- &$)/m,
+      (check) => `${hold}\n${check}`,
+    ),
+};
+
+const EARLY_STOPS = (["SIGHUP", "SIGINT", "SIGTERM"] as const).flatMap((signal) =>
+  Object.entries(HOLDS).map(([place, edit]): [NodeJS.Signals, string, Edit] => [
+    signal,
+    place,
+    edit,
+  ]),
+);
 
 const lines = (stream: NodeJS.ReadableStream) => {
   const seen: Array<string> = [];
@@ -113,6 +146,45 @@ const lines = (stream: NodeJS.ReadableStream) => {
   return { seen, until };
 };
 
+// Runs the launcher in its own process group and kills whatever is left of it afterwards.
+const withLauncher = async (
+  { root, shim }: { readonly root: string; readonly shim: string },
+  use: (launcher: {
+    readonly child: NodeChildProcess.ChildProcess;
+    readonly stdout: ReturnType<typeof lines>;
+    readonly events: ReturnType<typeof lines>;
+    readonly exited: Promise<number | null>;
+    readonly closed: Promise<number | null>;
+    readonly mounter: () => number;
+  }) => Promise<void>,
+) => {
+  const child = NodeChildProcess.spawn(shim, [], {
+    detached: true,
+    env: { PATH: process.env.PATH },
+    stdio: ["pipe", "pipe", "ignore", "pipe"],
+  });
+  const mounter = () => Number(NodeFS.readFileSync(NodePath.join(root, "mounter.pid"), "utf8"));
+  try {
+    await use({
+      child,
+      stdout: lines(child.stdout!),
+      events: lines(child.stdio[3] as NodeJS.ReadableStream),
+      exited: new Promise((resolve) => child.on("exit", resolve)),
+      // Also waits for everything that inherited the pipes, the mounter included.
+      closed: new Promise((resolve) => child.on("close", resolve)),
+      mounter,
+    });
+  } finally {
+    for (const find of [() => -child.pid!, mounter]) {
+      try {
+        const pid = find();
+        // Zero would signal the test's own process group.
+        if (pid !== 0) process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+  }
+};
+
 describe("renderCliShim", () => {
   // Ctrl-C, an SSH hangup, or a supervisor signals the process group. systemd's default KillMode
   // also signals the mounter, and KillMode=mixed signals only the launcher.
@@ -127,53 +199,95 @@ describe("renderCliShim", () => {
   ] as const)(
     "keeps the AppImage mounted until the server exits after %s to %s",
     async (signal, target) => {
-      const { root, shim } = fakeAppImage(true, SLOW_SERVER);
+      const fake = fakeAppImage(true, SLOW_SERVER);
       const gate =
         target === "a launcher still starting the server"
-          ? holdAfterServerStart(root, shim)
+          ? holdLauncher(fake, (script, hold) =>
+              script.replace(SERVER_LINE, (line) => `${line}\n${hold}`),
+            )
           : undefined;
-      const child = NodeChildProcess.spawn(shim, [], {
-        detached: true,
-        env: { PATH: process.env.PATH },
-        stdio: ["pipe", "pipe", "ignore", "pipe"],
-      });
-      let mounter: number | undefined;
       try {
-        const stdout = lines(child.stdout!);
-        const events = lines(child.stdio[3] as NodeJS.ReadableStream);
-        const exited = new Promise<number | null>((resolve) => child.on("close", resolve));
-        await stdout.until((line) => line === "ready");
-        mounter = Number(NodeFS.readFileSync(NodePath.join(root, "mounter.pid"), "utf8"));
+        await withLauncher(fake, async ({ child, stdout, events, closed, mounter }) => {
+          await stdout.until((line) => line === "ready");
 
-        const grouped = target === "the process group" || target === "every process";
-        process.kill(grouped ? -child.pid! : child.pid!, signal);
-        if (target === "every process") process.kill(mounter, signal);
-        if (gate !== undefined) {
-          // The terminal sends Ctrl-C to the server itself, so the launcher forwards only this.
-          if (signal === "SIGINT") process.kill(child.pid!, "SIGTERM");
-          NodeFS.writeSync(gate, "\n");
-          // A launcher that exits here unmounts, and the server never hears of the stop.
-          const first = await events.until((line) => line === "stopping" || line === "unmounted");
-          expect(first).toBe("stopping");
-        }
-        // The shell runs pending traps in ascending signal number, and WINCH outnumbers TERM and
-        // HUP, so a mounter that also got the group signal unmounts before it answers this probe.
-        process.kill(mounter, "SIGWINCH");
-        const mount = await events.until((line) => line === "mounted" || line === "unmounted");
-        expect(mount).toBe("mounted");
+          const grouped = target === "the process group" || target === "every process";
+          process.kill(grouped ? -child.pid! : child.pid!, signal);
+          if (target === "every process") process.kill(mounter(), signal);
+          if (gate !== undefined) {
+            NodeFS.writeSync(gate, "\n");
+            // A launcher that exits here unmounts, and the server never hears of the stop.
+            const first = await events.until((line) => line === "stopping" || line === "unmounted");
+            expect(first).toBe("stopping");
+          }
+          // The shell runs pending traps in ascending signal number, and WINCH outnumbers TERM and
+          // HUP, so a mounter that also got the group signal unmounts before it answers this probe.
+          process.kill(mounter(), "SIGWINCH");
+          const mount = await events.until((line) => line === "mounted" || line === "unmounted");
+          expect(mount).toBe("mounted");
 
-        await events.until((line) => line === "stopping");
-        child.stdin!.end("go\n");
-        expect(await exited).toBe(7);
-        expect(events.seen.slice(-2)).toEqual(["stopped go", "unmounted"]);
+          await events.until((line) => line === "stopping");
+          child.stdin!.end("go\n");
+          expect(await closed).toBe(7);
+          expect(events.seen.slice(-2)).toEqual(["stopped go", "unmounted"]);
+        });
       } finally {
         if (gate !== undefined) NodeFS.closeSync(gate);
-        for (const pid of [-child.pid!, mounter]) {
-          if (pid === undefined) continue;
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {}
-        }
+      }
+    },
+  );
+
+  it.skipIf(!hasSetsid).each(EARLY_STOPS)(
+    "unmounts without starting the server after %s %s",
+    async (signal, _place, edit) => {
+      const fake = fakeAppImage(true, "#!/bin/sh\necho started >&3\nexit 3\n");
+      const gate = holdLauncher(fake, edit);
+      try {
+        await withLauncher(fake, async ({ child, events, exited, closed }) => {
+          await events.until((line) => line === "held");
+          process.kill(child.pid!, signal);
+          NodeFS.writeSync(gate, "\n");
+          // Not `closed`: a mounter left running would keep the pipes open.
+          expect(await exited).toBe(130);
+          await closed;
+          expect(events.seen).toEqual(["held", "unmounted"]);
+        });
+      } finally {
+        NodeFS.closeSync(gate);
+      }
+    },
+  );
+
+  // dash drops a signal that reaches a new background process before it has reset the traps it
+  // was forked with. The hold stands in for that moment: a signal sent into it is only reported.
+  it.skipIf(!hasSetsid).each([
+    ["SIGHUP", 129],
+    ["SIGINT", 143],
+    ["SIGTERM", 143],
+  ] as const)(
+    "stops a server that has not reset the launcher's traps when %s arrives",
+    async (signal, status) => {
+      const fake = fakeAppImage(true, "#!/bin/sh\nread go\nexit 5\n");
+      const gate = holdLauncher(fake, (script, hold) =>
+        script
+          .replace(/^trap '(.+)' (TERM|HUP|INT)$/gm, "trap '$1; echo trapped >&3' $2")
+          .replace(
+            SERVER_LINE,
+            (_line, server: string) =>
+              `{ trap 'echo deaf >&3' TERM HUP; ${hold}; trap - TERM HUP; ${server}; } <&9 9<&- &`,
+          ),
+      );
+      try {
+        await withLauncher(fake, async ({ child, events, closed }) => {
+          await events.until((line) => line === "held");
+          process.kill(child.pid!, signal);
+          await events.until((line) => line === "trapped");
+          NodeFS.writeSync(gate, "\n");
+          const outcome = await Promise.race([events.until((line) => line === "deaf"), closed]);
+          expect(outcome).toBe(status);
+          expect(events.seen.at(-1)).toBe("unmounted");
+        });
+      } finally {
+        NodeFS.closeSync(gate);
       }
     },
   );
