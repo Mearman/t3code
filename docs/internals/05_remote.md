@@ -73,6 +73,7 @@ through `/api/preview/tunnel` on the environment's own origin:
 - Tailscale supplies an endpoint for normal pairing; auth remains the environment's responsibility.
 - [SSH cleanup](../../packages/ssh/src/tunnel.ts) stops a remote server only if the launcher started
   it; a server discovered already running must survive client disconnect.
+- The desktop app attaches to a current server that already owns its T3 home (a service or `t3 serve`) instead of spawning a second one: it checks the ownership lock, the recorded owner, the environment ID, and the orchestration protocol, and gets its session from the bundled CLI. It never signals that server, and spawns its own only when the home is free and no [service launcher](../../apps/server/src/serviceLauncher.ts) holds its serving lock, so a restarting service is waited for rather than raced ([`DesktopHomeOwner`](../../apps/desktop/src/backend/DesktopHomeOwner.ts)).
 - Remote servers outlive client releases. Clients negotiate features via advertised capabilities
   rather than assuming version parity. Process replacement uses the
   [update protocol](./07_server-updates.md).
