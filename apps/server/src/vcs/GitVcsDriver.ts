@@ -1,6 +1,7 @@
 import * as NodeBuffer from "node:buffer";
 
 import * as Arr from "effect/Array";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
@@ -404,6 +405,14 @@ export const RepositoryHooks = Context.Reference<RepositoryHooksPolicy>("t3/vcs/
 /** Set by background discovery so its Git commands run in their own small lane, not the user's. */
 export const BackgroundGitWork = Context.Reference<boolean>("t3/vcs/BackgroundGitWork", {
   defaultValue: () => false,
+});
+
+/**
+ * The clock file timestamps follow. Waiting for the filesystem to stamp a later second takes real
+ * time, so this stays live under a test clock; tests replace it to observe or shorten the wait.
+ */
+export const FileTimestampClock = Context.Reference<Clock.Clock>("t3/vcs/FileTimestampClock", {
+  defaultValue: () => Clock.Clock.defaultValue(),
 });
 
 export class GitVcsDriver extends Context.Service<
