@@ -134,5 +134,6 @@
   "aa448fa4491a5d4f": "El servidor de T3 Code que usa este directorio de T3 (PID {pid}) solo escucha en {origin}, así que T3 Code no puede conectarse a él en este equipo. Reinícialo sin un host específico y después vuelve a abrir T3 Code.",
   "c5079de7e1299c60": "Otro entorno respondió en el puerto {port}, donde debería estar el servidor de T3 Code que usa este directorio de T3 (PID {pid}). Detén lo que esté escuchando en ese puerto y después vuelve a abrir T3 Code.",
   "32112d61c684d3a7": "El servidor de T3 Code que usa este directorio de T3 (PID {pid}, versión {version}) es demasiado antiguo para esta app. Actualízalo con `t3 update`, pasando `--base-dir` con este directorio de T3, y después vuelve a abrir T3 Code.",
-  "c008ff68ac1804b7": "El servidor de T3 Code que usa este directorio de T3 (PID {pid}, versión {version}) es más reciente que esta app. Actualiza T3 Code y después vuelve a abrirlo."
+  "c008ff68ac1804b7": "El servidor de T3 Code que usa este directorio de T3 (PID {pid}, versión {version}) es más reciente que esta app. Actualiza T3 Code y después vuelve a abrirlo.",
+  "57dfe53533b8a2a0": "T3 Code no pudo iniciar sesión en el servidor de T3 Code que usa este directorio de T3 (PID {pid}, versión {version}). Si esa versión no coincide con la de esta app, actualiza la más antigua y después vuelve a abrir T3 Code."
 }

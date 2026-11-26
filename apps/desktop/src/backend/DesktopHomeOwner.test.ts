@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
@@ -135,6 +136,7 @@ describe("DesktopHomeOwner.resolveHomeOwner", () => {
           pid: process.pid,
           ownerId: "owner-1",
           serviceManaged: true,
+          serverVersion: "1.2.3",
         },
       });
     }),
@@ -232,6 +234,27 @@ describe("DesktopHomeOwner.resolveStartupHomeOwner", () => {
         lock.close();
         yield* TestClock.adjust("1 second");
         assert.equal((yield* Fiber.join(released))._tag, "Free");
+      }),
+    ),
+  );
+
+  it.effect("names a lock holder that never answers once the quit grace has passed", () =>
+    withTempHome(({ userdata }) =>
+      Effect.gen(function* () {
+        yield* holdLock(`${userdata}/server-owner.sqlite`);
+        // Reads that complete at once, so every wait below runs on the test clock alone.
+        const owner = yield* Effect.forkChild(
+          DesktopHomeOwner.resolveStartupHomeOwner().pipe(
+            Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
+          ),
+        );
+        yield* TestClock.adjust("1 minute");
+        yield* TestClock.adjust("1 minute");
+        const state = yield* Fiber.join(owner);
+        assert.deepStrictEqual(state, {
+          _tag: "Unavailable",
+          unavailable: { reason: "not-answering", owner: Option.none() },
+        });
       }),
     ),
   );

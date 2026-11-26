@@ -134,5 +134,6 @@
   "aa448fa4491a5d4f": "T3 Code-servern som använder den här T3-hemkatalogen (PID {pid}) lyssnar bara på {origin}, så T3 Code kan inte ansluta till den på den här datorn. Starta om den utan en specifik värd och öppna sedan T3 Code igen.",
   "c5079de7e1299c60": "En annan miljö svarade på port {port}, där T3 Code-servern som använder den här T3-hemkatalogen (PID {pid}) borde finnas. Stoppa det som annars lyssnar på den porten och öppna sedan T3 Code igen.",
   "32112d61c684d3a7": "T3 Code-servern som använder den här T3-hemkatalogen (PID {pid}, version {version}) är för gammal för den här appen. Uppdatera den med `t3 update`, med `--base-dir` satt till den här T3-hemkatalogen, och öppna sedan T3 Code igen.",
-  "c008ff68ac1804b7": "T3 Code-servern som använder den här T3-hemkatalogen (PID {pid}, version {version}) är nyare än den här appen. Uppdatera T3 Code och öppna det sedan igen."
+  "c008ff68ac1804b7": "T3 Code-servern som använder den här T3-hemkatalogen (PID {pid}, version {version}) är nyare än den här appen. Uppdatera T3 Code och öppna det sedan igen.",
+  "57dfe53533b8a2a0": "T3 Code kunde inte logga in på T3 Code-servern som använder den här T3-hemkatalogen (PID {pid}, version {version}). Om den versionen skiljer sig från appens, uppdatera den äldre av dem och öppna sedan T3 Code igen."
 }

@@ -93,16 +93,20 @@ const attachedServer = (ownerId: string): DesktopBackendManager.AttachedServer =
   pid: 4321,
   ownerId,
   serviceManaged: true,
+  serverVersion: "1.2.3",
 });
 
 const attachConfig = (
   probe: Effect.Effect<DesktopBackendManager.AttachedServerProbe>,
+  ensureSession: Effect.Effect<DesktopBackendManager.AttachedSessionState> = Effect.succeed(
+    "ready",
+  ),
 ): DesktopBackendManager.DesktopBackendAttachConfig => ({
   _tag: "Attach",
   probe,
   server: Option.none(),
   bearerToken: Effect.succeed("attached-token"),
-  renewRejectedSession: Effect.succeed(false),
+  ensureSession: () => ensureSession,
 });
 
 const layerNoSpawn = Layer.succeed(
@@ -165,6 +169,7 @@ interface MakeInstanceInput {
   readonly onReady?: Effect.Effect<void>;
   readonly onShutdown?: Effect.Effect<void>;
   readonly onStateDirOwned?: Effect.Effect<void>;
+  readonly onSessionRenewed?: Effect.Effect<void>;
   readonly onMigrationProgress?: (
     progress: { current: number; total: number } | null,
   ) => Effect.Effect<void>;
@@ -229,6 +234,7 @@ function makeTestInstance(input: MakeInstanceInput) {
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
     ...(input.onShutdown ? { onShutdown: () => input.onShutdown! } : {}),
     ...(input.onStateDirOwned ? { onStateDirOwned: () => input.onStateDirOwned! } : {}),
+    ...(input.onSessionRenewed ? { onSessionRenewed: () => input.onSessionRenewed! } : {}),
     ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
     ...(input.onStartupFailure ? { onStartupFailure: input.onStartupFailure } : {}),
     ...(input.onMigrationProgress ? { onMigrationProgress: input.onMigrationProgress } : {}),
@@ -957,6 +963,66 @@ describe("DesktopBackendManager", () => {
       assert.isFalse(snapshot.restartScheduled);
       yield* TestClock.adjust(Duration.minutes(1));
       assert.equal(resolves, 1);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("is never ready on a server where no session can be issued, and stops there", () =>
+    Effect.gen(function* () {
+      let resolves = 0;
+      let issues = 0;
+      let readied = false;
+      const refused = yield* Deferred.make<void>();
+      const instance = yield* makeTestInstance({
+        configResolve: Effect.sync(() => {
+          resolves += 1;
+          return attachConfig(
+            Effect.succeed({ _tag: "Ready", server: attachedServer("owner-1") }),
+            Effect.sync(() => {
+              issues += 1;
+              return "refused" as const;
+            }),
+          );
+        }),
+        spawnerLayer: layerNoSpawn,
+        onReady: Effect.sync(() => {
+          readied = true;
+        }),
+        onStateDirOwned: Deferred.succeed(refused, undefined).pipe(Effect.asVoid),
+      });
+      yield* instance.start;
+      yield* Deferred.await(refused);
+      yield* TestClock.adjust(Duration.minutes(1));
+      assert.isFalse(readied);
+      assert.isFalse((yield* instance.snapshot).desiredRunning);
+      assert.equal(resolves, 1);
+      assert.equal(issues, 1);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("waits while the session is pending and reloads once it is renewed", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Queue.unbounded<DesktopBackendManager.AttachedSessionState>();
+      const events = yield* Queue.unbounded<"ready" | "renewed">();
+      const instance = yield* makeTestInstance({
+        configResolve: Effect.succeed(
+          attachConfig(
+            Effect.succeed({ _tag: "Ready", server: attachedServer("owner-1") }),
+            Queue.take(sessions),
+          ),
+        ),
+        spawnerLayer: layerNoSpawn,
+        onReady: Queue.offer(events, "ready").pipe(Effect.asVoid),
+        onSessionRenewed: Queue.offer(events, "renewed").pipe(Effect.asVoid),
+      });
+      yield* Queue.offer(sessions, "pending");
+      yield* instance.start;
+      yield* Queue.offer(sessions, "ready");
+      yield* TestClock.adjust(Duration.seconds(2));
+      assert.equal(yield* Queue.take(events), "ready");
+      yield* Queue.offer(sessions, "renewed");
+      yield* TestClock.adjust(Duration.seconds(2));
+      assert.equal(yield* Queue.take(events), "renewed");
+      assert.isTrue((yield* instance.snapshot).ready);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 

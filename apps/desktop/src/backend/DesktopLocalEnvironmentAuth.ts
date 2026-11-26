@@ -78,6 +78,13 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const instances = yield* pool.list;
         const primary = instances.find((instance) => instance.id === PRIMARY_LOCAL_ENVIRONMENT_ID);
+        // A spawned backend's token outlives its restarts, so it is handed out without waiting.
+        const cached = yield* Ref.get(tokenRef);
+        if (Option.isSome(cached)) {
+          const current = primary === undefined ? Option.none() : yield* primary.currentConfig;
+          if (Option.isNone(current) || current.value._tag === "Spawn") return cached.value;
+          yield* Ref.set(tokenRef, Option.none());
+        }
         if (primary === undefined || !(yield* primary.waitForReady(Duration.infinity))) {
           return yield* new DesktopLocalEnvironmentAuthBackendNotConfiguredError();
         }
@@ -93,10 +100,6 @@ export const make = Effect.gen(function* () {
               (cause) => new DesktopLocalEnvironmentAuthSessionBootstrapError({ cause }),
             ),
           );
-        }
-        const cached = yield* Ref.get(tokenRef);
-        if (Option.isSome(cached)) {
-          return cached.value;
         }
         // Secret-authenticated backends accept the current window token; the launch token may be stale.
         const secret = config.bootstrap.desktopBootstrapSecret;
