@@ -992,6 +992,8 @@ it("readThread and sendToThread reach threads in other projects", async () => {
       return parentRuns;
     },
     visibleTurnItems: [],
+    turnItems: [],
+    providerSessions: [],
     providerTurns: [],
     runtimeRequests: [],
     messages: [],
