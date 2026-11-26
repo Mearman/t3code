@@ -13,6 +13,7 @@ import {
   type ClaudeSettings,
   type CodexSettings,
   ProviderDriverKind,
+  type OrchestrationV2ProviderThread,
   type ProviderInstanceConfigMap,
   type ResolvedProviderInstanceEnvironment,
   ProviderInstanceId,
@@ -48,7 +49,12 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { parseClaudeProcessTable } from "../claudeSessions/ClaudeProcessTable.ts";
 import { ClaudeSessionRegistryEntry } from "../claudeSessions/ClaudeSessionRegistry.ts";
+import {
+  ClaudeSpawnedProcesses,
+  makeClaudeSpawnedProcesses,
+} from "../claudeSessions/ClaudeSpawnedProcesses.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
@@ -128,6 +134,37 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
   idleCompaction: "default",
   ...overrides,
 });
+
+const claudeProviderThread = (
+  providerInstanceId: ProviderInstanceId,
+  providerSessionId: ProviderSessionId,
+  appThreadId: ThreadId,
+  nativeId: string,
+  now: DateTime.Utc,
+): OrchestrationV2ProviderThread => {
+  const driver = ProviderDriverKind.make("claudeAgent");
+  return {
+    id: ProviderThreadId.make(`provider-thread:${nativeId}`),
+    driver,
+    providerInstanceId,
+    providerSessionId,
+    appThreadId,
+    ownerNodeId: null,
+    nativeThreadRef: { driver, nativeId, strength: "strong" },
+    nativeConversationHeadRef: null,
+    status: "idle",
+    firstRunOrdinal: null,
+    lastRunOrdinal: null,
+    handoffIds: [],
+    forkedFrom: null,
+    pendingBackgroundTasks: [],
+    contextUsage: null,
+    nativeMetadata: null,
+    goal: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+};
 
 const makeTildeProviderFixtures = Effect.fn(
   "ProviderInstanceRegistry.test.makeTildeProviderFixtures",
@@ -584,31 +621,16 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
           }),
         });
         const now = yield* DateTime.now;
-        const driver = ProviderDriverKind.make("claudeAgent");
 
         const refusal = yield* Effect.flip(
           runtime.resumeThread({
-            providerThread: {
-              id: ProviderThreadId.make("provider-thread:send-gate"),
-              driver,
-              providerInstanceId: claudeId,
+            providerThread: claudeProviderThread(
+              claudeId,
               providerSessionId,
-              appThreadId: threadId,
-              ownerNodeId: null,
-              nativeThreadRef: { driver, nativeId: "held-by-init", strength: "strong" },
-              nativeConversationHeadRef: null,
-              status: "idle",
-              firstRunOrdinal: null,
-              lastRunOrdinal: null,
-              handoffIds: [],
-              forkedFrom: null,
-              pendingBackgroundTasks: [],
-              contextUsage: null,
-              nativeMetadata: null,
-              goal: null,
-              createdAt: now,
-              updatedAt: now,
-            },
+              threadId,
+              "held-by-init",
+              now,
+            ),
           }),
         );
 
@@ -620,6 +642,79 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         expect(
           refusal._tag === "ProviderAdapterThreadInUseError" ? refusal.holderObserved : undefined,
         ).toBe(true);
+      }),
+    ).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live("counts a claude run under another Claude home's CLI as another writer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (yield* HostProcess.isWindows) return;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixtures = yield* makeTildeProviderFixtures();
+        const sessionsDir = path.join(fixtures.claudeHomePath, "sessions");
+        yield* fileSystem.makeDirectory(sessionsDir);
+        const procStart = "Thu Jan  1 00:00:00 2026";
+        // 101 is a CLI of another home, and its agent ran 102 against this one. 201 is this home's.
+        const processes = parseClaudeProcessTable(
+          [
+            `  ${process.pid}     1   100 ${procStart}`,
+            `  101   ${process.pid}   101 ${procStart}`,
+            `  102   101   101 ${procStart}`,
+            `  201   ${process.pid}   201 ${procStart}`,
+          ].join("\n"),
+        );
+        const spawned = makeClaudeSpawnedProcesses(Effect.succeed(processes), fileSystem.realPath);
+        spawned.register(101, path.join(fixtures.claudeHomePath, "other-home", "sessions"));
+        spawned.register(201, sessionsDir);
+        for (const [pid, sessionId] of [
+          [102, "nested"],
+          [201, "own"],
+        ] as const) {
+          yield* fileSystem.writeFileString(
+            path.join(sessionsDir, `${pid}.json`),
+            yield* encodeRegistryEntry({ pid, sessionId, cwd: "/", procStart }),
+          );
+        }
+        const claudeId = ProviderInstanceId.make("claude_two_homes");
+        const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
+          drivers: [ClaudeDriver],
+          configMap: {
+            [claudeId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              enabled: true,
+              config: makeClaudeConfig({
+                enabled: true,
+                binaryPath: fixtures.claudeBinaryPath,
+                homePath: fixtures.claudeHomePath,
+              }),
+            },
+          },
+        }).pipe(Effect.provideService(ClaudeSpawnedProcesses, spawned));
+        const claude = yield* registry.getInstance(claudeId);
+        const threadId = ThreadId.make("thread:two-homes");
+        const providerSessionId = ProviderSessionId.make("session:two-homes");
+        const runtime = yield* claude!.orchestrationAdapter.openSession({
+          threadId,
+          providerSessionId,
+          modelSelection: { instanceId: claudeId, model: "claude-opus-5" },
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: fixtures.claudeHomePath,
+          }),
+        });
+        const now = yield* DateTime.now;
+        const check = (nativeId: string) =>
+          runtime.checkNativeThreadFree!(
+            claudeProviderThread(claudeId, providerSessionId, threadId, nativeId, now),
+          );
+
+        yield* check("own");
+        const refusal = yield* Effect.flip(check("nested"));
+
+        expect(refusal.message).toContain("pid 102");
       }),
     ).pipe(Effect.provide(layerTest)),
   );

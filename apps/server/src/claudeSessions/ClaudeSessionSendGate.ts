@@ -51,7 +51,7 @@ const candidatesFor = (
 export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(function* (input: {
   readonly sessionsDir: string;
   readonly sessionId: string;
-  /** The CLIs the query runner spawned, read after each registry read so a new one counts. */
+  /** CLIs spawned to write to `sessionsDir`, read after each registry read to count new ones. */
   readonly ownRootPids: Effect.Effect<ReadonlyArray<number>>;
   readonly readProcesses: Effect.Effect<ReadonlyArray<ClaudeProcessRow>, ClaudeProcessTableError>;
   /** False where `procStart` cannot be matched to the process table, such as Windows. */

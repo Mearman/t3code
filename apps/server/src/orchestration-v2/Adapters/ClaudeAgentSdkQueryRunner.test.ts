@@ -687,7 +687,7 @@ function fakeClaudeCli(script: string): string {
   return cli;
 }
 
-const openFakeCli = (cli: string) =>
+const openFakeCli = (cli: string, env?: NodeJS.ProcessEnv) =>
   Effect.gen(function* () {
     const runner = yield* ClaudeAgentSdkQueryRunner;
     return yield* runner.open({
@@ -699,6 +699,7 @@ const openFakeCli = (cli: string) =>
         tools: [],
         permissionMode: "default",
         pathToClaudeCodeExecutable: cli,
+        ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
       },
     });
   });
@@ -725,18 +726,20 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
         const workerSpawn = vi.mocked(SpawnWorker.spawnPiped);
         workerSpawn.mockClear();
 
-        const session = yield* openFakeCli(cli);
+        const session = yield* openFakeCli(cli, { CLAUDE_CONFIG_DIR: dir });
         const pid = Number((yield* reported).trim());
         // A worker reports its child's pid in a later message than the child can write in.
         const worker = workerSpawn.mock.results[0]?.value;
         if (worker !== undefined && worker.pid === undefined) {
           yield* Effect.promise(() => new Promise((resolve) => worker.once("spawn", resolve)));
         }
-        const whileRunning = yield* spawned.pids;
+        const whileRunning = yield* spawned.pids(NodePath.join(dir, "sessions"));
+        const otherHome = yield* spawned.pids(NodePath.join(dir, "other", "sessions"));
         yield* session.close;
 
         assert.equal(workerSpawn.mock.calls.length, platform === "win32" ? 1 : 0);
         assert.include(whileRunning, pid);
+        assert.notInclude(otherHome, pid);
       }).pipe(
         Effect.provide(
           realQueryRunner.pipe(Layer.provide(Layer.succeed(HostProcess.Platform, platform))),

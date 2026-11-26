@@ -216,13 +216,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     );
     const spawnedProcesses = yield* ClaudeSpawnedProcesses;
     const platform = yield* HostProcess.Platform;
+    const sessionsDir = path.join(configDir, "sessions");
     const sendGatedAdapter = gateHeldClaudeSessions(
       orchestrationAdapter,
       (sessionId) =>
         probeClaudeSessionHold({
-          sessionsDir: path.join(configDir, "sessions"),
+          sessionsDir,
           sessionId,
-          ownRootPids: spawnedProcesses.pids,
+          ownRootPids: spawnedProcesses.pids(sessionsDir),
           readProcesses: spawnedProcesses.readProcesses,
           // Windows has no `ps lstart` to match `procStart` against; `startedAt` is checked instead.
           matchStartTime: platform !== "win32",
