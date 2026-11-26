@@ -417,6 +417,7 @@ const readClearFork = Effect.fn(function* (
               runs: sourceRuns,
               attempts: [],
               turnItems: sourceItems,
+              contextHandoffs: [],
             }) as never,
       ),
   };
