@@ -77,6 +77,53 @@ const forkRunnerLayer = layerQueryRunner.pipe(
   Layer.provide(Layer.succeed(ProviderEventLoggers, { native: undefined, canonical: undefined })),
 );
 
+it.effect("reads a subagent stored under the instance's own CLAUDE_CONFIG_DIR", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const configDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-subagent-" });
+      const projectDir = yield* writeClaudeSession(configDir);
+      const agentId = "a0123456789abcdef";
+      const subagents = path.join(projectDir, FORK_SESSION_ID, "subagents");
+      yield* fileSystem.makeDirectory(subagents, { recursive: true });
+      const subagentEntry = (uuid: string, parentUuid: string | null, message: unknown) => ({
+        ...sessionEntry(uuid, parentUuid, message),
+        isSidechain: true,
+        agentId,
+      });
+      yield* fileSystem.writeFileString(
+        path.join(subagents, `agent-${agentId}.jsonl`),
+        [
+          subagentEntry("bbbbbbbb-0000-4000-8000-000000000001", null, {
+            role: "user",
+            content: "look",
+          }),
+          subagentEntry(
+            "bbbbbbbb-0000-4000-8000-000000000002",
+            "bbbbbbbb-0000-4000-8000-000000000001",
+            { role: "assistant", model: "claude-test-model", content: [{ type: "text", text: "ok" }] },
+          ),
+        ]
+          .map((line) => JSON.stringify(line))
+          .join("\n"),
+      );
+      const runner = yield* ClaudeAgentSdkQueryRunner;
+
+      const model = yield* runner.subagentModel({
+        sessionId: FORK_SESSION_ID,
+        agentId,
+        dir: null,
+        environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+        threadId: ThreadId.make("thread-claude-subagent-home"),
+        providerSessionId: ProviderSessionId.make("provider-session-claude-subagent-home"),
+      });
+
+      assert.equal(model, "claude-test-model");
+    }).pipe(Effect.provide(forkRunnerLayer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
 it.effect("forks a session stored under the instance's own CLAUDE_CONFIG_DIR", () =>
   Effect.scoped(
     Effect.gen(function* () {
