@@ -21,6 +21,31 @@ describe("t3code/explicit-run-origin", () => {
   );
 
   rule.valid(
+    "allows a pick from a variable that says which runs it reads",
+    `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;
+     declare const projection: { runs: ReadonlyArray<{ ordinal: number; status: string }> };
+     const t3Runs = runsByOrigin(projection.runs, "t3");
+     export const latest = t3Runs.findLast((run) => run.status !== "queued");`,
+  );
+
+  rule.valid(
+    "allows a pick from a conditional of decided collections",
+    `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;
+     declare const projection: { runs: ReadonlyArray<{ ordinal: number }> };
+     declare const fresh: boolean;
+     const coveredRuns = fresh ? [] : runsByOrigin(projection.runs, "any");
+     export const last = coveredRuns.at(-1);`,
+  );
+
+  rule.invalid(
+    "reports a conditional that falls back to a bare run collection",
+    `declare const projection: { runs: ReadonlyArray<{ ordinal: number }> };
+     declare const fresh: boolean;
+     const coveredRuns = fresh ? [] : projection.runs;
+     export const last = coveredRuns.at(-1);`,
+  );
+
+  rule.valid(
     "allows comparing a run with a number, which picks no run",
     `declare const runs: ReadonlyArray<{ ordinal: number }>;
      declare const boundary: number;
@@ -98,6 +123,36 @@ describe("t3code/explicit-run-origin", () => {
        WHERE thread_id = \${threadId}
        ORDER BY ordinal DESC
        LIMIT 1
+     \`;`,
+  );
+
+  rule.valid(
+    "leaves a nested subquery's ordering to that subquery",
+    `declare const sql: (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
+     declare const threadId: string;
+     export const firstInputs = sql\`
+       SELECT recent_run.run_id FROM orchestration_v2_projection_runs AS recent_run
+       CROSS JOIN eligible AS start ON start.item_rowid = (
+         SELECT first_input.rowid FROM orchestration_v2_projection_turn_items AS first_input
+         WHERE first_input.run_id = recent_run.run_id
+         ORDER BY first_input.ordinal
+         LIMIT 1
+       )
+       WHERE recent_run.thread_id = \${threadId}
+     \`;`,
+  );
+
+  rule.invalid(
+    "reports a run pick nested inside a larger query",
+    `declare const sql: (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
+     export const shells = sql\`
+       SELECT t.thread_id FROM orchestration_v2_projection_threads t
+       LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = (
+         SELECT latest.run_id FROM orchestration_v2_projection_runs latest
+         WHERE latest.thread_id = t.thread_id
+         ORDER BY latest.ordinal DESC
+         LIMIT 1
+       )
      \`;`,
   );
 

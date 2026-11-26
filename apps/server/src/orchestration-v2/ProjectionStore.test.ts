@@ -697,7 +697,7 @@ it.effect("idle compaction filters keep the latest run, live work and the newest
       ["runs", "providerTurns", "runtimeRequests", "contextTransfers"],
       {
         runStatuses: ["preparing", "starting", "running", "rolled_back"],
-        includeLatestRun: true,
+        includeLatestRun: "any",
         providerTurnThreadIds: [selected],
         latestProviderTurnUsageOnly: true,
         runtimeRequestStatuses: ["pending"],
@@ -738,7 +738,7 @@ it.effect("idle compaction filters keep the latest run, live work and the newest
     for (const [filter, expected] of [
       [{ latestRunLimit: 2 }, [4, 5]],
       [{ latestRunLimit: 2, runStatuses: ["rolled_back"] as const }, [1, 4, 5]],
-      [{ includeLatestExecutedRun: true, runStatuses: ["rolled_back"] as const }, [1, 4]],
+      [{ includeLatestExecutedRun: "any", runStatuses: ["rolled_back"] as const }, [1, 4]],
     ] as const) {
       const traced = traceSqlStatements();
       const recent = yield* store
@@ -9466,6 +9466,56 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         runIds: [transcriptRun.id, transcriptRun.id, transcriptRun.id],
         shells: [external, external],
       });
+    }),
+  );
+
+  it.effect("keeps the latest run each origin reads when statuses exclude it", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("origin-latest");
+      const original = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      const t3Run: OrchestrationV2Run = {
+        ...original,
+        id: RunId.make("run:origin-latest:t3"),
+        ordinal: original.ordinal + 1,
+        userMessageId: MessageId.make("message:origin-latest:t3"),
+        status: "completed",
+        startedAt: DateTime.add(now, { minutes: 1 }),
+        completedAt: DateTime.add(now, { minutes: 2 }),
+      };
+      const transcriptRun: OrchestrationV2Run = {
+        ...t3Run,
+        id: RunId.make("run:origin-latest:transcript"),
+        ordinal: original.ordinal + 2,
+        userMessageId: MessageId.make("message:origin-latest:transcript"),
+        startedAt: DateTime.add(now, { minutes: 5 }),
+        completedAt: DateTime.add(now, { minutes: 6 }),
+        nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+      };
+      for (const run of [t3Run, transcriptRun]) {
+        yield* store.apply({
+          id: EventId.make(`event:origin-latest:${run.id}`),
+          type: "run.created",
+          threadId,
+          runId: run.id,
+          driver,
+          providerInstanceId,
+          occurredAt: now,
+          payload: run,
+        });
+      }
+      const kept = (filter: Parameters<typeof store.getThreadRecords>[2]) =>
+        store
+          .getThreadRecords(threadId, ["runs"], filter)
+          .pipe(Effect.map(({ runs }) => runs.map((run) => run.id)));
+
+      for (const option of ["includeLatestRun", "includeLatestExecutedRun"] as const) {
+        assert.deepEqual(yield* kept({ runStatuses: ["running"], [option]: "any" }), [
+          transcriptRun.id,
+        ]);
+        assert.deepEqual(yield* kept({ runStatuses: ["running"], [option]: "t3" }), [t3Run.id]);
+      }
     }),
   );
 

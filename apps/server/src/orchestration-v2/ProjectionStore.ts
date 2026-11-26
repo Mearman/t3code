@@ -20,6 +20,8 @@ import {
   latestRootProviderFailure,
   latestUnheldRun,
   runRanAfter,
+  type RunOrigin,
+  runsByOrigin,
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -404,12 +406,12 @@ export interface ProjectionRecordFilter {
   readonly runIds?: ReadonlyArray<RunId>;
   /** Without `includeLatestRun`, reads through a status index and sorts the matches, so keep it to statuses few runs hold. */
   readonly runStatuses?: ReadonlyArray<OrchestrationV2Run["status"]>;
-  /** Keeps the thread's highest-ordinal run even when `runStatuses` excludes it. */
-  readonly includeLatestRun?: true;
+  /** Keeps the highest-ordinal run of the runs this origin reads, even when `runStatuses` excludes it. */
+  readonly includeLatestRun?: RunOrigin;
   /** The thread's N highest-ordinal runs, plus any run `runStatuses` matches. Ignores `includeLatestRun`. */
   readonly latestRunLimit?: number;
-  /** Keeps the run `latestExecutedRun` picks even when `runStatuses` excludes it. Ignores `includeLatestRun`. */
-  readonly includeLatestExecutedRun?: true;
+  /** Keeps the run that ended last of the runs this origin reads, even when `runStatuses` excludes it. Ignores `includeLatestRun`. */
+  readonly includeLatestExecutedRun?: RunOrigin;
   readonly providerTurnThreadIds?: ReadonlyArray<ProviderThreadId>;
   /** Only the provider turn whose token usage was updated last. */
   readonly latestProviderTurnUsageOnly?: true;
@@ -1894,7 +1896,9 @@ export function threadShellFromProjection(
       )[0] ?? null;
   // T3 Code's own idle compactions stay out of the shell unless they fail, so thread lists,
   // notifications and the relay keep presenting the user's last turn.
-  const runs = projection.runs.filter((run) => !isSilentRunForShell(run, projection));
+  const runs = runsByOrigin(projection.runs, "any").filter(
+    (run) => !isSilentRunForShell(run, projection),
+  );
   const latestRun =
     usageLimitRunPresentedAsLatest(
       runs,
@@ -2396,6 +2400,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
   ProjectionStoreV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
+    // Says which runs a subquery that picks one run by order reads, as runsByOrigin does in code; it
+    // appends to the subquery's conditions. `alias` is null for a subquery that names no alias.
+    const runOriginSql = (alias: string | null, origin: RunOrigin) => {
+      if (origin === "any") return sql``;
+      const payload = sql.literal(alias === null ? "payload_json" : `${alias}.payload_json`);
+      return sql`AND json_extract(${payload}, '$.nativeOrigin') IS NULL`;
+    };
 
     // SQLite uses the partial conversation index of migration 082 only for this exact predicate.
     const CONVERSATION_INDEX_EXCLUDED_TYPES = sql.literal(
@@ -3655,6 +3667,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   -- The oldest live run is the one at work; queued runs follow it.
                   SELECT live.run_id FROM orchestration_v2_projection_runs AS live
                   WHERE live.thread_id = ${threadId}
+                    ${runOriginSql("live", "any")}
                     AND live.status IN ('queued','preparing','starting','running','waiting')
                     AND ${window.requiredRunId ?? null} IS NULL
                     AND NOT EXISTS (
@@ -4208,8 +4221,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           (window === undefined &&
             (matchesNothing(filter?.runIds) ||
               (matchesNothing(filter?.runStatuses) &&
-                filter?.includeLatestRun !== true &&
-                filter?.includeLatestExecutedRun !== true &&
+                filter?.includeLatestRun === undefined &&
+                filter?.includeLatestExecutedRun === undefined &&
                 filter?.latestRunLimit === undefined)))
             ? Effect.succeed([])
             : window === undefined
@@ -4217,7 +4230,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT payload_json
             FROM orchestration_v2_projection_runs
             WHERE ${threadColumn(
-              filter?.latestRunLimit === undefined && filter?.includeLatestExecutedRun !== true
+              filter?.latestRunLimit === undefined && filter?.includeLatestExecutedRun === undefined
                 ? filter?.runIds
                 : [],
             )} = ${threadId}
@@ -4243,13 +4256,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     ORDER BY ordinal ASC`
                   : filter?.runStatuses === undefined
                     ? sql`ORDER BY ordinal ASC`
-                    : filter.includeLatestRun !== true && filter.includeLatestExecutedRun !== true
-                      ? // `+ordinal` stops SQLite from walking every run in the (thread_id, ordinal)
-                        // index to skip a sort; a status index reads only matching runs.
-                        sql`AND status IN (SELECT value FROM json_each(${encodeIdList(filter.runStatuses)}))
-                    ORDER BY +ordinal ASC`
-                      : filter.includeLatestExecutedRun === true
-                        ? sql`AND run_id IN (
+                    : filter.includeLatestExecutedRun !== undefined
+                      ? sql`AND run_id IN (
                       SELECT run_id FROM orchestration_v2_projection_runs
                       WHERE thread_id = ${threadId}
                         AND status IN (SELECT value FROM json_each(${encodeIdList(filter.runStatuses)}))
@@ -4262,6 +4270,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                             status = 'cancelled'
                             AND json_extract(payload_json, '$.startedAt') IS NULL
                           )
+                          ${runOriginSql(null, filter.includeLatestExecutedRun)}
                         -- latestExecutedRun: the run that ended last (runRanAfter).
                         ORDER BY completed_at IS NULL DESC, completed_at DESC, ordinal DESC,
                           run_id DESC
@@ -4269,15 +4278,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       )
                     )
                     ORDER BY ordinal ASC`
-                        : sql`AND (status IN (SELECT value FROM json_each(${encodeIdList(filter.runStatuses)}))
+                      : filter.includeLatestRun !== undefined
+                        ? sql`AND (status IN (SELECT value FROM json_each(${encodeIdList(filter.runStatuses)}))
                     OR run_id = (
                       SELECT run_id FROM orchestration_v2_projection_runs
                       WHERE thread_id = ${threadId}
                         AND (status <> 'cancelled' OR json_extract(payload_json, '$.startedAt') IS NOT NULL)
+                        ${runOriginSql(null, filter.includeLatestRun)}
                       ORDER BY ordinal DESC
                       LIMIT 1
                     ))
                     ORDER BY ordinal ASC`
+                        : // `+ordinal` stops SQLite from walking every run in the (thread_id, ordinal)
+                          // index to skip a sort; a status index reads only matching runs.
+                          sql`AND status IN (SELECT value FROM json_each(${encodeIdList(filter.runStatuses)}))
+                    ORDER BY +ordinal ASC`
               }
           `
               : sql<PayloadRow>`
@@ -4297,6 +4312,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 OR run_id = (
                   SELECT run_id FROM orchestration_v2_projection_runs
                   WHERE thread_id = ${threadId}
+                    ${runOriginSql(null, "any")}
                     AND provider_thread_id IS NOT NULL
                     AND json_extract(payload_json, '$.startedAt') IS NOT NULL
                     AND ${latestTodoList?.plan_id ?? null} IS NOT NULL
@@ -4903,6 +4919,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     ) AS ordinal
                     FROM orchestration_v2_projection_runs AS run
                     WHERE run.thread_id = ${forkedFrom.threadId}
+                      ${runOriginSql("run", "any")}
                       AND run.ordinal <= (SELECT ordinal FROM fork_run)
                       AND EXISTS (
                         SELECT 1
@@ -5070,7 +5087,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT latest.run_id FROM orchestration_v2_projection_runs latest
             WHERE latest.thread_id = t.thread_id
               AND latest.status <> 'queued'
-              AND json_extract(latest.payload_json, '$.nativeOrigin') IS NULL
+              ${runOriginSql("latest", "t3")}
               AND NOT (
                 latest.status = 'cancelled'
                 AND json_extract(latest.payload_json, '$.startedAt') IS NULL
@@ -5262,6 +5279,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     -- The original task still waits for the latest unheld work.
                     (SELECT status FROM orchestration_v2_projection_runs
                      WHERE thread_id = child.thread_id
+                       ${runOriginSql(null, "t3")}
                        AND NOT (status = 'queued' AND json_extract(payload_json, '$.queueHeld') IS 1)
                      ORDER BY ordinal DESC LIMIT 1
                     ) IN ('completed', 'interrupted', 'failed', 'cancelled', 'rolled_back')
@@ -5743,6 +5761,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   OR run.run_id = (
                     SELECT latest.run_id FROM orchestration_v2_projection_runs AS latest
                     WHERE latest.thread_id = ${threadId}
+                      ${runOriginSql("latest", "t3")}
                     ORDER BY latest.ordinal DESC LIMIT 1
                   )
                   -- Retain the latest ended run for each provider thread with lost
@@ -5752,6 +5771,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     SELECT (
                       SELECT ended.run_id FROM orchestration_v2_projection_runs AS ended
                       WHERE ended.thread_id = ${threadId}
+                        ${runOriginSql("ended", "t3")}
                         AND ended.provider_thread_id = roster.provider_thread_id
                         AND ended.status NOT IN (
                           'queued', 'preparing', 'starting', 'running', 'waiting', 'rolled_back'
@@ -6271,6 +6291,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               const rows =
                 yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_runs
             WHERE thread_id = ${threadId} AND json_extract(payload_json, '$.activeAttemptId') IS ${providerTurn.runAttemptId}
+              ${runOriginSql(null, "any")}
             ORDER BY ordinal ASC LIMIT 1`;
               if (rows[0] !== undefined) run = yield* decodeRunPayload(rows[0].payload_json);
             }
@@ -6286,7 +6307,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             yield* requireThread(threadId);
             const rows =
               yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_runs
-          WHERE thread_id = ${threadId} AND status = 'running' ORDER BY ordinal ASC LIMIT 1`;
+          WHERE thread_id = ${threadId} AND status = 'running' ${runOriginSql(null, "t3")} ORDER BY ordinal ASC LIMIT 1`;
             const run =
               rows[0] === undefined ? undefined : yield* decodeRunPayload(rows[0].payload_json);
             if (run === undefined)
@@ -8455,6 +8476,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       SELECT candidate.run_id
       FROM orchestration_v2_projection_runs candidate
       WHERE candidate.thread_id = ${threadId}
+        ${runOriginSql("candidate", "any")}
         AND NOT (
           candidate.status = 'queued'
           AND json_extract(candidate.payload_json, '$.queueHeld') IS 1
@@ -8550,6 +8572,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 FROM orchestration_v2_projection_runs r
                   INDEXED BY orchestration_v2_projection_runs_thread_status_idx
                 WHERE r.thread_id = t.thread_id
+                  ${runOriginSql("r", "any")}
                   AND r.status IN ('preparing', 'starting', 'running', 'waiting')
                   AND NOT ${isSilentShellRun("r")}
                 ORDER BY r.ordinal DESC, r.run_id DESC
@@ -8565,6 +8588,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 FROM orchestration_v2_projection_runs r
                   INDEXED BY orchestration_v2_projection_runs_thread_status_idx
                 WHERE r.thread_id = t.thread_id
+                  ${runOriginSql("r", "any")}
                   AND r.status IN ('preparing', 'starting', 'running', 'waiting')
                   AND NOT ${isSilentShellRun("r")}
                 ORDER BY r.ordinal DESC, r.run_id DESC
@@ -8629,6 +8653,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 CROSS JOIN orchestration_v2_projection_turn_items secret
                   INDEXED BY orchestration_v2_projection_turn_items_thread_run_idx
                 WHERE r.thread_id = t.thread_id
+                  ${runOriginSql("r", "any")}
                   AND r.status IN ('preparing', 'starting', 'running', 'waiting')
                   AND secret.thread_id = t.thread_id AND secret.run_id = r.run_id
                   AND secret.type = 'secret_request' AND secret.status = 'waiting'
@@ -8676,6 +8701,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               FROM orchestration_v2_projection_runs r
                 INDEXED BY orchestration_v2_projection_runs_thread_status_idx
               WHERE r.thread_id = t.thread_id
+                ${runOriginSql("r", "any")}
                 AND r.status IN ('preparing', 'starting', 'running')
                 AND NOT ${isSilentShellRun("r")}
               ORDER BY r.ordinal DESC, r.run_id DESC
@@ -8688,7 +8714,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               FROM orchestration_v2_projection_runs candidate
               WHERE candidate.thread_id = t.thread_id
                 AND candidate.status <> 'queued'
-                AND json_extract(candidate.payload_json, '$.nativeOrigin') IS NULL
+                ${runOriginSql("candidate", "t3")}
                 AND NOT (
                   candidate.status = 'cancelled'
                   AND json_extract(candidate.payload_json, '$.startedAt') IS NULL
@@ -8995,6 +9021,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = (
               SELECT latest.run_id FROM orchestration_v2_projection_runs latest
               WHERE latest.thread_id = t.thread_id
+                ${runOriginSql("latest", "any")}
                 AND NOT ${isSilentShellRun("latest")}
               ORDER BY latest.ordinal DESC, latest.run_id DESC
               LIMIT 1

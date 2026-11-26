@@ -1,3 +1,4 @@
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import type { OrchestrationV2Subagent, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
@@ -51,7 +52,9 @@ export function deriveThreadTurnSubagents(
   );
   // Ordinal, not array position: a reordered queue can leave the projection's runs out of order.
   // Queued and never-started runs have not replaced anything yet.
-  const latestStartedRun = projection.runs.reduce<Projection["runs"][number] | null>(
+  const latestStartedRun = runsByOrigin(projection.runs, "any").reduce<
+    Projection["runs"][number] | null
+  >(
     (latest, run) =>
       run.startedAt !== null &&
       !rolledBackRunIds.has(run.id) &&

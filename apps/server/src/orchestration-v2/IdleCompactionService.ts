@@ -69,7 +69,8 @@ export const make = Effect.gen(function* () {
             // The latest run, active runs that hold background work, and rolled-back runs whose
             // items it ignores.
             runStatuses: ["preparing", "starting", "running", "rolled_back"],
-            includeLatestRun: true,
+            // A transcript run as the latest is what tells idle compaction to stand down.
+            includeLatestRun: "any",
             // Without an active provider thread there is no session to compact.
             providerThreadIds: activeProviderThreadIds,
             providerTurnThreadIds: activeProviderThreadIds,

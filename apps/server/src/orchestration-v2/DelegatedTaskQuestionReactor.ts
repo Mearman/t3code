@@ -14,6 +14,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { reportLabel } from "@t3tools/provider-core/server/notification";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 
 import { forkParked } from "../serverActivation.ts";
@@ -189,7 +190,7 @@ const make = Effect.gen(function* () {
       const { runs } = yield* projections.getThreadRecords(child.id, ["runs"]);
       const run =
         runs.find((run) => run.id === event.runId) ??
-        runs.toSorted((a, b) => b.ordinal - a.ordinal)[0];
+        runsByOrigin(runs, "t3").toSorted((a, b) => b.ordinal - a.ordinal)[0];
       const taskId =
         run?.delegatedTaskId ??
         (child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : undefined);

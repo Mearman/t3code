@@ -1,3 +1,4 @@
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -2168,11 +2169,11 @@ export const layerWithOptions = (
         function* (threadId: ThreadId) {
           const { thread, runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"], {
             runStatuses: [],
-            includeLatestRun: true,
+            includeLatestRun: "t3",
           });
           // Follow-up tasks name their run; the initial task is the node the child forked from.
           const taskId =
-            runs.at(-1)?.delegatedTaskId ??
+            runsByOrigin(runs, "t3").at(-1)?.delegatedTaskId ??
             (thread.forkedFrom?.type === "node" ? thread.forkedFrom.nodeId : undefined);
           const parentThreadId = thread.lineage.parentThreadId;
           if (parentThreadId === null || taskId === undefined) return undefined;

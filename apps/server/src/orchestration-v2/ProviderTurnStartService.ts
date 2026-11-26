@@ -1,4 +1,5 @@
 import { classifyCodexManagedError } from "../provider/CodexManagedErrors.ts";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
@@ -163,7 +164,8 @@ function unsettledStoppedProviderTurn(
   run: Pick<OrchestrationV2Run, "ordinal">,
   providerThread: Pick<OrchestrationV2ProviderThread, "id" | "nativeThreadRef">,
 ) {
-  const previous = projection.runs.reduce<OrchestrationV2Run | undefined>(
+  // Only T3 stops a turn; a transcript turn has no stopped provider turn to settle.
+  const previous = runsByOrigin(projection.runs, "t3").reduce<OrchestrationV2Run | undefined>(
     (latest, candidate) =>
       candidate.ordinal < run.ordinal &&
       candidate.providerThreadId === providerThread.id &&
@@ -809,7 +811,9 @@ export const layer: Layer.Layer<
             )
             .map((candidate) => [candidate.id, candidate]),
         );
-        const previousNativeRun = projection.runs.reduce<OrchestrationV2Run | undefined>(
+        const previousNativeRun = runsByOrigin(projection.runs, "any").reduce<
+          OrchestrationV2Run | undefined
+        >(
           (previous, candidate) =>
             candidate.ordinal < run.ordinal &&
             candidate.providerThreadId !== null &&
@@ -1275,7 +1279,8 @@ export const layer: Layer.Layer<
         const measuredContext = latestNativeContextUsage(projection, providerThread);
         const previousSelection =
           measuredContext?.modelSelection ??
-          projection.runs.findLast(
+          // The selection T3 last sent with; a transcript turn's selection is only reported.
+          runsByOrigin(projection.runs, "t3").findLast(
             (source) =>
               source.ordinal < run.ordinal &&
               source.startedAt !== null &&
@@ -1393,7 +1398,8 @@ export const layer: Layer.Layer<
           ...loadedProviderThread,
           contextUsage: handoffUsage,
         };
-        const missedRuns = projection.runs.filter(
+        // The provider ran a transcript turn itself, so it never missed one.
+        const missedRuns = runsByOrigin(projection.runs, "t3").filter(
           (source) =>
             source.ordinal < run.ordinal &&
             source.providerThreadId === providerThread.id &&
@@ -1520,7 +1526,7 @@ export const layer: Layer.Layer<
               ...history.filter((item) =>
                 item.runId === null
                   ? boundary === 0
-                  : projection.runs.some(
+                  : runsByOrigin(projection.runs, "any").some(
                       (source) =>
                         source.id === item.runId &&
                         source.ordinal >= boundary &&
@@ -1576,7 +1582,7 @@ export const layer: Layer.Layer<
             });
           }
           // The source may have started a turn after dispatch planned this fork.
-          const sourceBusy = sourceProjection.runs.some(
+          const sourceBusy = runsByOrigin(sourceProjection.runs, "t3").some(
             (candidate) => candidate.ordinal > sourceRun.ordinal && isActiveRun(candidate),
           );
           let nativeForkFailure: string | undefined;
@@ -1776,7 +1782,7 @@ export const layer: Layer.Layer<
               .filter(isDeliveredProviderTurn)
               .map((turn) => turn.runAttemptId),
           );
-          const previous = projection.runs.findLast(
+          const previous = runsByOrigin(projection.runs, "any").findLast(
             (source) =>
               source.providerThreadId === providerThread.id &&
               source.ordinal < run.ordinal &&
@@ -1977,7 +1983,7 @@ export const layer: Layer.Layer<
           return undefined;
         }
         const { handoff, transferId, createdAt } = yield* recoveryHandoff;
-        const previousRun = projection.runs.findLast(
+        const previousRun = runsByOrigin(projection.runs, "any").findLast(
           (candidate) =>
             candidate.providerThreadId === providerThread.id &&
             candidate.ordinal < run.ordinal &&
