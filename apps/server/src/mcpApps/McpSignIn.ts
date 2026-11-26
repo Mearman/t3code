@@ -35,23 +35,46 @@ export class McpSignIn extends Context.Service<
 
 const isSignInError = Schema.is(ProviderMcpSignInError);
 
-/** What a failed sign-in tells the user: why a held session refused it, else `detail`. */
-export function signInFailureDetail(cause: unknown, server: string, detail: string): string {
-  return Predicate.isTagged(cause, "ProviderAdapterThreadInUseError")
-    ? heldSessionRequestDetail(
-        Predicate.hasProperty(cause, "holderObserved") && cause.holderObserved === true,
-        `the sign-in to ${server}`,
-      )
-    : detail;
-}
+const fail = (server: string, detail: string) => new ProviderMcpSignInError({ server, detail });
+const stopped = (server: string) =>
+  fail(server, "The agent session has ended. Send a message, then sign in again.");
+
+/**
+ * The sign-in error a failure becomes: a sign-in error as is, a stopped session as such, a held
+ * session's refusal saying why, and anything else as `detail`, as adapter and lookup failures can
+ * echo URLs or tokens.
+ */
+export const toSignInError =
+  (input: Pick<ProviderMcpSignInStartInput, "threadId" | "server">, detail: string) =>
+  (cause: unknown): Effect.Effect<never, ProviderMcpSignInError> =>
+    isSignInError(cause)
+      ? Effect.fail(cause)
+      : Predicate.isTagged(cause, "ProviderAdapterSessionStoppedError")
+        ? Effect.fail(stopped(input.server))
+        : Effect.logWarning("mcp-sign-in.failed", {
+            threadId: input.threadId,
+            server: input.server,
+            cause: Predicate.hasProperty(cause, "_tag") ? cause._tag : "unknown",
+          }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                fail(
+                  input.server,
+                  Predicate.isTagged(cause, "ProviderAdapterThreadInUseError")
+                    ? heldSessionRequestDetail(
+                        Predicate.hasProperty(cause, "holderObserved") &&
+                          cause.holderObserved === true,
+                        `the sign-in to ${input.server}`,
+                      )
+                    : detail,
+                ),
+              ),
+            ),
+          );
 
 const make = Effect.gen(function* () {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-
-  const fail = (server: string, detail: string) => new ProviderMcpSignInError({ server, detail });
-  const stopped = (server: string) =>
-    fail(server, "The agent session has ended. Send a message, then sign in again.");
 
   const resolve = Effect.fn("McpSignIn.resolve")(function* (input: ProviderMcpSignInStartInput) {
     const projection = yield* threadManagement.getThreadRecords(input.threadId, [
@@ -70,22 +93,6 @@ const make = Effect.gen(function* () {
     }
     return { providerThread, mcpSignIn: runtime.mcpSignIn };
   });
-
-  /** Adapter and lookup failures can echo URLs or tokens, so callers see only a generic line. */
-  const toSignInError = (input: ProviderMcpSignInStartInput, detail: string) => (cause: unknown) =>
-    isSignInError(cause)
-      ? Effect.fail(cause)
-      : Predicate.isTagged(cause, "ProviderAdapterSessionStoppedError")
-        ? Effect.fail(stopped(input.server))
-        : Effect.logWarning("mcp-sign-in.failed", {
-            threadId: input.threadId,
-            server: input.server,
-            cause: Predicate.hasProperty(cause, "_tag") ? cause._tag : "unknown",
-          }).pipe(
-            Effect.andThen(
-              Effect.fail(fail(input.server, signInFailureDetail(cause, input.server, detail))),
-            ),
-          );
 
   const start = Effect.fn("McpSignIn.start")(
     function* (input: ProviderMcpSignInStartInput) {
