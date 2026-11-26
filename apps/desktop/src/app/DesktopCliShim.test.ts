@@ -41,7 +41,13 @@ const run = (shim: string, args: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
 const REPORTER =
   '#!/bin/sh\necho "node=$ELECTRON_RUN_AS_NODE cli=$T3CODE_CLI_PATH home=$T3CODE_HOME appimage=$APPIMAGE"\nprintf "%s\\n" "$@"\nexit 3\n';
 
-const fakeAppImage = (canMount = true, app = REPORTER) => {
+const MOUNT = {
+  ready: (image: string) => `echo '${image}'`,
+  fails: () => 'echo "Cannot mount AppImage"; exit 1',
+  pending: () => "echo pending >&3",
+};
+
+const fakeAppImage = (mount: keyof typeof MOUNT = "ready", app = REPORTER) => {
   const root = tempRoot();
   const image = NodePath.join(root, "image");
   writeExecutable(NodePath.join(image, "t3code"), app);
@@ -50,7 +56,9 @@ const fakeAppImage = (canMount = true, app = REPORTER) => {
     appImage,
     [
       "#!/bin/sh",
-      `if [ "$1" = --appimage-extract ]; then cp -R '${image}' squashfs-root; exit 0; fi`,
+      'if [ "$1" = --appimage-extract ]; then',
+      `  echo extracting 2>/dev/null >&3; cp -R '${image}' squashfs-root; exit 0`,
+      "fi",
       '[ "$1" = --appimage-mount ] || exit 9',
       '[ -n "$APPIMAGE_EXTRACT_AND_RUN" ] && exit 8',
       `echo $$ >'${root}/mounter.pid'`,
@@ -58,7 +66,7 @@ const fakeAppImage = (canMount = true, app = REPORTER) => {
       "trap 'echo unmounted >&3 2>/dev/null; exit 0' TERM HUP INT",
       "trap 'echo mounted >&3 2>/dev/null' WINCH",
       // After the traps: the launcher, and so the test's signals, can follow at once.
-      canMount ? `echo '${image}'` : 'echo "Cannot mount AppImage"; exit 1',
+      MOUNT[mount](image),
       "while :; do sleep 0.05; done",
       "",
     ].join("\n"),
@@ -86,19 +94,29 @@ const SERVER_LINE = /^(.*) <&9 9<&- &$/m;
 
 type Edit = (script: string, hold: string) => string;
 
-// Edits the launcher to stop at a chosen place until a line is written to the returned pipe. The
-// test holds both ends of the pipe, so neither side blocks if the other is gone.
+const editLauncher = (shim: string, edit: (script: string) => string) => {
+  const script = NodeFS.readFileSync(shim, "utf8");
+  const edited = edit(script);
+  expect(edited).not.toBe(script);
+  NodeFS.writeFileSync(shim, edited);
+};
+
+// A named pipe the test holds both ends of, so neither side blocks if the other is gone. A script
+// reading a line from it waits until the test writes one.
+const makeGate = (root: string, name = "gate") => {
+  const path = NodePath.join(root, name);
+  expect(NodeChildProcess.spawnSync("mkfifo", [path]).status).toBe(0);
+  return { fd: NodeFS.openSync(path, "r+"), wait: `head -n 1 '${path}' >/dev/null` };
+};
+
+// Edits the launcher to stop at a chosen place until a line is written to the returned pipe.
 const holdLauncher = (
   { root, shim }: { readonly root: string; readonly shim: string },
   edit: Edit,
 ) => {
-  const gate = NodePath.join(root, "gate");
-  expect(NodeChildProcess.spawnSync("mkfifo", [gate]).status).toBe(0);
-  const script = NodeFS.readFileSync(shim, "utf8");
-  const held = edit(script, `echo held >&3; head -n 1 '${gate}' >/dev/null`);
-  expect(held).not.toBe(script);
-  NodeFS.writeFileSync(shim, held);
-  return NodeFS.openSync(gate, "r+");
+  const gate = makeGate(root);
+  editLauncher(shim, (script) => edit(script, `echo held >&3; ${gate.wait}`));
+  return gate.fd;
 };
 
 const HOLDS: Record<string, Edit> = {
@@ -116,7 +134,11 @@ const HOLDS: Record<string, Edit> = {
     ),
 };
 
-const EARLY_STOPS = (["SIGHUP", "SIGINT", "SIGTERM"] as const).flatMap((signal) =>
+const STOP_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
+// The launcher runs under whichever shell is `/bin/sh`: dash on Debian, bash on others.
+const SHELLS = ["sh", "bash"] as const;
+
+const EARLY_STOPS = STOP_SIGNALS.flatMap((signal) =>
   Object.entries(HOLDS).map(([place, edit]): [NodeJS.Signals, string, Edit] => [
     signal,
     place,
@@ -153,15 +175,17 @@ const withLauncher = async (
     readonly child: NodeChildProcess.ChildProcess;
     readonly stdout: ReturnType<typeof lines>;
     readonly events: ReturnType<typeof lines>;
+    readonly errors: ReturnType<typeof lines>;
     readonly exited: Promise<number | null>;
     readonly closed: Promise<number | null>;
     readonly mounter: () => number;
   }) => Promise<void>,
+  env: NodeJS.ProcessEnv = {},
 ) => {
   const child = NodeChildProcess.spawn(shim, [], {
     detached: true,
-    env: { PATH: process.env.PATH },
-    stdio: ["pipe", "pipe", "ignore", "pipe"],
+    env: { PATH: process.env.PATH, ...env },
+    stdio: ["pipe", "pipe", "pipe", "pipe"],
   });
   const mounter = () => Number(NodeFS.readFileSync(NodePath.join(root, "mounter.pid"), "utf8"));
   try {
@@ -169,6 +193,7 @@ const withLauncher = async (
       child,
       stdout: lines(child.stdout!),
       events: lines(child.stdio[3] as NodeJS.ReadableStream),
+      errors: lines(child.stderr!),
       exited: new Promise((resolve) => child.on("exit", resolve)),
       // Also waits for everything that inherited the pipes, the mounter included.
       closed: new Promise((resolve) => child.on("close", resolve)),
@@ -199,7 +224,7 @@ describe("renderCliShim", () => {
   ] as const)(
     "keeps the AppImage mounted until the server exits after %s to %s",
     async (signal, target) => {
-      const fake = fakeAppImage(true, SLOW_SERVER);
+      const fake = fakeAppImage("ready", SLOW_SERVER);
       const gate =
         target === "a launcher still starting the server"
           ? holdLauncher(fake, (script, hold) =>
@@ -239,7 +264,7 @@ describe("renderCliShim", () => {
   it.skipIf(!hasSetsid).each(EARLY_STOPS)(
     "unmounts without starting the server after %s %s",
     async (signal, _place, edit) => {
-      const fake = fakeAppImage(true, "#!/bin/sh\necho started >&3\nexit 3\n");
+      const fake = fakeAppImage("ready", "#!/bin/sh\necho started >&3\nexit 3\n");
       const gate = holdLauncher(fake, edit);
       try {
         await withLauncher(fake, async ({ child, events, exited, closed }) => {
@@ -257,23 +282,206 @@ describe("renderCliShim", () => {
     },
   );
 
-  it.skipIf(!hasSetsid).each(["SIGHUP", "SIGINT", "SIGTERM"] as const)(
-    "exits as stopped, not as a broken image, after %s during extraction",
+  // A stop to the process group also kills the step the launcher is waiting for, so it fails.
+  it.skipIf(!hasSetsid).each(
+    STOP_SIGNALS.flatMap((signal) =>
+      [
+        { step: "creating its work directory", command: "mktemp -d" },
+        { step: "extracting the image", command: '"$app" --appimage-extract >/dev/null' },
+      ].map((failing) => ({ signal, ...failing })),
+    ),
+  )("exits as stopped after $signal while $step fails", async ({ signal, command }) => {
+    const fake = fakeAppImage("fails");
+    const gate = holdLauncher(fake, (script, hold) =>
+      script.replace(command, () => `{ ${hold}; false; }`),
+    );
+    try {
+      await withLauncher(fake, async ({ child, events, closed }) => {
+        await events.until((line) => line === "held");
+        process.kill(child.pid!, signal);
+        NodeFS.writeSync(gate, "\n");
+        expect(await closed).toBe(130);
+      });
+    } finally {
+      NodeFS.closeSync(gate);
+    }
+  });
+
+  it.skipIf(!hasSetsid).each(STOP_SIGNALS)(
+    "exits without extracting after %s while the mount is pending",
     async (signal) => {
-      const fake = fakeAppImage(false);
-      // A stop to the process group also kills the extraction, so the held one fails.
+      const fake = fakeAppImage("pending");
+      await withLauncher(fake, async ({ child, events, closed }) => {
+        await events.until((line) => line === "pending");
+        process.kill(child.pid!, signal);
+        expect(await closed).toBe(130);
+        expect(events.seen).toEqual(["pending", "unmounted"]);
+      });
+    },
+  );
+
+  it.skipIf(!hasSetsid).each(STOP_SIGNALS)(
+    "waits for a mounter that has not reset the launcher's traps before stopping it after %s",
+    async (signal) => {
+      const fake = fakeAppImage();
       const gate = holdLauncher(fake, (script, hold) =>
-        script.replace('"$app" --appimage-extract >/dev/null', `{ ${hold}; false; }`),
+        script
+          // Reports that the launcher is still waiting although it has noted the stop.
+          .replace(
+            'while [ ! -e "$1" ]',
+            () => 'while { [ -z "$stop" ] || echo waiting >&3; }; [ ! -e "$1" ]',
+          )
+          .replace(MOUNTER_LINE, (line) => line.replace("{ ", () => `{ ${hold}; `)),
       );
       try {
-        await withLauncher(fake, async ({ child, events, closed }) => {
+        await withLauncher(fake, async ({ child, events, exited, closed }) => {
           await events.until((line) => line === "held");
           process.kill(child.pid!, signal);
+          const first = await Promise.race([events.until((line) => line === "waiting"), exited]);
+          expect(first).toBe("waiting");
           NodeFS.writeSync(gate, "\n");
           expect(await closed).toBe(130);
         });
       } finally {
         NodeFS.closeSync(gate);
+      }
+    },
+  );
+
+  it.skipIf(!hasSetsid)("reads the mount path only once the mounter's output exists", async () => {
+    const fake = fakeAppImage();
+    const gate = holdLauncher(fake, (script, hold) =>
+      script
+        .replace("exec setsid", () => `${hold}; exec setsid`)
+        .replace('mount=$(head -n 1 "$work/mount")', (read) => `${read}; echo polled >&3`),
+    );
+    try {
+      await withLauncher(fake, async ({ events, errors, closed }) => {
+        await events.until((line) => line === "held");
+        await events.until((line) => line === "polled");
+        NodeFS.writeSync(gate, "\n");
+        expect(await closed).toBe(3);
+        expect(errors.seen).toEqual([]);
+      });
+    } finally {
+      NodeFS.closeSync(gate);
+    }
+  });
+
+  // A trapped signal ends `wait` early, and the server can exit before the launcher looks again.
+  it.skipIf(!hasSetsid).each(SHELLS)(
+    "exits with the server's status when an interrupted wait finds it gone, under %s",
+    async (shell) => {
+      const fake = fakeAppImage("ready", "#!/bin/sh\nexit 7\n");
+      editLauncher(fake.shim, (script) =>
+        script
+          .replace("#!/bin/sh", `#!/usr/bin/env ${shell}`)
+          // Stands in for the interrupted wait: the server is reaped, its status not yet read.
+          .replace(
+            /^wait "\$cli" \|\| status=\$\?$/m,
+            () => 'while kill -0 "$cli" 2>/dev/null; do sleep 0.01; done; status=130',
+          ),
+      );
+      await withLauncher(fake, async ({ closed }) => {
+        expect(await closed).toBe(7);
+      });
+    },
+  );
+
+  it.skipIf(!hasSetsid).each(SHELLS)(
+    "exits with the server's status after Ctrl-C and TERM while it starts, under %s",
+    async (shell) => {
+      const fake = fakeAppImage("ready", SLOW_SERVER);
+      const server = makeGate(fake.root, "server-gate");
+      const sender = NodePath.join(fake.root, "send-stops");
+      // TERM follows once the launcher is asleep again, having taken the Ctrl-C or blocked it.
+      writeExecutable(
+        sender,
+        [
+          "#!/bin/sh",
+          'state="/proc/$1/status"',
+          // Bit 1 of a signal mask, the last hex digit, is INT.
+          'int() { grep -q "^$1:.*[2367abef]\\$" "$state"; }',
+          'kill -INT "$1"',
+          'until grep -q "^State:.S" "$state" && { ! int ShdPnd || int SigBlk; }; do :; done',
+          'kill -TERM "$1"',
+          "",
+        ].join("\n"),
+      );
+      // Holds the server's process before it reports in, and sends both stops from inside the
+      // launcher's next sleep, which is then held too.
+      const gate = holdLauncher(fake, (script, hold) =>
+        script
+          .replace("#!/bin/sh", `#!/usr/bin/env ${shell}`)
+          .replace(': >"$work/cli-started"', (report) => `${server.wait}; ${report}`)
+          .replace(
+            'await_start "$work/cli-started"',
+            (wait) => `sleep() { '${sender}' $$; ${hold}; }\n${wait}`,
+          ),
+      );
+      try {
+        await withLauncher(fake, async ({ child, stdout, events, closed }) => {
+          await events.until((line) => line === "held");
+          NodeFS.writeSync(server.fd, "\n");
+          await stdout.until((line) => line === "ready");
+          NodeFS.writeSync(gate, "\n");
+          await events.until((line) => line === "stopping");
+          child.stdin!.end("go\n");
+          expect(await closed).toBe(7);
+        });
+      } finally {
+        NodeFS.closeSync(gate);
+        NodeFS.closeSync(server.fd);
+      }
+    },
+  );
+
+  it.skipIf(!hasSetsid).each(
+    STOP_SIGNALS.flatMap((signal) => [
+      { signal, when: "the server exits", early: false, status: 3 },
+      { signal, when: "a stop during startup", early: true, status: 130 },
+    ]),
+  )(
+    "removes the extracted image after $when although $signal arrives during the removal",
+    async ({ signal, early, status }) => {
+      const fake = fakeAppImage("fails");
+      const temporary = NodePath.join(fake.root, "tmp");
+      NodeFS.mkdirSync(temporary);
+      const shims = NodePath.join(fake.root, "shims");
+      const removal = makeGate(fake.root, "removal-gate");
+      // Holds `rm` with whatever signal handling it inherited from the launcher.
+      writeExecutable(
+        NodePath.join(shims, "rm"),
+        `#!/bin/sh\necho removing >&3\n${removal.wait}\nPATH='${process.env.PATH}' exec rm "$@"\n`,
+      );
+      const extraction = early
+        ? holdLauncher(fake, (script, hold) =>
+            script.replace(
+              '"$app" --appimage-extract >/dev/null',
+              (extract) => `{ ${extract}; ${hold}; }`,
+            ),
+          )
+        : undefined;
+      try {
+        await withLauncher(
+          fake,
+          async ({ child, events, closed }) => {
+            if (extraction !== undefined) {
+              await events.until((line) => line === "held");
+              process.kill(child.pid!, signal);
+              NodeFS.writeSync(extraction, "\n");
+            }
+            await events.until((line) => line === "removing");
+            process.kill(-child.pid!, signal);
+            NodeFS.writeSync(removal.fd, "\n");
+            expect(await closed).toBe(status);
+            expect(NodeFS.readdirSync(temporary)).toEqual([]);
+          },
+          { PATH: `${shims}:${process.env.PATH}`, TMPDIR: temporary },
+        );
+      } finally {
+        if (extraction !== undefined) NodeFS.closeSync(extraction);
+        NodeFS.closeSync(removal.fd);
       }
     },
   );
@@ -287,7 +495,7 @@ describe("renderCliShim", () => {
   ] as const)(
     "stops a server that has not reset the launcher's traps when %s arrives",
     async (signal, status) => {
-      const fake = fakeAppImage(true, "#!/bin/sh\nread go\nexit 5\n");
+      const fake = fakeAppImage("ready", "#!/bin/sh\nread go\nexit 5\n");
       const gate = holdLauncher(fake, (script, hold) =>
         script
           .replace(/^trap '(.+)' (TERM|HUP|INT)$/gm, "trap '$1; echo trapped >&3' $2")
@@ -314,7 +522,7 @@ describe("renderCliShim", () => {
   );
 
   it("extracts the AppImage where it cannot be mounted", () => {
-    const { shim } = fakeAppImage(false);
+    const { shim } = fakeAppImage("fails");
     const result = run(shim, ["--version"], { APPIMAGE_EXTRACT_AND_RUN: "1" });
     expect(result.status).toBe(3);
     expect(result.stdout).toMatch(
