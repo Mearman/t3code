@@ -101,6 +101,73 @@ function randomTranscript(seed: number, length: number): Array<Line | string> {
   return lines;
 }
 
+/**
+ * Transcripts in the shapes that broke the tracker before: a clock that only moves forward and
+ * often ties, parents far back (branches) and ahead (written late), meta lines and queued prompts
+ * at depth sharing a few prompt ids, and compactions with absent logical parents.
+ */
+function forwardTranscript(seed: number, length: number, mode: number): Array<Line | string> {
+  const next = random(seed);
+  const f = claudeTranscriptFixture();
+  const uuids = Array.from({ length }, (_, index) => `w${index.toString().padStart(3, "0")}`);
+  const parentFor = (index: number): string | null => {
+    const roll = next(100);
+    if (index === 0 || roll < 4) return null;
+    if (roll < 4 + ((mode & 1) === 1 ? 20 : 6)) return `gone-${next(4)}`;
+    if (roll < 40 && (mode & 2) === 2)
+      return uuids[Math.min(length - 1, index + 1 + next(8))] ?? null;
+    if (roll < 46) return uuids[next(index)] ?? null;
+    return uuids[index - 1] ?? null;
+  };
+  const lines: Array<Line | string> = [];
+  let clock = 0;
+  for (let index = 0; index < length; index++) {
+    const uuid = uuids[index] ?? "";
+    const parent = parentFor(index);
+    clock += next(10) < 3 ? 0 : 1;
+    const extra = { timestamp: f.iso((mode & 4) === 4 ? clock : next(length)) };
+    const promptId = `pid-${next(4)}`;
+    const tool = `t${next(3)}`;
+    const shape = next(20);
+    const line: Line =
+      shape <= 1
+        ? f.prompt(uuid, parent, `P${index}`, { ...extra, promptId })
+        : shape <= 3
+          ? f.meta(uuid, parent, promptId, "<task-notification>x</task-notification>", extra)
+          : shape === 4
+            ? f.queued(uuid, parent, "Q", extra)
+            : shape === 5
+              ? f.command(uuid, parent, "status", extra)
+              : shape <= 7
+                ? f.text(uuid, parent, "R", "end_turn", extra)
+                : shape === 8
+                  ? f.text(uuid, parent, "R", null, extra)
+                  : shape <= 10
+                    ? f.toolUse(uuid, parent, tool, "tool_use", extra)
+                    : shape <= 12
+                      ? f.result(uuid, parent, tool, { ...extra, promptId })
+                      : shape === 13
+                        ? f.interrupt(uuid, parent, extra)
+                        : shape === 14
+                          ? f.queued(uuid, parent, "Q", extra)
+                          : shape === 15
+                            ? f.duration(uuid, parent, 5, extra)
+                            : shape === 16
+                              ? f.boundary(uuid, next(2) === 0 ? parent : `gone-${next(4)}`, extra)
+                              : shape === 17
+                                ? f.summary(uuid, parent, { ...extra, promptId })
+                                : shape === 18
+                                  ? f.attachment(uuid, parent, extra)
+                                  : f.thinking(uuid, parent, extra);
+    lines.push(line);
+    if (next(30) === 1) {
+      const replayed = lines[next(lines.length)];
+      if (replayed !== undefined) lines.push(replayed);
+    }
+  }
+  return lines;
+}
+
 function permute<T>(lines: ReadonlyArray<T>, next: (bound: number) => number): Array<T> {
   const key = (line: T) =>
     typeof line === "object" && line !== null ? Reflect.get(line, "uuid") : undefined;
@@ -124,6 +191,7 @@ function permute<T>(lines: ReadonlyArray<T>, next: (bound: number) => number): A
 }
 
 const SEEDS = 150;
+const FORWARD_SEEDS = 200;
 
 describe("ClaudeTranscriptTurnTracker", () => {
   it("equals the definition after every append of random transcripts, in any order and grouping", () => {
@@ -145,6 +213,20 @@ describe("ClaudeTranscriptTurnTracker", () => {
           1 + next(6),
         ]);
       }
+    }
+  });
+
+  // Rewrite inspection 2 finding 1: this generator found the prompt-id class the one above missed.
+  it("equals the definition after every append of forward-clock transcripts", () => {
+    for (let seed = 1; seed <= FORWARD_SEEDS; seed++) {
+      const mode = seed % 8;
+      const lines = forwardTranscript(seed, 30 + (seed % 60), mode);
+      const next = random(seed * 31 + 7);
+      expectTrackerFollows(lines, `forward seed ${seed} mode ${mode}`);
+      expectTrackerFollows([...lines].reverse(), `forward seed ${seed} mode ${mode} reversed`);
+      expectTrackerFollows(permute(lines, next), `forward seed ${seed} mode ${mode} permuted`, [
+        1 + next(7),
+      ]);
     }
   });
 
