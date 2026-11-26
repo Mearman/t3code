@@ -225,17 +225,23 @@ const RUN_ID_KEY = /^(?:runId|runIds|\w+RunId|\w+RunIds)$/u;
 
 /**
  * Whether a `latestRunId` read picks or matches a run: compared with an id, or passed as a run id
- * (a `runId` or `*RunId` property, or an element of a `runIds` list).
+ * (a `runId` or `*RunId` property, or an element of a `runIds` list). The value is followed up
+ * through the nullable-id idioms, `x === null ? [] : [x]` and `x ?? undefined`, to where it lands.
  */
 function selectsRunById(read: Node): boolean {
+  const parentOf = (node: Node) => (node as { parent?: Node }).parent;
   let node: Node = read;
-  let parent = (node as { parent?: Node }).parent;
-  while (
-    parent !== undefined &&
-    (parent.type === "ChainExpression" || parent.type === "TSNonNullExpression")
-  ) {
+  let parent = parentOf(node);
+  while (parent !== undefined) {
+    const carries =
+      parent.type === "ChainExpression" ||
+      parent.type === "TSNonNullExpression" ||
+      parent.type === "ArrayExpression" ||
+      parent.type === "LogicalExpression" ||
+      (parent.type === "ConditionalExpression" && parent.test !== node);
+    if (!carries) break;
     node = parent;
-    parent = (node as { parent?: Node }).parent;
+    parent = parentOf(node);
   }
   if (parent === undefined) return false;
   if (
@@ -246,10 +252,8 @@ function selectsRunById(read: Node): boolean {
     const name = other.type === "Identifier" ? other.name : memberName(other);
     return name !== undefined && (name === "id" || RUN_ID_KEY.test(name));
   }
-  const property =
-    parent.type === "ArrayExpression" ? (parent as { parent?: Node }).parent : parent;
-  if (property?.type !== "Property" || property.key.type !== "Identifier") return false;
-  return property.key.name !== "latestRunId" && RUN_ID_KEY.test(property.key.name);
+  if (parent.type !== "Property" || parent.key.type !== "Identifier") return false;
+  return parent.key.name !== "latestRunId" && RUN_ID_KEY.test(parent.key.name);
 }
 
 export default defineRule({

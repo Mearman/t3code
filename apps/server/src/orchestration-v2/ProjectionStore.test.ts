@@ -9510,16 +9510,220 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           .getThreadRecords(threadId, ["runs"], filter)
           .pipe(Effect.map(({ runs }) => runs.map((run) => run.id)));
 
-      for (const option of [
-        "includeLatestRun",
-        "includeLatestExecutedRun",
-        "includePresentedRun",
-      ] as const) {
+      for (const option of ["includeLatestRun", "includeLatestExecutedRun"] as const) {
         assert.deepEqual(yield* kept({ runStatuses: ["running"], [option]: "any" }), [
           transcriptRun.id,
         ]);
         assert.deepEqual(yield* kept({ runStatuses: ["running"], [option]: "t3" }), [t3Run.id]);
       }
+    }),
+  );
+
+  it.effect.each([
+    "completed",
+    "queued behind it",
+    "held queue",
+    "usage limit with a queued follow-up",
+    "cancelled before start, outlived",
+    "idle compaction after it",
+    "running",
+  ] as const)("presents one run for %s, the same in both shells and the shared selector", (state) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const minutes = (count: number) => DateTime.add(now, { minutes: count });
+      const threadId = ThreadId.make(`thread:presented:${state.replaceAll(" ", "-")}`);
+      yield* store.apply({
+        id: EventId.make(`event:${threadId}:created`),
+        type: "thread.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project:presented"),
+          title: "Presented run",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      const run = (ordinal: number, fields: Partial<OrchestrationV2Run>): OrchestrationV2Run => ({
+        id: RunId.make(`${threadId}:run:${ordinal}`),
+        threadId,
+        ordinal,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make(`${threadId}:message:${ordinal}`),
+        rootNodeId: NodeId.make(`${threadId}:node:${ordinal}`),
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: minutes(ordinal * 10),
+        startedAt: minutes(ordinal * 10),
+        completedAt: minutes(ordinal * 10 + 5),
+        checkpointId: null,
+        contextHandoffId: null,
+        ...fields,
+      });
+      const putRun = (payload: OrchestrationV2Run) =>
+        store.apply({
+          id: EventId.make(`event:${payload.id}`),
+          type: "run.created",
+          threadId,
+          runId: payload.id,
+          driver,
+          providerInstanceId,
+          occurredAt: now,
+          payload,
+        });
+      const putMessage = (
+        forRun: OrchestrationV2Run,
+        text: string,
+        extra: { readonly idleCompaction?: "beforeCacheExpires" } = {},
+      ) =>
+        store.apply({
+          id: EventId.make(`event:${forRun.userMessageId}`),
+          type: "message.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: forRun.userMessageId,
+            threadId,
+            runId: forRun.id,
+            nodeId: forRun.rootNodeId,
+            role: "user",
+            text,
+            attachments: [],
+            streaming: false,
+            createdBy: "user",
+            creationSource: "web",
+            createdAt: forRun.requestedAt,
+            updatedAt: forRun.requestedAt,
+            ...extra,
+          },
+        });
+      const first = run(1, {});
+      const runs: Array<OrchestrationV2Run> = [first];
+      switch (state) {
+        case "completed":
+          break;
+        case "queued behind it":
+          runs.push(run(2, { status: "queued", startedAt: null, completedAt: null }));
+          break;
+        case "held queue":
+          runs.push(
+            run(2, { status: "queued", queueHeld: true, startedAt: null, completedAt: null }),
+          );
+          break;
+        case "usage limit with a queued follow-up":
+          runs[0] = { ...first, status: "failed" };
+          runs.push(run(2, { status: "queued", startedAt: null, completedAt: null }));
+          break;
+        case "cancelled before start, outlived":
+          runs.push(run(2, { status: "cancelled", startedAt: null, completedAt: minutes(2) }));
+          break;
+        case "idle compaction after it":
+          runs.push(run(2, {}));
+          break;
+        case "running":
+          runs.push(run(2, { status: "running", completedAt: null }));
+          break;
+      }
+      for (const entry of runs) yield* putRun(entry);
+      for (const entry of runs) {
+        yield* putMessage(
+          entry,
+          state === "idle compaction after it" && entry.ordinal === 2 ? "/compact" : "Work on it",
+          state === "idle compaction after it" && entry.ordinal === 2
+            ? { idleCompaction: "beforeCacheExpires" }
+            : {},
+        );
+      }
+      if (state === "usage limit with a queued follow-up") {
+        yield* store.apply({
+          id: EventId.make(`event:${threadId}:limit`),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`${threadId}:limit`),
+            threadId,
+            runId: first.id,
+            nodeId: first.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 2,
+            status: "failed",
+            title: "Usage limit reached",
+            startedAt: first.completedAt,
+            completedAt: first.completedAt,
+            updatedAt: first.completedAt!,
+            type: "error",
+            failure: {
+              class: "usage_limit",
+              message: "Plan limit reached.",
+              resetAt: "2099-01-01T00:00:00.000Z",
+              code: "usageLimitExceeded",
+              retryable: null,
+            },
+          },
+        });
+      }
+      const presented = Effect.gen(function* () {
+        const projection = yield* store.getThreadProjection(threadId);
+        const records = yield* store.getThreadRecords(
+          threadId,
+          ProjectionStore.PRESENTED_RUN_RECORD_FIELDS,
+          ProjectionStore.PRESENTED_RUN_RECORD_FILTER,
+        );
+        return {
+          sqlShell: (yield* store.getShellSnapshot()).threads.find((row) => row.id === threadId)!
+            .latestRunId,
+          memoryShell: ProjectionStore.threadShellFromProjection(projection).latestRunId,
+          any: ProjectionStore.presentedShellRun(records, "any")?.id ?? null,
+          t3: ProjectionStore.presentedShellRun(records, "t3")?.id ?? null,
+        };
+      });
+      const base = yield* presented;
+      // With no transcript runs, every reading presents the same run.
+      assert.deepEqual(base, {
+        sqlShell: base.any,
+        memoryShell: base.any,
+        any: base.any,
+        t3: base.any,
+      });
+      if (state === "usage limit with a queued follow-up") assert.equal(base.any, first.id);
+
+      // A turn the session ran outside T3: the shells present it, T3 still reads its own run.
+      const transcriptRun = run(9, {
+        nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+      });
+      yield* putRun(transcriptRun);
+      yield* putMessage(transcriptRun, "From the terminal");
+      const after = yield* presented;
+      assert.deepEqual(after, {
+        sqlShell: transcriptRun.id,
+        memoryShell: transcriptRun.id,
+        any: transcriptRun.id,
+        t3: base.t3,
+      });
     }),
   );
 

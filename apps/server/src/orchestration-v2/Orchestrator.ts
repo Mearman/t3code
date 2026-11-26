@@ -190,6 +190,9 @@ import {
 import {
   applyToProjection,
   emptyProjection,
+  PRESENTED_RUN_RECORD_FIELDS,
+  PRESENTED_RUN_RECORD_FILTER,
+  presentedShellRun,
   threadShellFromProjection,
   ProjectionStoreV2,
   type ProjectionRecordField,
@@ -10131,11 +10134,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ) {
         return false;
       }
-      const { runs } = yield* projectionStore.getThreadRecords(run.threadId, ["runs"], {
-        runStatuses: [],
-        includePresentedRun: "t3",
-      });
-      return runs[0]?.id === run.id;
+      const records = yield* projectionStore.getThreadRecords(
+        run.threadId,
+        PRESENTED_RUN_RECORD_FIELDS,
+        PRESENTED_RUN_RECORD_FILTER,
+      );
+      return presentedShellRun(records, "t3")?.id === run.id;
     },
     (effect, run) =>
       effect.pipe(
