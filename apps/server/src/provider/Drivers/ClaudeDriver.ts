@@ -14,6 +14,11 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
+import { readClaudeProcessTable } from "../../claudeSessions/ClaudeProcessTable.ts";
+import {
+  gateHeldClaudeSessions,
+  probeClaudeSessionHold,
+} from "../../claudeSessions/ClaudeSessionSendGate.ts";
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -207,6 +212,24 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           }),
       ),
     );
+    const readProcesses = readClaudeProcessTable().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    // A registry entry's `procStart` can only be matched against `ps`, which Windows lacks.
+    const sendGatedAdapter =
+      (yield* HostProcess.Platform) === "win32"
+        ? orchestrationAdapter
+        : gateHeldClaudeSessions(orchestrationAdapter, (sessionId) =>
+            probeClaudeSessionHold({
+              sessionsDir: path.join(configDir, "sessions"),
+              sessionId,
+              ownRootPids: [process.pid],
+              readProcesses,
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            ),
+          );
     const textGeneration = yield* makeClaudeTextGeneration(
       effectiveConfig,
       processEnv,
@@ -460,7 +483,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
         ),
-      orchestrationAdapter,
+      orchestrationAdapter: sendGatedAdapter,
       textGeneration,
       consumeResetCredit,
     } satisfies ProviderInstance;
