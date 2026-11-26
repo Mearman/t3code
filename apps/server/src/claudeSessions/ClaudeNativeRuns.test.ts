@@ -33,6 +33,7 @@ import {
   type StoredNativeItem,
 } from "./ClaudeNativeRuns.ts";
 import {
+  MAX_NATIVE_RUN_ORDINAL,
   MAX_RUN_ORDINAL,
   TURN_ITEM_POSITIONS_PER_RUN,
 } from "../orchestration-v2/TurnItemPositionStore.ts";
@@ -595,6 +596,23 @@ describe("claudeNativeOrdinals", () => {
 });
 
 describe("claudeNativeOrdinals at the far end of time", () => {
+  it("fits far-future turns below the native ceiling when the values under it are taken", () => {
+    const year2300 = DateTime.toEpochMillis(DateTime.makeUnsafe("2300-01-01T00:00:00.000Z"));
+    const turns = ["a", "b", "c"].map((id) => ({ id, startMs: year2300 }));
+    // T3 Code's runs hold the highest native slots, so each turn passes over them.
+    const taken = new Set([
+      MAX_NATIVE_RUN_ORDINAL,
+      MAX_NATIVE_RUN_ORDINAL - 1,
+      MAX_NATIVE_RUN_ORDINAL - 2,
+    ]);
+    const values = [...claudeNativeOrdinals(turns, taken).values()];
+    expect(values).toEqual(values.toSorted((left, right) => left - right));
+    for (const ordinal of values) {
+      expect(ordinal).toBeLessThanOrEqual(MAX_NATIVE_RUN_ORDINAL);
+      expect(taken.has(ordinal)).toBe(false);
+    }
+  });
+
   it("keeps every item position of a far-future turn a safe integer, and the order", () => {
     const year2300 = DateTime.toEpochMillis(DateTime.makeUnsafe("2300-01-01T00:00:00.000Z"));
     const ordinals = claudeNativeOrdinals(

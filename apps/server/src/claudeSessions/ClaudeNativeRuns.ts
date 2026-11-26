@@ -25,7 +25,7 @@ import {
   fileNameFromClaudeTool,
 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import {
-  MAX_RUN_ORDINAL,
+  MAX_NATIVE_RUN_ORDINAL,
   TURN_ITEM_POSITIONS_PER_RUN,
 } from "../orchestration-v2/TurnItemPositionStore.ts";
 import { field } from "../orchestration-v2/unknownField.ts";
@@ -143,8 +143,8 @@ export function claudeNativeOrdinals(
 ): ReadonlyMap<string, number> {
   const ordinals = new Map<string, number>();
   let previous = 0;
-  // A far-future start is clamped so every turn after it still has a safe ordinal below MAX_RUN_ORDINAL.
-  const latestStart = MAX_RUN_ORDINAL - turns.length - taken.size;
+  // A far-future start is clamped so every turn after it, passing over every taken value, still fits below MAX_NATIVE_RUN_ORDINAL.
+  const latestStart = MAX_NATIVE_RUN_ORDINAL - turns.length - taken.size;
   for (const turn of turns) {
     const start = Number.isNaN(turn.startMs)
       ? 0
