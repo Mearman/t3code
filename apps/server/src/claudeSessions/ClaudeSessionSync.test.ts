@@ -162,7 +162,7 @@ describe("ClaudeSessionSync", () => {
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
           const projections = yield* ProjectionStore.ProjectionStoreV2;
-          yield* sync.sweep;
+          expect(yield* sync.sweep).toEqual([]);
 
           const thread = yield* projections.findThread(claudeThreadId);
           expect(thread).toMatchObject({ projectId, historyOrigin: "native", deletedAt: null });
@@ -197,7 +197,7 @@ describe("ClaudeSessionSync", () => {
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
           const state = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
-          yield* sync.sweep;
+          expect(yield* sync.sweep).toEqual([]);
           expect(yield* nativeRuns(claudeThreadId)).toEqual([[1, "completed", "p1"]]);
 
           yield* append(home, secondTurn);
@@ -238,7 +238,7 @@ describe("ClaudeSessionSync", () => {
         const file = yield* append(home, firstTurn);
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
-          yield* sync.sweep;
+          expect(yield* sync.sweep).toEqual([]);
           yield* sync.followFile(
             path.join(linked, "projects", "-work-project", `${SESSION}.jsonl`),
           );
@@ -259,7 +259,7 @@ describe("ClaudeSessionSync", () => {
         yield* Effect.gen(function* () {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
           const t3ThreadId = yield* seedT3Thread({ promptUuids: ["prompt-1"] });
-          yield* sync.sweep;
+          expect(yield* sync.sweep).toEqual([]);
 
           // The session's thread is T3 Code's own; the terminal's turn joins it, its own does not.
           expect(yield* count("orchestration_v2_projection_threads")).toBe(1);
@@ -279,7 +279,7 @@ describe("ClaudeSessionSync", () => {
           const projections = yield* ProjectionStore.ProjectionStoreV2;
           const sink = yield* EventSink.EventSinkV2;
           const ids = yield* IdAllocator.IdAllocatorV2;
-          yield* sync.sweep;
+          expect(yield* sync.sweep).toEqual([]);
           const thread = yield* projections.getThread(claudeThreadId);
           const now = yield* DateTime.now;
           yield* sink.write({
@@ -296,7 +296,7 @@ describe("ClaudeSessionSync", () => {
 
           yield* append(home, secondTurn);
           yield* sync.followFile(file);
-          yield* sync.sweep;
+          expect(yield* sync.sweep).toEqual([]);
 
           expect(yield* nativeRuns(claudeThreadId)).toEqual([[1, "completed", "p1"]]);
           const state = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;

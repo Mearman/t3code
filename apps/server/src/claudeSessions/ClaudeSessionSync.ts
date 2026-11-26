@@ -121,6 +121,9 @@ const decodePromptUuids = Schema.decodeUnknownOption(
 const decodeJsonLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 
+const mtimeMsOf = (info: FileSystem.File.Info) =>
+  Option.match(info.mtime, { onNone: () => 0, onSome: (mtime) => Math.floor(mtime.getTime()) });
+
 // A replaced file keeps its path but not its inode; Windows reports no inode, so the path stands in.
 const fileIdentityOf = (info: FileSystem.File.Info, filePath: string) =>
   Option.match(info.ino, {
@@ -135,8 +138,10 @@ export class ClaudeSessionSync extends Context.Service<
   {
     /** Runs discovery, live follow, the periodic sweep and the background fill while the setting is on. */
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
-    /** One sweep of every configured store: an entry per session, full history where it is due. */
-    readonly sweep: Effect.Effect<void, ClaudeSessionSyncError>;
+    /**
+     * One sweep of every configured store: an entry per session, full history where it is due. A session that fails is skipped and returned, so the rest still sync.
+     */
+    readonly sweep: Effect.Effect<ReadonlyArray<ClaudeSessionSyncError>, ClaudeSessionSyncError>;
     /** Reads what was appended to one transcript, as a file watch does. */
     readonly followFile: (filePath: string) => Effect.Effect<void, ClaudeSessionSyncError>;
     /** Reads the full history of a session T3 Code holds only an entry for. */
@@ -144,9 +149,9 @@ export class ClaudeSessionSync extends Context.Service<
     /** Hydrates the newest session that has only an entry; false once none is left. */
     readonly fillOne: Effect.Effect<boolean, ClaudeSessionSyncError>;
   }
->()("t3/claudeSessions/ClaudeSessionSync/ClaudeSessionSync") {}
+>()("t3/claudeSessions/ClaudeSessionSync") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const settingsService = yield* ServerSettingsModule.ServerSettingsService;
   const eventSink = yield* EventSink.EventSinkV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -174,47 +179,53 @@ export const make = Effect.gen(function* () {
       cause,
     });
 
-  const resolveStores = Effect.fn("ClaudeSessionSync.resolveStores")(function* (
-    settings: ServerSettings,
-  ) {
-    const instances = Object.entries(settings.providerInstances)
-      .filter(([, instance]) => instance.driver === CLAUDE_PROVIDER)
-      .map(([id, config]) => ({ id: ProviderInstanceId.make(id), config }));
-    if (!Object.hasOwn(settings.providerInstances, CLAUDE_PROVIDER)) {
-      instances.unshift({
-        id: ProviderInstanceId.make(CLAUDE_PROVIDER),
-        config: { driver: CLAUDE_PROVIDER },
+  const resolveStores = Effect.fn("ClaudeSessionSync.resolveStores")(
+    function* (settings: ServerSettings) {
+      const instances = Object.entries(settings.providerInstances)
+        .filter(([, instance]) => instance.driver === CLAUDE_PROVIDER)
+        .map(([id, config]) => ({ id: ProviderInstanceId.make(id), config }));
+      if (!Object.hasOwn(settings.providerInstances, CLAUDE_PROVIDER)) {
+        instances.unshift({
+          id: ProviderInstanceId.make(CLAUDE_PROVIDER),
+          config: { driver: CLAUDE_PROVIDER },
+        });
+      }
+      const homes: Array<{ readonly home: string; readonly instanceId: ProviderInstanceId }> = [];
+      for (const { id, config } of instances) {
+        if (!resolveProviderInstanceEnabled(config)) continue;
+        const decoded = decodeClaudeSettings(config.config ?? {});
+        if (Option.isNone(decoded)) continue;
+        const environment = yield* mergeProviderInstanceEnvironment(
+          config.environment,
+          hostEnvironment,
+        );
+        homes.push({
+          home: yield* resolveClaudeHomePath(decoded.value, environment),
+          instanceId: id,
+        });
+      }
+      const stores = yield* resolveClaudeSessionStores(homes.map(({ home }) => home));
+      return stores.flatMap((store): Array<SyncStore> => {
+        const owner = homes.find(({ home }) => home === store.homes[0]);
+        return owner === undefined
+          ? []
+          : [
+              {
+                key: `${store.projectsDir}\0${store.sessionsDir}`,
+                projectsDir: store.projectsDir,
+                sessionsDir: store.sessionsDir,
+                providerInstanceId: owner.instanceId,
+              },
+            ];
       });
-    }
-    const homes: Array<{ readonly home: string; readonly instanceId: ProviderInstanceId }> = [];
-    for (const { id, config } of instances) {
-      if (!resolveProviderInstanceEnabled(config)) continue;
-      const decoded = decodeClaudeSettings(config.config ?? {});
-      if (Option.isNone(decoded)) continue;
-      const environment = yield* mergeProviderInstanceEnvironment(
-        config.environment,
-        hostEnvironment,
-      );
-      homes.push({
-        home: yield* resolveClaudeHomePath(decoded.value, environment),
-        instanceId: id,
-      });
-    }
-    const stores = yield* resolveClaudeSessionStores(homes.map(({ home }) => home));
-    return stores.flatMap((store): Array<SyncStore> => {
-      const owner = homes.find(({ home }) => home === store.homes[0]);
-      return owner === undefined
-        ? []
-        : [
-            {
-              key: `${store.projectsDir}\0${store.sessionsDir}`,
-              projectsDir: store.projectsDir,
-              sessionsDir: store.sessionsDir,
-              providerInstanceId: owner.instanceId,
-            },
-          ];
-    });
-  });
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError(fail("resolve the Claude stores")),
+      ),
+  );
 
   /** Main-chain transcripts sit one directory below `projects/`; deeper files are subagents'. */
   const listTranscripts = Effect.fn("ClaudeSessionSync.listTranscripts")(function* (
@@ -246,7 +257,7 @@ export const make = Effect.gen(function* () {
           filePath,
           fileIdentity: fileIdentityOf(info.value, filePath),
           size: Number(info.value.size),
-          mtimeMs: Math.floor(Option.getOrElse(info.value.mtime, () => new Date(0)).getTime()),
+          mtimeMs: mtimeMsOf(info.value),
         });
       }
     }
@@ -410,7 +421,7 @@ export const make = Effect.gen(function* () {
         adapterKey: CLAUDE_PROVIDER,
         runtimeMode,
         status: "stopped",
-        lastSeenAt: updatedAt,
+        lastSeenAt: DateTime.formatIso(updatedAt),
         resumeCursor: { threadId, resume: input.sessionId },
         runtimePayload: { cwd: head.cwd ?? null },
       },
@@ -419,9 +430,9 @@ export const make = Effect.gen(function* () {
     return { threadId, providerThreadId };
   });
 
-  const inChunks = <A, B>(
+  const inChunks = <A, B, E>(
     values: ReadonlyArray<A>,
-    read: (chunk: ReadonlyArray<A>) => Effect.Effect<ReadonlyArray<B>, unknown>,
+    read: (chunk: ReadonlyArray<A>) => Effect.Effect<ReadonlyArray<B>, E>,
   ) =>
     Effect.forEach(
       Array.from({ length: Math.ceil(values.length / LOOKUP_CHUNK) }, (_, index) =>
@@ -783,8 +794,9 @@ export const make = Effect.gen(function* () {
   const sweepStore = Effect.fn("ClaudeSessionSync.sweepStore")(function* (
     store: SyncStore,
     settings: ServerSettings,
+    failures: Array<ClaudeSessionSyncError>,
   ) {
-    const now = Date.now();
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
     const recentSince = now - settings.claudeSessionSync.hydrateRecentDays * DAY_MS;
     const registry = yield* readClaudeSessionRegistry(store.sessionsDir).pipe(
       Effect.mapError(fail("read the session registry")),
@@ -815,11 +827,10 @@ export const make = Effect.gen(function* () {
         mode: due ? "full" : "entry",
         settled: !due,
       }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Could not sync a Claude session", {
-            sessionId: transcript.sessionId,
-            cause,
-          }),
+        Effect.catch((error) =>
+          Effect.logWarning("Could not sync a Claude session", { error }).pipe(
+            Effect.andThen(Effect.sync(() => failures.push(error))),
+          ),
         ),
       );
       yield* Effect.yieldNow;
@@ -828,9 +839,11 @@ export const make = Effect.gen(function* () {
 
   const sweep: ClaudeSessionSync["Service"]["sweep"] = Effect.gen(function* () {
     const settings = yield* currentSettings;
-    if (!settings.claudeSessionSync.enabled) return;
+    const failures: Array<ClaudeSessionSyncError> = [];
+    if (!settings.claudeSessionSync.enabled) return failures;
     const stores = yield* resolveStores(settings);
-    for (const store of stores) yield* sweepStore(store, settings);
+    for (const store of stores) yield* sweepStore(store, settings, failures);
+    return failures;
   }).pipe(Effect.withSpan("ClaudeSessionSync.sweep"));
 
   const findStoreFor = Effect.fn("ClaudeSessionSync.findStoreFor")(function* (filePath: string) {
@@ -861,7 +874,7 @@ export const make = Effect.gen(function* () {
       filePath,
       fileIdentity: fileIdentityOf(info.value, filePath),
       size: Number(info.value.size),
-      mtimeMs: Math.floor(Option.getOrElse(info.value.mtime, () => new Date(0)).getTime()),
+      mtimeMs: mtimeMsOf(info.value),
       mode: "full",
       settled: false,
     });
@@ -879,7 +892,7 @@ export const make = Effect.gen(function* () {
               filePath: row.filePath,
               fileIdentity: fileIdentityOf(info.value, row.filePath),
               size: Number(info.value.size),
-              mtimeMs: Math.floor(Option.getOrElse(info.value.mtime, () => new Date(0)).getTime()),
+              mtimeMs: mtimeMsOf(info.value),
               mode: "full",
               settled: true,
             }),
@@ -945,36 +958,33 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const watchStore = (store: SyncStore) =>
-    Effect.gen(function* () {
-      const changed = yield* Queue.unbounded<string>();
-      yield* fileSystem.watch(store.projectsDir, { recursive: true }).pipe(
-        Stream.runForEach((event) => {
-          const filePath = path.resolve(store.projectsDir, event.path);
-          return path.dirname(path.dirname(filePath)) === store.projectsDir &&
-            claudeTranscriptSessionId(path.basename(filePath)) !== undefined
-            ? Queue.offer(changed, filePath)
-            : Effect.void;
-        }),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Claude transcript watch stopped", { cause }),
-        ),
-        Effect.forkScoped,
-      );
-      // Claude Code appends a line at a time; changes that land together are read once.
-      for (;;) {
-        const first = yield* Queue.take(changed);
-        yield* Effect.sleep(WATCH_SETTLE);
-        const rest = yield* Queue.clear(changed);
-        for (const filePath of new Set([first, ...rest])) {
-          yield* followFile(filePath).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Could not follow a Claude transcript", { cause }),
-            ),
-          );
-        }
+  const watchStore = Effect.fn("ClaudeSessionSync.watchStore")(function* (store: SyncStore) {
+    const changed = yield* Queue.unbounded<string>();
+    yield* fileSystem.watch(store.projectsDir, { recursive: true }).pipe(
+      Stream.runForEach((event) => {
+        const filePath = path.resolve(store.projectsDir, event.path);
+        return path.dirname(path.dirname(filePath)) === store.projectsDir &&
+          claudeTranscriptSessionId(path.basename(filePath)) !== undefined
+          ? Queue.offer(changed, filePath)
+          : Effect.void;
+      }),
+      Effect.catchCause((cause) => Effect.logWarning("Claude transcript watch stopped", { cause })),
+      Effect.forkScoped,
+    );
+    // Claude Code appends a line at a time; changes that land together are read once.
+    for (;;) {
+      const first = yield* Queue.take(changed);
+      yield* Effect.sleep(WATCH_SETTLE);
+      const rest = yield* Queue.clear(changed);
+      for (const filePath of new Set([first, ...rest])) {
+        yield* followFile(filePath).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not follow a Claude transcript", { cause }),
+          ),
+        );
       }
-    });
+    }
+  });
 
   const run = (settings: ServerSettings) =>
     Effect.scoped(
@@ -1019,21 +1029,20 @@ export const make = Effect.gen(function* () {
       const changes = yield* settingsService.subscribeChanges;
       let running: Fiber.Fiber<unknown, unknown> | undefined;
       let appliedKey: string | undefined;
-      const apply = (settings: ServerSettings) =>
-        Effect.gen(function* () {
-          const key = settingsKey(settings);
-          if (key === appliedKey) return;
-          appliedKey = key;
-          if (running !== undefined) yield* Fiber.interrupt(running);
-          running = settings.claudeSessionSync.enabled
-            ? yield* run(settings).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("Claude session sync stopped", { cause }),
-                ),
-                Effect.forkIn(scope),
-              )
-            : undefined;
-        });
+      const apply = Effect.fn("ClaudeSessionSync.apply")(function* (settings: ServerSettings) {
+        const key = settingsKey(settings);
+        if (key === appliedKey) return;
+        appliedKey = key;
+        if (running !== undefined) yield* Fiber.interrupt(running);
+        running = settings.claudeSessionSync.enabled
+          ? yield* run(settings).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Claude session sync stopped", { cause }),
+              ),
+              Effect.forkIn(scope),
+            )
+          : undefined;
+      });
       yield* forkParked(
         Effect.gen(function* () {
           const initial = yield* settingsService.getSettings.pipe(Effect.orDie);
