@@ -38,14 +38,20 @@ const encodeEntry = Schema.encodeSync(Schema.fromJsonString(ClaudeSessionRegistr
 
 const START = "Thu Jan  1 00:00:00 2026";
 
+const START_SECONDS = 1767225600;
+const EARLIER = "Wed Dec 31 00:00:00 2025";
+
 // 100 is the server, 101 a launcher its query runner spawned, 102 the claude that launcher runs,
-// 103 a claude in the server's integrated terminal, 200 a claude in another terminal.
+// 103 a claude in the server's integrated terminal, 104 a claude 102's agent ran from its shell,
+// 105 an older process left with 101's pid as parent, 200 a claude in another terminal.
 const processes = parseClaudeProcessTable(
   [
     `  100     1   100 ${START}`,
     `  101   100   101 ${START}`,
     `  102   101   101 ${START}`,
     `  103   100   103 ${START}`,
+    `  104   102   101 ${START}`,
+    `  105   101   105 ${EARLIER}`,
     `  200     1   200 ${START}`,
   ].join("\n"),
 );
@@ -60,6 +66,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
     ) => Effect.Effect<ReadonlyArray<ClaudeProcessRow>, ClaudeProcessTableError> = () =>
       Effect.succeed(processes),
     matchStartTime = true,
+    ownRootPids: Effect.Effect<ReadonlyArray<number>> = Effect.succeed([101]),
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -73,7 +80,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       return yield* probeClaudeSessionHold({
         sessionsDir,
         sessionId,
-        ownRootPids: [101],
+        ownRootPids,
         readProcesses: readProcesses(write),
         matchStartTime,
       });
@@ -105,18 +112,73 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
     }),
   );
 
-  it.effect("decides by liveness alone where start times cannot be matched", () =>
+  it.effect("checks startedAt where procStart cannot be matched, and else confirms nothing", () =>
     Effect.gen(function* () {
-      const later = { "200.json": entry(200, "windows", { procStart: "2026-01-02T00:00:00" }) };
-      const exited = { "300.json": entry(300, "windows") };
       const always = () => Effect.succeed(processes);
-      expect(yield* probeWith(later, "windows", always, false)).toEqual({
+      const written = (startedAt: number) => ({
+        "200.json": entry(200, "windows", { procStart: "not a time", startedAt }),
+      });
+      // The process started before it wrote the entry, so it is the one that wrote it.
+      expect(
+        yield* probeWith(written(START_SECONDS * 1000 + 500), "windows", always, false),
+      ).toEqual({ _tag: "held", pid: 200, sdk: false });
+      // It started after the entry was written, so it reused the pid.
+      expect(
+        yield* probeWith(written(START_SECONDS * 1000 - 60_000), "windows", always, false),
+      ).toBeUndefined();
+      // The same holds where procStart cannot be parsed.
+      expect(yield* probeWith(written(START_SECONDS * 1000 + 500), "windows")).toEqual({
         _tag: "held",
         pid: 200,
         sdk: false,
       });
-      expect(yield* probeWith(exited, "windows", always, false)).toBeUndefined();
+      const pidOnly = { "200.json": entry(200, "windows", { procStart: "not a time" }) };
+      expect(yield* probeWith(pidOnly, "windows", always, false)).toEqual({
+        _tag: "unconfirmed",
+        pid: 200,
+      });
+      expect(
+        yield* probeWith({ "300.json": entry(300, "windows") }, "windows", always, false),
+      ).toBeUndefined();
     }),
+  );
+
+  it.effect("counts a claude another Claude's agent ran as another writer", () =>
+    Effect.gen(function* () {
+      const files = { "102.json": entry(102, "launched"), "104.json": entry(104, "nested") };
+      expect(yield* probeWith(files, "nested")).toEqual({ _tag: "held", pid: 104, sdk: false });
+      expect(yield* probeWith(files, "launched")).toBeUndefined();
+    }),
+  );
+
+  it.effect("counts an older process under a spawned CLI's pid as another writer", () =>
+    Effect.gen(function* () {
+      const files = { "105.json": entry(105, "orphaned", { procStart: EARLIER }) };
+      expect(yield* probeWith(files, "orphaned")).toEqual({ _tag: "held", pid: 105, sdk: false });
+    }),
+  );
+
+  it.effect("needs no process table when only a spawned CLI's entry names the session", () =>
+    Effect.gen(function* () {
+      const unreadable = () =>
+        Effect.fail(new ClaudeProcessTableError({ reason: "ps exited with 1" }));
+      expect(
+        yield* probeWith({ "101.json": entry(101, "own") }, "own", unreadable),
+      ).toBeUndefined();
+    }),
+  );
+
+  it.effect(
+    "reads T3 Code's own CLIs again after the registry, so one spawned meanwhile is own",
+    () =>
+      Effect.gen(function* () {
+        let reads = 0;
+        const ownRootPids = Effect.sync(() => (reads++ === 0 ? [] : [200]));
+        const files = { "200.json": entry(200, "opening") };
+        expect(
+          yield* probeWith(files, "opening", () => Effect.succeed(processes), true, ownRootPids),
+        ).toBeUndefined();
+      }),
   );
 
   it.effect("marks an Agent SDK holder, which may be T3 Code's own from before a restart", () =>
@@ -281,11 +343,15 @@ type FakeRuntime = Required<
   >
 >;
 
+const REQUIREMENT = "Install ps.";
+
 describe("gateHeldClaudeSessionRuntime", () => {
   // Every native operation records when it is called, so a gate that refuses late still fails.
   const makeGate = (input: {
     readonly hold?: ClaudeSessionHold;
     readonly probeFailure?: ClaudeProcessTableError;
+    /** Fail this many probes with `probeFailure` before answering with `hold`. */
+    readonly failingProbes?: number;
     readonly liveNativeThreadId?: string;
   }) => {
     const calls: Array<string> = [];
@@ -322,12 +388,17 @@ describe("gateHeldClaudeSessionRuntime", () => {
       },
       liveNativeThreadId: Effect.succeed(input.liveNativeThreadId),
     };
-    const runtime = gateHeldClaudeSessionRuntime(fake, (sessionId) => {
-      probes.push(sessionId);
-      return input.probeFailure === undefined
-        ? Effect.succeed(state.hold)
-        : Effect.fail(input.probeFailure);
-    });
+    const runtime = gateHeldClaudeSessionRuntime(
+      fake,
+      (sessionId) => {
+        probes.push(sessionId);
+        const failing = input.failingProbes ?? Number.POSITIVE_INFINITY;
+        return input.probeFailure !== undefined && probes.length <= failing
+          ? Effect.fail(input.probeFailure)
+          : Effect.succeed(state.hold);
+      },
+      REQUIREMENT,
+    );
     return { runtime, calls, probes, state };
   };
   // Each operation that would start, drive or write to the native session.
@@ -505,6 +576,39 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 
+  it.effect("checks again before refusing, so a check that fails once still sends", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const { runtime, calls, probes } = makeGate({
+        probeFailure: new ClaudeProcessTableError({ reason: "ps timed out" }),
+        failingProbes: 1,
+      });
+
+      yield* runtime.startTurn(turnInput(providerThread(now), now));
+
+      expect(calls).toEqual(["startTurn"]);
+      expect(probes).toHaveLength(2);
+    }),
+  );
+
+  it.effect("checks an unconfirmed or unreadable holder again before refusing unmarked", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      for (const hold of [
+        { _tag: "unconfirmed", pid: 200 },
+        { _tag: "unreadable", pid: 200 },
+      ] as const) {
+        const { runtime, probes } = makeGate({ hold });
+        const refusal = yield* Effect.flip(
+          runtime.resumeThread({ providerThread: providerThread(now) }),
+        );
+        expect(probes).toHaveLength(3);
+        expectInUse("resumeThread", refusal, false);
+        expect(refusal.message).not.toContain("Fork");
+      }
+    }),
+  );
+
   it.effect("refuses every write unmarked, saying why, when the probe cannot read", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
@@ -522,7 +626,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
         runtime.resumeThread({ providerThread: providerThread(now) }),
       );
       expect(message).toContain("Could not read the process table: ps exited with 1.");
-      expect(message).toContain("Send again");
+      expect(message).toContain(REQUIREMENT);
     }),
   );
 });
