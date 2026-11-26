@@ -1798,6 +1798,7 @@ export const layerQueryRunner: Layer.Layer<
               stderrDone,
               providerProcesses.register,
             );
+            if (child.pid !== undefined) child.once("exit", spawnedProcesses.register(child.pid));
             if (unit === undefined && child.pid !== undefined) {
               const tracker = trackDescendants(child.pid);
               child.once("exit", () => runFork(tracker.stop));
@@ -1812,6 +1813,10 @@ export const layerQueryRunner: Layer.Layer<
             windowsHide: true,
           });
           child.stderr.setEncoding("utf8").on("data", (chunk: string) => options.stderr?.(chunk));
+          // The worker reports the pid with "spawn", after this returns.
+          child.once("spawn", () => {
+            if (child.pid !== undefined) child.once("exit", spawnedProcesses.register(child.pid));
+          });
           return child;
         });
       let spawnedProcess: ClaudeSpawnedProcess | undefined;
@@ -1820,7 +1825,6 @@ export const layerQueryRunner: Layer.Layer<
       const spawnClaudeCodeProcess = (spawnOptions: ClaudeSpawnOptions) => {
         const child = spawnProcess(spawnOptions);
         spawnedProcess = child;
-        if (child.pid !== undefined) child.once("exit", spawnedProcesses.register(child.pid));
         // A spawn that fails emits only "error".
         const releaseAgent = portDiscovery.trackAgent();
         child.once("exit", releaseAgent);
