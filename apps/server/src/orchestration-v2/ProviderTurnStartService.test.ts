@@ -500,6 +500,8 @@ function makeLocalCommandHarness(input: {
   readonly resumeFailure?: ProviderAdapter.ProviderAdapterV2Error;
   /** Another process holds the previous native thread, as the Claude send gate reports it. */
   readonly previousNativeThreadHeld?: boolean;
+  /** The loaded thread's check refuses: `observed` when a holder was seen, else unchecked. */
+  readonly loadedThreadCheck?: "observed" | "unchecked";
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -1239,6 +1241,22 @@ function makeLocalCommandHarness(input: {
                     providerSession,
                     ensureThread: () => Effect.succeed(providerThread),
                     resumeThread: () => Effect.succeed(projection.providerThreads[0]),
+                    ...(input.loadedThreadCheck === undefined
+                      ? {}
+                      : {
+                          checkNativeThreadFree: (held: OrchestrationV2ProviderThread) =>
+                            Effect.fail(
+                              new ProviderAdapter.ProviderAdapterThreadInUseError({
+                                driver: held.driver,
+                                providerThreadId: held.id,
+                                detail: "The send gate refused.",
+                                cause: "refused",
+                                ...(input.loadedThreadCheck === "observed"
+                                  ? { holderObserved: true }
+                                  : {}),
+                              }),
+                            ),
+                        }),
                   } as never)
                 : Effect.die("A local command must not open a native session."),
   );
@@ -3466,6 +3484,27 @@ effectIt.effect("fails the run instead of replacing a native thread another clie
       },
     ]);
   }),
+);
+
+effectIt.effect.each(["observed", "unchecked"] as const)(
+  "checks a loaded thread before its run starts, retrying an unchecked refusal: %s",
+  (check) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        failReadsAfterRunning: true,
+        loadedThreadCheck: check,
+      });
+
+      const exit = yield* Effect.exit(harness.startWithRetry);
+
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      // An unchecked refusal goes back to the effect worker; a seen holder settles the run.
+      expect(exit._tag).toBe(check === "unchecked" ? "Failure" : "Success");
+      expect(harness.projection().runs.at(-1)?.status).toBe(
+        check === "unchecked" ? "starting" : "failed",
+      );
+    }),
 );
 
 effectIt.effect("checks the previous native thread before recovering in a fresh one", () =>
