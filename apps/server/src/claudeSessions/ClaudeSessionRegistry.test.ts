@@ -67,13 +67,26 @@ it.layer(NodeServices.layer)("readClaudeSessionRegistry", (it) => {
       const directory = yield* fileSystem.makeTempDirectoryScoped();
       yield* fileSystem.writeFileString(path.join(directory, "200.json"), encodeEntry(entry(200)));
       yield* fileSystem.writeFileString(path.join(directory, "201.json"), '{"pid":201}');
+      yield* fileSystem.writeFileString(
+        path.join(directory, "202.json"),
+        '{"pid":202,"sessionId":"named"}',
+      );
       yield* fileSystem.writeFileString(path.join(directory, "200.key"), "not an entry");
       yield* fileSystem.writeFileString(path.join(directory, "tmp-200"), "not an entry");
 
       const registry = yield* readClaudeSessionRegistry(directory);
 
       expect(registry.entries).toEqual([entry(200)]);
-      expect(registry.unrecognised.map((error) => path.basename(error.file))).toEqual(["201.json"]);
+      expect(
+        registry.unrecognised.map(({ file, pid, sessionId }) => ({
+          name: path.basename(file),
+          pid,
+          sessionId,
+        })),
+      ).toEqual([
+        { name: "201.json", pid: 201, sessionId: undefined },
+        { name: "202.json", pid: 202, sessionId: "named" },
+      ]);
     }),
   );
 
