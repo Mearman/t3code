@@ -4,7 +4,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as Result from "effect/Result";
 
 import { CipherState, NOISE_MAX_NONCE } from "./cipherState.ts";
-import { reasonOf } from "./errors.testkit.ts";
+import { failureOf, reasonOf } from "./errors.testkit.ts";
 import {
   createNkInitiator,
   createNkResponder,
@@ -12,6 +12,7 @@ import {
   NOISE_MAX_MESSAGE_BYTES,
   NOISE_MAX_PLAINTEXT_BYTES,
 } from "./noise.ts";
+import { createNkInitiatorCore, createNkResponderCore } from "./noiseCore.ts";
 
 const hex = (text: string) => Result.getOrThrow(Hex.decode(text));
 
@@ -78,17 +79,23 @@ const VECTORS = [
   },
 ] as const;
 
-function handshake(options: { readonly prologue?: Uint8Array } = {}) {
+function handshake() {
   const responderStatic = generateNoiseKeyPair();
-  const initiator = createNkInitiator({
-    ...options,
-    responderStaticPublicKey: responderStatic.publicKey,
-  });
-  const responder = createNkResponder({ ...options, staticPrivateKey: responderStatic.privateKey });
+  const initiator = createNkInitiator({ responderStaticPublicKey: responderStatic.publicKey });
+  const responder = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
   responder.readFirst(initiator.writeFirst());
   const second = responder.writeSecond();
   const first = initiator.readSecond(second.message);
   return { initiator: first.transport, responder: second.transport };
+}
+
+function handshakeSides() {
+  const responderStatic = generateNoiseKeyPair();
+  return {
+    responderStatic,
+    initiator: createNkInitiator({ responderStaticPublicKey: responderStatic.publicKey }),
+    responder: createNkResponder({ staticPrivateKey: responderStatic.privateKey }),
+  };
 }
 
 const flipBit = (bytes: Uint8Array, index: number) =>
@@ -96,12 +103,12 @@ const flipBit = (bytes: Uint8Array, index: number) =>
 
 describe("Noise_NK_25519_ChaChaPoly_SHA256", () => {
   it.each(VECTORS)("reproduces the published vector from $source", (vector) => {
-    const initiator = createNkInitiator({
+    const initiator = createNkInitiatorCore({
       prologue: hex(vector.prologue),
       responderStaticPublicKey: hex(vector.responderRemoteStatic),
       ephemeralPrivateKey: hex(vector.initiatorEphemeral),
     });
-    const responder = createNkResponder({
+    const responder = createNkResponderCore({
       prologue: hex(vector.prologue),
       staticPrivateKey: hex(vector.responderStatic),
       ephemeralPrivateKey: hex(vector.responderEphemeral),
@@ -132,36 +139,59 @@ describe("Noise_NK_25519_ChaChaPoly_SHA256", () => {
     expect(transcript).toEqual(transportMessages);
   });
 
+  it("completes a handshake whose two sides agree on the channel", () => {
+    const { initiator, responder } = handshake();
+    expect(Hex.encode(initiator.handshakeHash)).toBe(Hex.encode(responder.handshakeHash));
+    expect(responder.decrypt(initiator.encrypt(Uint8Array.of(1)))).toEqual(Uint8Array.of(1));
+    expect(initiator.decrypt(responder.encrypt(Uint8Array.of(2)))).toEqual(Uint8Array.of(2));
+  });
+
   it("fails the handshake when the initiator pinned a different responder key", () => {
     const responderStatic = generateNoiseKeyPair();
     const initiator = createNkInitiator({
       responderStaticPublicKey: generateNoiseKeyPair().publicKey,
     });
     const responder = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
-    expect(reasonOf(() => responder.readFirst(initiator.writeFirst()))).toBe("decrypt_failed");
+    expect(failureOf(() => responder.readFirst(initiator.writeFirst()))).toEqual({
+      reason: "decrypt_failed",
+      fatal: true,
+    });
   });
 
-  it("fails the handshake when the prologues differ", () => {
+  it("binds the mesh protocol version into the prologue", () => {
     const responderStatic = generateNoiseKeyPair();
-    const initiator = createNkInitiator({
-      prologue: Uint8Array.of(1),
+    const unversioned = createNkInitiatorCore({
+      prologue: new Uint8Array(0),
       responderStaticPublicKey: responderStatic.publicKey,
+      ephemeralPrivateKey: generateNoiseKeyPair().privateKey,
     });
-    const responder = createNkResponder({
-      prologue: Uint8Array.of(2),
-      staticPrivateKey: responderStatic.privateKey,
+    const responder = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
+    expect(reasonOf(() => responder.readFirst(unversioned.writeFirst(new Uint8Array(0))))).toBe(
+      "decrypt_failed",
+    );
+  });
+
+  it("refuses a first message that carries a payload", () => {
+    const responderStatic = generateNoiseKeyPair();
+    const responder = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
+    const withPayload = createNkInitiatorCore({
+      prologue: new TextEncoder().encode("t3code-mesh/v1"),
+      responderStaticPublicKey: responderStatic.publicKey,
+      ephemeralPrivateKey: generateNoiseKeyPair().privateKey,
+    }).writeFirst(Uint8Array.of(1));
+    expect(failureOf(() => responder.readFirst(withPayload))).toEqual({
+      reason: "unexpected_payload",
+      fatal: true,
     });
-    expect(reasonOf(() => responder.readFirst(initiator.writeFirst()))).toBe("decrypt_failed");
+    expect(reasonOf(() => responder.writeSecond())).toBe("handshake_order");
   });
 
   it.each([
     ["ephemeral key", 0],
-    ["payload tag", 40],
+    ["tag", 40],
   ])("rejects a first message with a tampered %s", (_part, index) => {
-    const responderStatic = generateNoiseKeyPair();
-    const initiator = createNkInitiator({ responderStaticPublicKey: responderStatic.publicKey });
-    const responder = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
-    const tampered = flipBit(initiator.writeFirst(Uint8Array.of(1, 2, 3)), index);
+    const { initiator, responder } = handshakeSides();
+    const tampered = flipBit(initiator.writeFirst(), index);
     expect(reasonOf(() => responder.readFirst(tampered))).toBe("decrypt_failed");
     expect(reasonOf(() => responder.writeSecond())).toBe("handshake_order");
   });
@@ -170,30 +200,77 @@ describe("Noise_NK_25519_ChaChaPoly_SHA256", () => {
     ["ephemeral key", 0],
     ["tag", 47],
   ])("rejects a second message with a tampered %s", (_part, index) => {
-    const responderStatic = generateNoiseKeyPair();
-    const initiator = createNkInitiator({ responderStaticPublicKey: responderStatic.publicKey });
-    const responder = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
+    const { initiator, responder } = handshakeSides();
     responder.readFirst(initiator.writeFirst());
     const tampered = flipBit(responder.writeSecond().message, index);
     expect(reasonOf(() => initiator.readSecond(tampered))).toBe("decrypt_failed");
   });
 
   it("rejects a small-order ephemeral key instead of deriving an all-zero secret", () => {
-    const responderStatic = generateNoiseKeyPair();
-    const responder = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
-    expect(reasonOf(() => responder.readFirst(new Uint8Array(48)))).toBe("invalid_key");
+    const { responder } = handshakeSides();
+    expect(failureOf(() => responder.readFirst(new Uint8Array(48)))).toEqual({
+      reason: "invalid_key",
+      fatal: true,
+    });
   });
 
-  it("runs each handshake step once and in order", () => {
-    const responderStatic = generateNoiseKeyPair();
-    const initiator = createNkInitiator({ responderStaticPublicKey: responderStatic.publicKey });
-    const responder = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
-    expect(reasonOf(() => initiator.readSecond(new Uint8Array(48)))).toBe("handshake_order");
+  it("refuses a call out of order without spoiling the handshake", () => {
+    const { initiator, responder } = handshakeSides();
+    expect(failureOf(() => initiator.readSecond(new Uint8Array(48)))).toEqual({
+      reason: "handshake_order",
+      fatal: false,
+    });
     expect(reasonOf(() => responder.writeSecond())).toBe("handshake_order");
     const first = initiator.writeFirst();
     expect(reasonOf(() => initiator.writeFirst())).toBe("handshake_order");
     responder.readFirst(first);
     expect(reasonOf(() => responder.readFirst(first))).toBe("handshake_order");
+    const second = responder.writeSecond();
+    expect(initiator.readSecond(second.message).payload).toEqual(new Uint8Array(0));
+  });
+
+  it("refuses an oversized first payload without spoiling the handshake", () => {
+    const responderStatic = generateNoiseKeyPair();
+    const initiator = createNkInitiatorCore({
+      prologue: new Uint8Array(0),
+      responderStaticPublicKey: responderStatic.publicKey,
+      ephemeralPrivateKey: generateNoiseKeyPair().privateKey,
+    });
+    const tooLarge = new Uint8Array(NOISE_MAX_MESSAGE_BYTES - 32 - 16 + 1);
+    expect(failureOf(() => initiator.writeFirst(tooLarge))).toEqual({
+      reason: "payload_too_large",
+      fatal: false,
+    });
+    expect(initiator.writeFirst(tooLarge.subarray(1)).length).toBe(NOISE_MAX_MESSAGE_BYTES);
+  });
+
+  it("refuses an oversized second payload without spoiling the handshake", () => {
+    const { initiator, responder } = handshakeSides();
+    responder.readFirst(initiator.writeFirst());
+    const tooLarge = new Uint8Array(NOISE_MAX_MESSAGE_BYTES - 32 - 16 + 1);
+    expect(failureOf(() => responder.writeSecond(tooLarge))).toEqual({
+      reason: "payload_too_large",
+      fatal: false,
+    });
+    const second = responder.writeSecond(tooLarge.subarray(1));
+    expect(initiator.readSecond(second.message).payload.length).toBe(tooLarge.length - 1);
+  });
+
+  it.each([
+    [
+      "a short responder key",
+      () => createNkInitiator({ responderStaticPublicKey: new Uint8Array(31) }),
+    ],
+    [
+      "a short static private key",
+      () => createNkResponder({ staticPrivateKey: new Uint8Array(31) }),
+    ],
+    [
+      "a small-order responder key",
+      () => createNkInitiator({ responderStaticPublicKey: new Uint8Array(32) }),
+    ],
+  ])("refuses %s as local misuse", (_input, create) => {
+    expect(failureOf(create)).toEqual({ reason: "invalid_input", fatal: false });
   });
 
   it("fails the channel on a tampered transport message", () => {
@@ -202,6 +279,16 @@ describe("Noise_NK_25519_ChaChaPoly_SHA256", () => {
     expect(reasonOf(() => responder.decrypt(flipBit(genuine, 0)))).toBe("decrypt_failed");
     expect(reasonOf(() => responder.decrypt(genuine))).toBe("channel_failed");
     expect(reasonOf(() => responder.encrypt(Uint8Array.of(1)))).toBe("channel_failed");
+  });
+
+  it.each([
+    ["oversized", new Uint8Array(NOISE_MAX_MESSAGE_BYTES + 1), "message_too_large"],
+    ["truncated", new Uint8Array(15), "message_too_short"],
+  ])("fails the channel after an %s message", (_kind, message, reason) => {
+    const { initiator, responder } = handshake();
+    const genuine = initiator.encrypt(Uint8Array.of(1));
+    expect(failureOf(() => responder.decrypt(message))).toEqual({ reason, fatal: true });
+    expect(reasonOf(() => responder.decrypt(genuine))).toBe("channel_failed");
   });
 
   it("never reuses a nonce: repeats differ, and replays and reorders fail", () => {
@@ -222,29 +309,15 @@ describe("Noise_NK_25519_ChaChaPoly_SHA256", () => {
     expect(reasonOf(() => reflect.initiator.decrypt(own))).toBe("decrypt_failed");
   });
 
-  it("holds every message to 65535 bytes", () => {
+  it("holds every message to 65535 bytes and refuses a larger plaintext locally", () => {
     const { initiator, responder } = handshake();
+    expect(
+      failureOf(() => initiator.encrypt(new Uint8Array(NOISE_MAX_PLAINTEXT_BYTES + 1))),
+    ).toEqual({ reason: "payload_too_large", fatal: false });
     const largest = initiator.encrypt(new Uint8Array(NOISE_MAX_PLAINTEXT_BYTES));
     expect(largest.length).toBe(NOISE_MAX_MESSAGE_BYTES);
     expect(responder.decrypt(largest).length).toBe(NOISE_MAX_PLAINTEXT_BYTES);
-    expect(reasonOf(() => initiator.encrypt(new Uint8Array(NOISE_MAX_PLAINTEXT_BYTES + 1)))).toBe(
-      "message_too_large",
-    );
-    expect(reasonOf(() => responder.decrypt(new Uint8Array(NOISE_MAX_MESSAGE_BYTES + 1)))).toBe(
-      "message_too_large",
-    );
-    expect(reasonOf(() => handshake().responder.decrypt(new Uint8Array(15)))).toBe(
-      "message_too_short",
-    );
-
-    const responderStatic = generateNoiseKeyPair();
-    const tooLarge = new Uint8Array(NOISE_MAX_MESSAGE_BYTES - 32 - 16 + 1);
-    const initiatorHandshake = createNkInitiator({
-      responderStaticPublicKey: responderStatic.publicKey,
-    });
-    expect(reasonOf(() => initiatorHandshake.writeFirst(tooLarge))).toBe("message_too_large");
-    const responderHandshake = createNkResponder({ staticPrivateKey: responderStatic.privateKey });
-    expect(reasonOf(() => responderHandshake.readFirst(new Uint8Array(65_536)))).toBe(
+    expect(reasonOf(() => handshakeSides().responder.readFirst(new Uint8Array(65_536)))).toBe(
       "message_too_large",
     );
   });
