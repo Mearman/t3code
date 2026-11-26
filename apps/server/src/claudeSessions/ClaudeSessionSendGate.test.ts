@@ -19,6 +19,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import {
@@ -37,12 +38,14 @@ const encodeEntry = Schema.encodeSync(Schema.fromJsonString(ClaudeSessionRegistr
 
 const START = "Thu Jan  1 00:00:00 2026";
 
-// 100 is the server, 101 a launcher it spawned, 102 the claude that launcher runs, 200 a terminal's.
+// 100 is the server, 101 a launcher its query runner spawned, 102 the claude that launcher runs,
+// 103 a claude in the server's integrated terminal, 200 a claude in another terminal.
 const processes = parseClaudeProcessTable(
   [
     `  100     1   100 ${START}`,
     `  101   100   101 ${START}`,
     `  102   101   101 ${START}`,
+    `  103   100   103 ${START}`,
     `  200     1   200 ${START}`,
   ].join("\n"),
 );
@@ -56,6 +59,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       write: (written: Record<string, string>) => Effect.Effect<void>,
     ) => Effect.Effect<ReadonlyArray<ClaudeProcessRow>, ClaudeProcessTableError> = () =>
       Effect.succeed(processes),
+    matchStartTime = true,
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -69,8 +73,9 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       return yield* probeClaudeSessionHold({
         sessionsDir,
         sessionId,
-        ownRootPids: [100],
+        ownRootPids: [101],
         readProcesses: readProcesses(write),
+        matchStartTime,
       });
     });
   const writeDuringPs =
@@ -83,11 +88,34 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
     fields: Partial<ClaudeSessionRegistryEntry> = {},
   ) => encodeEntry({ pid, sessionId, cwd: "/work", procStart: START, ...fields });
 
-  it.effect("finds a terminal's process and leaves out the server's own tree", () =>
+  it.effect("leaves out only the CLI the server spawned, not a claude in its own terminal", () =>
     Effect.gen(function* () {
-      const files = { "200.json": entry(200, "terminal"), "102.json": entry(102, "launched") };
+      const files = {
+        "200.json": entry(200, "terminal"),
+        "102.json": entry(102, "launched"),
+        "103.json": entry(103, "integrated"),
+      };
       expect(yield* probeWith(files, "terminal")).toEqual({ _tag: "held", pid: 200, sdk: false });
       expect(yield* probeWith(files, "launched")).toBeUndefined();
+      expect(yield* probeWith(files, "integrated")).toEqual({
+        _tag: "held",
+        pid: 103,
+        sdk: false,
+      });
+    }),
+  );
+
+  it.effect("decides by liveness alone where start times cannot be matched", () =>
+    Effect.gen(function* () {
+      const later = { "200.json": entry(200, "windows", { procStart: "2026-01-02T00:00:00" }) };
+      const exited = { "300.json": entry(300, "windows") };
+      const always = () => Effect.succeed(processes);
+      expect(yield* probeWith(later, "windows", always, false)).toEqual({
+        _tag: "held",
+        pid: 200,
+        sdk: false,
+      });
+      expect(yield* probeWith(exited, "windows", always, false)).toBeUndefined();
     }),
   );
 
@@ -117,6 +145,10 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
           pid: 200,
         });
         expect(yield* probeWith({ "102.json": '{"pid":102' }, "any")).toBeUndefined();
+        expect(yield* probeWith({ "103.json": '{"pid":103' }, "any")).toEqual({
+          _tag: "unreadable",
+          pid: 103,
+        });
         expect(yield* probeWith({ "300.json": '{"pid":300' }, "any")).toBeUndefined();
         // An entry that names its session despite an unknown shape blocks only that session.
         const named = { "200.json": '{"pid":200,"sessionId":"named"}' };
@@ -319,8 +351,6 @@ describe("gateHeldClaudeSessionRuntime", () => {
         providerTurnId: ProviderTurnId.make("provider-turn-held"),
         message: turn.message,
       }),
-      applyThreadTitle: runtime.applyThreadTitle({ providerThread: thread, title: "Renamed" }),
-      stopTask: runtime.stopTask({ providerThread: thread, taskId: "task" }),
       callTool: runtime.mcpApps.callTool({ ...mcp, tool: "tool", arguments: {} }),
       mcpSignInStart: runtime.mcpSignIn.start(mcp),
       mcpSignInComplete: runtime.mcpSignIn.complete({ ...mcp, callbackUrl: "http://localhost/" }),
@@ -339,17 +369,19 @@ describe("gateHeldClaudeSessionRuntime", () => {
     Effect.forEach(Object.entries(operations), ([name, operation]) =>
       Effect.flip(Effect.asVoid(operation)).pipe(Effect.map((refusal) => [name, refusal] as const)),
     );
-  const expectInUse = (name: string, refusal: unknown) => {
+  const isThreadInUse = Schema.is(ProviderAdapter.ProviderAdapterThreadInUseError);
+  const expectInUse = (name: string, refusal: unknown, holderObserved: boolean) => {
     // The tag is what stops the turn start service from opening a fresh native session.
-    expect(refusal).toMatchObject(
-      TURN_STARTS.has(name)
-        ? {
-            _tag: "ProviderAdapterTurnStartError",
-            refusedBeforePrompt: true,
-            cause: { _tag: "ProviderAdapterThreadInUseError" },
-          }
-        : { _tag: "ProviderAdapterThreadInUseError" },
-    );
+    if (TURN_STARTS.has(name)) {
+      expect(refusal).toMatchObject({
+        _tag: "ProviderAdapterTurnStartError",
+        refusedBeforePrompt: true,
+      });
+    }
+    const inUse =
+      TURN_STARTS.has(name) && Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
+    expect(isThreadInUse(inUse)).toBe(true);
+    expect(isThreadInUse(inUse) && inUse.holderObserved === true).toBe(holderObserved);
   };
 
   it.effect("writes nothing to a held session and names the fork it offers", () =>
@@ -362,12 +394,12 @@ describe("gateHeldClaudeSessionRuntime", () => {
 
       expect(calls).toEqual([]);
       expect(probes).toEqual(Object.keys(operations).map(() => "held-session"));
-      for (const [name, refusal] of refused) expectInUse(name, refusal);
+      for (const [name, refusal] of refused) expectInUse(name, refusal, true);
       const { message } = yield* Effect.flip(
         runtime.resumeThread({ providerThread: providerThread(now) }),
       );
       expect(message).toContain("pid 200");
-      expect(message).toContain('"Fork into a new session"');
+      expect(message).toContain("Fork this conversation");
       expect(message).toContain("left out");
     }),
   );
@@ -400,6 +432,48 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 
+  it.effect("still stops a task, which only makes T3 Code's own process write less", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const { runtime, calls, probes } = makeGate({ hold: { _tag: "held", pid: 200, sdk: false } });
+
+      yield* runtime.stopTask({ providerThread: providerThread(now), taskId: "task" });
+
+      expect(calls).toEqual(["stopTask"]);
+      expect(probes).toEqual([]);
+    }),
+  );
+
+  it.effect("leaves a held or unchecked title to the next turn without failing", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const title = { providerThread: providerThread(now), title: "Renamed" };
+      const held = makeGate({
+        hold: { _tag: "held", pid: 200, sdk: false },
+        liveNativeThreadId: "held-session",
+      });
+      yield* held.runtime.applyThreadTitle(title);
+      const unchecked = makeGate({
+        probeFailure: new ClaudeProcessTableError({ reason: "ps exited with 1" }),
+        liveNativeThreadId: "held-session",
+      });
+      yield* unchecked.runtime.applyThreadTitle(title);
+      // With nothing live the adapter itself waits for the next turn, so the gate does not probe.
+      const idle = makeGate({ hold: { _tag: "held", pid: 200, sdk: false } });
+      yield* idle.runtime.applyThreadTitle(title);
+      const free = makeGate({ liveNativeThreadId: "held-session" });
+      yield* free.runtime.applyThreadTitle(title);
+
+      expect([held.calls, unchecked.calls, idle.calls, idle.probes, free.calls]).toEqual([
+        [],
+        [],
+        ["applyThreadTitle"],
+        [],
+        ["applyThreadTitle"],
+      ]);
+    }),
+  );
+
   it.effect("sends once the session is released, probing again on every send", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
@@ -418,35 +492,24 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 
-  it.effect("refuses every write, saying why, when the probe cannot read the process table", () =>
+  it.effect("refuses every write unmarked, saying why, when the probe cannot read", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls } = makeGate({
-        probeFailure: new ClaudeProcessTableError({ reason: "ps exited with 1" }),
-      });
-
-      const refused = yield* refusals(writes(runtime, providerThread(now), now));
-
-      expect(calls).toEqual([]);
-      for (const [name, refusal] of refused) expectInUse(name, refusal);
-      const { message } = yield* Effect.flip(
-        runtime.resumeThread({ providerThread: providerThread(now) }),
-      );
-      expect(message).toContain("Could not read the process table: ps exited with 1.");
-    }),
-  );
-
-  it.effect("lets the session's own live process write when the process table is unreadable", () =>
-    Effect.gen(function* () {
-      const now = yield* DateTime.now;
+      // Even the session's own live process waits: another may have resumed it meanwhile.
       const { runtime, calls } = makeGate({
         probeFailure: new ClaudeProcessTableError({ reason: "ps exited with 1" }),
         liveNativeThreadId: "held-session",
       });
 
-      yield* runtime.startTurn(turnInput(providerThread(now), now));
+      const refused = yield* refusals(writes(runtime, providerThread(now), now));
 
-      expect(calls).toEqual(["startTurn"]);
+      expect(calls).toEqual([]);
+      for (const [name, refusal] of refused) expectInUse(name, refusal, false);
+      const { message } = yield* Effect.flip(
+        runtime.resumeThread({ providerThread: providerThread(now) }),
+      );
+      expect(message).toContain("Could not read the process table: ps exited with 1.");
+      expect(message).toContain("Send again");
     }),
   );
 });

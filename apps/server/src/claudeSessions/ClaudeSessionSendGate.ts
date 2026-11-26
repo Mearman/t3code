@@ -43,8 +43,11 @@ const candidatesFor = (
 export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(function* (input: {
   readonly sessionsDir: string;
   readonly sessionId: string;
+  /** The CLIs the query runner spawned; they and their descendants are T3 Code's own. */
   readonly ownRootPids: ReadonlyArray<number>;
   readonly readProcesses: Effect.Effect<ReadonlyArray<ClaudeProcessRow>, ClaudeProcessTableError>;
+  /** False where `procStart` cannot be matched to the process table, such as Windows. */
+  readonly matchStartTime: boolean;
 }) {
   const first = candidatesFor(yield* readClaudeSessionRegistry(input.sessionsDir), input.sessionId);
   if (first.entries.length === 0 && first.unattributed.length === 0) return undefined;
@@ -58,6 +61,7 @@ export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(functi
     entries,
     processes,
     ownRootPids: input.ownRootPids,
+    matchStartTime: input.matchStartTime,
   }).get(input.sessionId);
   if (holder !== undefined) {
     return {
@@ -85,7 +89,7 @@ export type ClaudeSessionHoldProbe = (
 >;
 
 const FORK_OPTION =
-  'Use "Fork into a new session" on this message to continue from what T3 Code has recorded of this conversation; anything another process added since is left out. Or close any other claude running this session and send again.';
+  "Fork this conversation to continue in a new session from what T3 Code has recorded; anything another process added since is left out. Or close any other claude running this session and send again.";
 
 function holdDetail(hold: ClaudeSessionHold): string {
   if (hold._tag === "unreadable") {
@@ -102,7 +106,7 @@ function uncheckedDetail(error: PlatformError.PlatformError | ClaudeProcessTable
     error._tag === "ClaudeProcessTableError"
       ? error.message
       : "Claude Code's session registry could not be read.";
-  return `T3 Code could not check whether another Claude Code process has this session open, so it sent nothing. ${why} ${FORK_OPTION}`;
+  return `T3 Code could not check whether another Claude Code process has this session open, so it sent nothing. ${why} Send again to retry the check.`;
 }
 
 type SessionRuntime = ProviderAdapter.ProviderAdapterV2SessionRuntime;
@@ -115,14 +119,13 @@ type GatedRuntime = Pick<
   | "compactThread"
   | "steerTurn"
   | "applyThreadTitle"
-  | "stopTask"
   | "mcpApps"
   | "mcpSignIn"
   | "liveNativeThreadId"
 >;
 
 /**
- * Probes before every call that would start, drive or write to the native session and refuses with `ProviderAdapterThreadInUseError`, which callers never answer with a fresh session. Turn starts carry it inside a turn start error marked refused before the prompt. `checkNativeThreadFree` runs the same probe. Forking only copies the transcript, so it is not gated.
+ * Probes before every call that would start, drive or write to the native session and refuses with `ProviderAdapterThreadInUseError`, which callers never answer with a fresh session; it is marked `holderObserved` only when a holder was seen. Turn starts carry it inside a turn start error marked refused before the prompt, and a title waits for the next turn instead. `checkNativeThreadFree` runs the same probe. Forking only copies the transcript, and stopping a task only makes T3 Code's own process write less, so neither is gated.
  */
 export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   runtime: Runtime,
@@ -132,6 +135,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     providerThread: OrchestrationV2ProviderThread,
     detail: string,
     cause: unknown,
+    holderObserved: boolean,
   ): Effect.Effect<never, ProviderAdapter.ProviderAdapterThreadInUseError> =>
     Effect.fail(
       new ProviderAdapter.ProviderAdapterThreadInUseError({
@@ -139,8 +143,10 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
         providerThreadId: providerThread.id,
         detail,
         cause,
+        ...(holderObserved ? { holderObserved: true } : {}),
       }),
     );
+  // A failed probe also refuses, unmarked, so the caller retries rather than offering a fork.
   const refuseHeld = (
     providerThread: OrchestrationV2ProviderThread,
   ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
@@ -148,16 +154,13 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     if (sessionId === undefined || sessionId === null) return Effect.void;
     return Effect.result(probe(sessionId)).pipe(
       Effect.flatMap((probed) => {
-        if (Result.isSuccess(probed)) {
-          const hold = probed.success;
-          return hold === undefined ? Effect.void : refuse(providerThread, holdDetail(hold), hold);
+        if (Result.isFailure(probed)) {
+          return refuse(providerThread, uncheckedDetail(probed.failure), probed.failure, false);
         }
-        // This session's own process has it open, so an unreadable table cannot hide a new writer.
-        return Effect.flatMap(runtime.liveNativeThreadId ?? Effect.undefined, (live) =>
-          live === sessionId
-            ? Effect.void
-            : refuse(providerThread, uncheckedDetail(probed.failure), probed.failure),
-        );
+        const hold = probed.success;
+        return hold === undefined
+          ? Effect.void
+          : refuse(providerThread, holdDetail(hold), hold, true);
       }),
     );
   };
@@ -180,7 +183,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
           }),
       ),
     );
-  const { resumeTurn, compactThread, applyThreadTitle, stopTask, mcpApps, mcpSignIn } = runtime;
+  const { resumeTurn, compactThread, applyThreadTitle, mcpApps, mcpSignIn } = runtime;
   return {
     ...runtime,
     checkNativeThreadFree: refuseHeld,
@@ -202,18 +205,20 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
           compactThread: (input: ProviderAdapter.ProviderAdapterV2TurnInput) =>
             refuseBeforePrompt(input).pipe(Effect.andThen(() => compactThread(input))),
         }),
+    // With nothing live the adapter keeps the title for the next turn, as it does here when held.
     ...(applyThreadTitle === undefined
       ? {}
       : {
           applyThreadTitle: (
             input: Parameters<NonNullable<SessionRuntime["applyThreadTitle"]>>[0],
-          ) => refuseHeld(input.providerThread).pipe(Effect.andThen(() => applyThreadTitle(input))),
-        }),
-    ...(stopTask === undefined
-      ? {}
-      : {
-          stopTask: (input: Parameters<NonNullable<SessionRuntime["stopTask"]>>[0]) =>
-            refuseHeld(input.providerThread).pipe(Effect.andThen(() => stopTask(input))),
+          ) =>
+            Effect.flatMap(runtime.liveNativeThreadId ?? Effect.undefined, (live) =>
+              live !== input.providerThread.nativeThreadRef?.nativeId
+                ? applyThreadTitle(input)
+                : Effect.flatMap(Effect.result(refuseHeld(input.providerThread)), (free) =>
+                    Result.isFailure(free) ? Effect.void : applyThreadTitle(input),
+                  ),
+            ),
         }),
     ...(mcpApps === undefined
       ? {}
