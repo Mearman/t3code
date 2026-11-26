@@ -397,6 +397,7 @@ export function checkClaudeTranscriptTurns(input: {
     })
     .toSorted((left, right) => byTimeThenId(left.opener, right.opener));
   // A parser's filing can make a turn's prompt id depend on itself; that is reported, not followed.
+  // Filing by time recurses only through prompt ids, so this also ends any loop through a host.
   const promptIds = new Map<string, string | undefined>();
   const resolving = new Set<string>();
   const turnPromptId = (turnId: string): string | undefined => {
@@ -441,14 +442,8 @@ export function checkClaudeTranscriptTurns(input: {
     return summary === undefined ? undefined : text(field(summary.record, "promptId"));
   };
   const hosts = new Map<string, string | undefined>();
-  const hosting = new Set<string>();
   function hostOf(root: RawLine): string | undefined {
     if (hosts.has(root.uuid)) return hosts.get(root.uuid);
-    if (hosting.has(root.uuid)) {
-      report("filing-loop", root);
-      return undefined;
-    }
-    hosting.add(root.uuid);
     const time = timeOf(root);
     const eligible = turnsByStart.filter(({ opener }) => {
       if (timeOf(opener) > time) return false;
@@ -460,7 +455,6 @@ export function checkClaudeTranscriptTurns(input: {
       (named === undefined
         ? undefined
         : eligible.findLast((turn) => turnPromptId(turn.id) === named)) ?? eligible.at(-1);
-    hosting.delete(root.uuid);
     hosts.set(root.uuid, host?.id);
     return host?.id;
   }
