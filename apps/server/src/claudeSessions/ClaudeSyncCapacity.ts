@@ -48,8 +48,12 @@ const make = Effect.gen(function* () {
     while (yield* busy) yield* Effect.sleep(BUSY_BACKOFF);
   });
 
-  const freeDiskBytes = Effect.tryPromise(() => NodeFSP.statfs(stateDir)).pipe(
-    Effect.map((stats) => Number(stats.bavail) * Number(stats.bsize)),
+  // A platform that cannot report free space does not hold the sync back.
+  const freeDiskBytes = Effect.tryPromise({
+    try: () => NodeFSP.statfs(stateDir),
+    catch: () => undefined,
+  }).pipe(
+    Effect.map((stats): number | undefined => Number(stats.bavail) * Number(stats.bsize)),
     Effect.orElseSucceed(() => undefined),
   );
 
