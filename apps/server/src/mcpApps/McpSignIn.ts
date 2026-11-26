@@ -35,6 +35,16 @@ export class McpSignIn extends Context.Service<
 
 const isSignInError = Schema.is(ProviderMcpSignInError);
 
+/** What a failed sign-in tells the user: why a held session refused it, else `detail`. */
+export function signInFailureDetail(cause: unknown, server: string, detail: string): string {
+  return Predicate.isTagged(cause, "ProviderAdapterThreadInUseError")
+    ? heldSessionRequestDetail(
+        Predicate.hasProperty(cause, "holderObserved") && cause.holderObserved === true,
+        `the sign-in to ${server}`,
+      )
+    : detail;
+}
+
 const make = Effect.gen(function* () {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -73,18 +83,7 @@ const make = Effect.gen(function* () {
             cause: Predicate.hasProperty(cause, "_tag") ? cause._tag : "unknown",
           }).pipe(
             Effect.andThen(
-              Effect.fail(
-                fail(
-                  input.server,
-                  Predicate.isTagged(cause, "ProviderAdapterThreadInUseError")
-                    ? heldSessionRequestDetail(
-                        Predicate.hasProperty(cause, "holderObserved") &&
-                          cause.holderObserved === true,
-                        `the sign-in to ${input.server}`,
-                      )
-                    : detail,
-                ),
-              ),
+              Effect.fail(fail(input.server, signInFailureDetail(cause, input.server, detail))),
             ),
           );
 

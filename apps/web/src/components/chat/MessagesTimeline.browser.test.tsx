@@ -140,6 +140,8 @@ function baseProps(): Omit<TimelineProps, "timelineEntries"> {
     routeThreadKey: `environment-local:thread-${Math.random().toString(36).slice(2)}`,
     onOpenThread: () => {},
     onForkFromRun: async () => {},
+    heldSessionRefusedRuns: new Set(),
+    onForkHeldSession: null,
     supportsConversationRollback: false,
     onRevertToTurnCount: () => {},
     isRevertingCheckpoint: false,
