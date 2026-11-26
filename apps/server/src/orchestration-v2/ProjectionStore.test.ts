@@ -9526,6 +9526,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     "usage limit with a queued follow-up",
     "cancelled before start, outlived",
     "idle compaction after it",
+    "failed idle compaction after it",
     "running",
   ] as const)("presents one run for %s, the same in both shells and the shared selector", (state) =>
     Effect.gen(function* () {
@@ -9638,6 +9639,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           runs.push(run(2, { status: "cancelled", startedAt: null, completedAt: minutes(2) }));
           break;
         case "idle compaction after it":
+        case "failed idle compaction after it":
           runs.push(run(2, {}));
           break;
         case "running":
@@ -9646,13 +9648,42 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }
       for (const entry of runs) yield* putRun(entry);
       for (const entry of runs) {
+        const compacts =
+          (state === "idle compaction after it" || state === "failed idle compaction after it") &&
+          entry.ordinal === 2;
         yield* putMessage(
           entry,
-          state === "idle compaction after it" && entry.ordinal === 2 ? "/compact" : "Work on it",
-          state === "idle compaction after it" && entry.ordinal === 2
-            ? { idleCompaction: "beforeCacheExpires" }
-            : {},
+          compacts ? "/compact" : "Work on it",
+          compacts ? { idleCompaction: "beforeCacheExpires" } : {},
         );
+      }
+      if (state === "failed idle compaction after it") {
+        // A compaction that failed is the user's to see, so its run stops being silent.
+        const compaction = runs[1]!;
+        yield* store.apply({
+          id: EventId.make(`event:${threadId}:compaction`),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`${threadId}:compaction`),
+            threadId,
+            runId: compaction.id,
+            nodeId: compaction.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            status: "failed",
+            title: "Compaction failed",
+            startedAt: compaction.startedAt,
+            completedAt: compaction.completedAt,
+            updatedAt: compaction.completedAt!,
+            type: "compaction",
+            driver: null,
+          },
+        });
       }
       if (state === "usage limit with a queued follow-up") {
         yield* store.apply({
@@ -9710,6 +9741,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         t3: base.any,
       });
       if (state === "usage limit with a queued follow-up") assert.equal(base.any, first.id);
+      if (state === "idle compaction after it") assert.equal(base.any, first.id);
+      if (state === "failed idle compaction after it") assert.equal(base.any, runs[1]!.id);
 
       // A turn the session ran outside T3: the shells present it, T3 still reads its own run.
       const transcriptRun = run(9, {

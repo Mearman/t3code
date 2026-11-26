@@ -148,6 +148,61 @@ describe("t3code/explicit-run-origin", () => {
      export const last = runs.at(-1);`,
   );
 
+  rule.invalid(
+    "reports a function whose decided namesake is in another function",
+    `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;
+     declare const p: { runs: ReadonlyArray<{ ordinal: number; ok: boolean }> };
+     export function shown() {
+       function eligible() {
+         return runsByOrigin(p.runs, "any");
+       }
+       return eligible().at(-1);
+     }
+     export function acted() {
+       function eligible() {
+         return p.runs.filter((run) => run.ok);
+       }
+       const runs = eligible();
+       return runs.at(-1);
+     }`,
+  );
+
+  rule.invalid(
+    "reports a pick from a function that returns a bare collection on any path",
+    `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;
+     declare const projection: { runs: ReadonlyArray<{ ordinal: number; ok: boolean }> };
+     declare const strict: boolean;
+     function eligible() {
+       if (strict) return runsByOrigin(projection.runs, "t3");
+       return projection.runs.filter((run) => run.ok);
+     }
+     export const last = eligible().at(-1);`,
+  );
+
+  rule.invalid(
+    "reports a pick from a function that returns only a bare collection",
+    `declare const projection: { runs: ReadonlyArray<{ ordinal: number; ok: boolean }> };
+     function eligible() {
+       return projection.runs.filter((run) => run.ok);
+     }
+     const runs = eligible();
+     export const last = runs.at(-1);`,
+  );
+
+  rule.valid(
+    "allows a function returning a local decided variable declared after it is used",
+    `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;
+     declare const projection: { runs: ReadonlyArray<{ ordinal: number }> };
+     export const last = () => shown().at(-1);
+     function shown() {
+       const runs = pick();
+       return runs;
+     }
+     function pick() {
+       return runsByOrigin(projection.runs, "any");
+     }`,
+  );
+
   rule.valid(
     "allows comparing a run with a number, which picks no run",
     `declare const runs: ReadonlyArray<{ ordinal: number }>;

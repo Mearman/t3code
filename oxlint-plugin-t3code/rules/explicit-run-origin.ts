@@ -36,7 +36,7 @@ const RELATIONAL = new Set(["<", ">", "<=", ">="]);
 const MESSAGE =
   'Say which runs this orders or picks from: pass the collection through runsByOrigin(runs, "t3") when T3 acts on the result, or runsByOrigin(runs, "any") when it only shows it. A run read back from a provider transcript must never steer T3, and must still be shown.';
 const LATEST_RUN_ID_MESSAGE =
-  "A thread shell's latestRunId is the run it presents, which can be one read back from a provider transcript. To act on T3's latest run, load it with getThreadRecords and includePresentedRun: \"t3\" (or another T3 selector); if this only shows or passes on the presented run, suppress with the reason.";
+  "A thread shell's latestRunId is the run it presents, which can be one read back from a provider transcript. To act on T3's latest run, load PRESENTED_RUN_RECORD_FIELDS with PRESENTED_RUN_RECORD_FILTER and call presentedShellRun(records, \"t3\") (or use another T3 selector); if this only shows or passes on the presented run, suppress with the reason.";
 // Server code acts on runs; the shell builder itself defines latestRunId.
 const SERVER_FILE = /(?:^|\/)apps\/server\/src\//u;
 const SHELL_BUILDER = /(?:^|\/)apps\/server\/src\/orchestration-v2\/ProjectionStore\.ts$/u;
@@ -64,15 +64,18 @@ function memberName(node: Node): string | undefined {
 }
 
 /**
- * "undecided" for a bare run collection, "decided" once it went through runsByOrigin, directly or
- * through a variable initialised from it (`decided` holds those names for the file).
+ * What the pre-pass learned, each answered for one identifier from the blocks that enclose it: a
+ * variable that holds decided runs, and a function whose every return is a decided collection.
  */
-/** What the pre-pass learned: variables in scope that hold decided runs, and functions returning them. */
 interface Decided {
   readonly variable: (identifier: Node & { readonly name: string }) => boolean;
-  readonly functions: ReadonlySet<string>;
+  readonly function: (identifier: Node & { readonly name: string }) => boolean;
 }
 
+/**
+ * "undecided" for a bare run collection, "decided" once it went through runsByOrigin, directly or
+ * through a variable or same-file function `decided` knows holds such a collection.
+ */
 function runCollection(
   node: Node,
   decided: Decided,
@@ -108,7 +111,7 @@ function runCollection(
     const callee = unwrap(expression.callee as Node);
     if (
       callee.type === "Identifier" &&
-      (callee.name === ORIGIN_SELECTOR || decided.functions.has(callee.name))
+      (callee.name === ORIGIN_SELECTOR || decided.function(callee))
     ) {
       return "decided";
     }
@@ -279,23 +282,34 @@ export default defineRule({
     if (TEST_FILE.test(context.filename) || SELECTOR_MODULE.test(context.filename)) return {};
     const checksLatestRunId =
       SERVER_FILE.test(context.filename) && !SHELL_BUILDER.test(context.filename);
-    // A variable is decided where its declaring block (or function) encloses the use; the
+    // A variable or function is decided where its declaring block encloses the use; the
     // shadowing of a name by an inner declaration is not modelled.
-    const scopes = new Map<Node, Set<string>>();
-    const functions = new Set<string>();
-    const decided: Decided = {
-      functions,
-      variable: (identifier) => {
+    let learned = true;
+    const variables = new Map<Node, Set<string>>();
+    const functions = new Map<Node, Set<string>>();
+    const declaredAbove =
+      (declared: ReadonlyMap<Node, ReadonlySet<string>>) =>
+      (identifier: Node & { readonly name: string }) => {
         // The root's parent is null.
         for (
           let ancestor = (identifier as { parent?: Node | null }).parent;
           ancestor != null;
           ancestor = (ancestor as { parent?: Node | null }).parent
         ) {
-          if (scopes.get(ancestor)?.has(identifier.name) === true) return true;
+          if (declared.get(ancestor)?.has(identifier.name) === true) return true;
         }
         return false;
-      },
+      };
+    const decided: Decided = {
+      variable: declaredAbove(variables),
+      function: declaredAbove(functions),
+    };
+    const learn = (declared: Map<Node, Set<string>>, scope: Node, name: string) => {
+      const names = declared.get(scope) ?? new Set<string>();
+      if (names.has(name)) return;
+      names.add(name);
+      declared.set(scope, names);
+      learned = true;
     };
     const isScope = (node: Node) =>
       node.type === "Program" || node.type === "BlockStatement" || node.type === "StaticBlock";
@@ -317,7 +331,6 @@ export default defineRule({
       for (const child of children(body)) visit(child);
       return found;
     };
-    let learned = true;
     const collectDecided = (node: Node, scope: Node) => {
       const inner = isScope(node) ? node : scope;
       if (
@@ -326,22 +339,15 @@ export default defineRule({
         node.init != null &&
         runCollection(node.init as Node, decided) === "decided"
       ) {
-        const names = scopes.get(scope) ?? new Set<string>();
-        if (!names.has(node.id.name)) {
-          names.add(node.id.name);
-          scopes.set(scope, names);
-          learned = true;
-        }
+        learn(variables, scope, node.id.name);
       }
       if (node.type === "FunctionDeclaration" && node.id != null && node.body != null) {
         const returns = returnsOf(node.body as Node);
         if (
-          !functions.has(node.id.name) &&
           returns.length > 0 &&
           returns.every((value) => runCollection(value, decided) === "decided")
         ) {
-          functions.add(node.id.name);
-          learned = true;
+          learn(functions, scope, node.id.name);
         }
       }
       for (const child of children(node)) collectDecided(child, inner);

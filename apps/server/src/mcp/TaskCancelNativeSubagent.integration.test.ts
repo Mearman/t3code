@@ -84,7 +84,8 @@ const cancelBackgroundOnlyTask = (
       | "monitor"
       | "refused"
       | "delegate"
-      | "delegate-after-transcript";
+      | "delegate-after-transcript"
+      | "delegate-under-limit";
   } = {},
 ) =>
   Effect.scoped(
@@ -549,7 +550,11 @@ const cancelBackgroundOnlyTask = (
           capabilities: new Set(["orchestration"]),
           issuedAt: 1,
         };
-        if (cancelAt === "delegate" || cancelAt === "delegate-after-transcript") {
+        if (
+          cancelAt === "delegate" ||
+          cancelAt === "delegate-after-transcript" ||
+          cancelAt === "delegate-under-limit"
+        ) {
           // The child's run settled while its native subagent still runs, and that subagent delegates.
           const childScope: McpInvocationScope = {
             ...scope,
@@ -603,6 +608,73 @@ const cancelBackgroundOnlyTask = (
                   runId: heldFollowUp.id,
                   occurredAt: at,
                   payload: { ...heldFollowUp, requestedAt: at },
+                },
+              ],
+            });
+          }
+          if (cancelAt === "delegate-under-limit") {
+            // T3's run hit a usage limit with a follow-up queued behind it. The limit leaves the
+            // follow-up queued and unheld, and the thread presents the limited run.
+            const at = yield* DateTime.now;
+            const followUp = {
+              ...t3Run,
+              id: RunId.make("run:child-queued-after-limit"),
+              ordinal: t3Run.ordinal + 1,
+              userMessageId: MessageId.make("message:child-queued-after-limit"),
+              activeAttemptId: null,
+              status: "queued" as const,
+              requestedAt: at,
+              startedAt: null,
+              completedAt: null,
+            };
+            yield* eventSink.write({
+              events: [
+                {
+                  id: EventId.make("event:child-queued-after-limit"),
+                  type: "run.created",
+                  threadId: task.childThreadId!,
+                  runId: followUp.id,
+                  occurredAt: at,
+                  payload: followUp,
+                },
+                {
+                  id: EventId.make("event:child-usage-limit"),
+                  type: "turn-item.updated",
+                  threadId: task.childThreadId!,
+                  runId: t3Run.id,
+                  occurredAt: at,
+                  payload: {
+                    id: TurnItemId.make("item:child-usage-limit"),
+                    threadId: task.childThreadId!,
+                    runId: t3Run.id,
+                    nodeId: t3Run.rootNodeId,
+                    providerThreadId: null,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: 99,
+                    status: "failed",
+                    title: "Usage limit reached",
+                    startedAt: at,
+                    completedAt: at,
+                    updatedAt: at,
+                    type: "error",
+                    failure: {
+                      class: "usage_limit",
+                      message: "Plan limit reached.",
+                      resetAt: "2099-01-01T00:00:00.000Z",
+                      code: "usageLimitExceeded",
+                      retryable: null,
+                    },
+                  },
+                },
+                {
+                  id: EventId.make("event:child-run-limited"),
+                  type: "run.updated",
+                  threadId: task.childThreadId!,
+                  runId: t3Run.id,
+                  occurredAt: at,
+                  payload: { ...t3Run, status: "failed" },
                 },
               ],
             });
@@ -794,4 +866,8 @@ it.effect("a native background subagent delegates after its parent's run complet
 
 it.effect("a native background subagent delegates into T3's run, not a later transcript turn", () =>
   cancelBackgroundOnlyTask("subagent", { cancelAt: "delegate-after-transcript" }),
+);
+
+it.effect("a native background subagent delegates into its usage-limited run, not the queue", () =>
+  cancelBackgroundOnlyTask("subagent", { cancelAt: "delegate-under-limit" }),
 );
