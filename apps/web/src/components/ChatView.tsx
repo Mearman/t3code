@@ -3065,8 +3065,11 @@ export default function ChatView(props: ChatViewProps) {
   const openSideChatStable = useStableCallback(() => void sideChat.open());
   const openSurfaceInMainView = useOpenSurfaceInMainView(activeThreadRef);
   const sendSideChatStable = useStableCallback(sideChat.open);
-  const forkSourceForRefusedRun = (refusedRunId: RunId, failure: OrchestrationV2ProviderFailure) =>
-    heldSessionForkSourceRunId({ runs: serverProjection?.runs ?? [], refusedRunId, failure });
+  // Stable, so the timeline's remembered rows never hold a replaced projection.
+  const forkSourceForRefusedRun = useStableCallback(
+    (refusedRunId: RunId, failure: OrchestrationV2ProviderFailure) =>
+      heldSessionForkSourceRunId({ runs: serverProjection?.runs ?? [], refusedRunId, failure }),
+  );
   const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
     useTimelineRewind({
       environmentId,
