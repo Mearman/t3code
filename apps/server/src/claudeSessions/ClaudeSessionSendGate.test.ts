@@ -369,7 +369,6 @@ describe("gateHeldClaudeSessionRuntime", () => {
     Effect.forEach(Object.entries(operations), ([name, operation]) =>
       Effect.flip(Effect.asVoid(operation)).pipe(Effect.map((refusal) => [name, refusal] as const)),
     );
-  const isThreadInUse = Schema.is(ProviderAdapter.ProviderAdapterThreadInUseError);
   const expectInUse = (name: string, refusal: unknown, holderObserved: boolean) => {
     // The tag is what stops the turn start service from opening a fresh native session.
     if (TURN_STARTS.has(name)) {
@@ -380,8 +379,10 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }
     const inUse =
       TURN_STARTS.has(name) && Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
-    expect(isThreadInUse(inUse)).toBe(true);
-    expect(isThreadInUse(inUse) && inUse.holderObserved === true).toBe(holderObserved);
+    expect(Predicate.isTagged(inUse, "ProviderAdapterThreadInUseError")).toBe(true);
+    expect(Predicate.hasProperty(inUse, "holderObserved") && inUse.holderObserved === true).toBe(
+      holderObserved,
+    );
   };
 
   it.effect("writes nothing to a held session and names the fork it offers", () =>

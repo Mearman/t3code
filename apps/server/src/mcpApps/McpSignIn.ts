@@ -13,7 +13,6 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
-import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 
@@ -34,7 +33,6 @@ export class McpSignIn extends Context.Service<
 >()("t3/mcpApps/McpSignIn") {}
 
 const isSignInError = Schema.is(ProviderMcpSignInError);
-const isThreadInUse = Schema.is(ProviderAdapter.ProviderAdapterThreadInUseError);
 
 const make = Effect.gen(function* () {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -68,7 +66,9 @@ const make = Effect.gen(function* () {
       ? Effect.fail(cause)
       : Predicate.isTagged(cause, "ProviderAdapterSessionStoppedError")
         ? Effect.fail(stopped(input.server))
-        : isThreadInUse(cause)
+        : Predicate.isTagged(cause, "ProviderAdapterThreadInUseError") &&
+            Predicate.hasProperty(cause, "message") &&
+            typeof cause.message === "string"
           ? Effect.fail(fail(input.server, cause.message))
           : Effect.logWarning("mcp-sign-in.failed", {
               threadId: input.threadId,
