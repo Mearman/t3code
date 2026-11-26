@@ -70,6 +70,8 @@ function memberName(node: Node): string | undefined {
 interface Decided {
   readonly variable: (identifier: Node & { readonly name: string }) => boolean;
   readonly function: (identifier: Node & { readonly name: string }) => boolean;
+  /** A function with a return that is a bare run collection, so a call to it is one too. */
+  readonly bareFunction: (identifier: Node & { readonly name: string }) => boolean;
 }
 
 /**
@@ -115,6 +117,7 @@ function runCollection(
     ) {
       return "decided";
     }
+    if (callee.type === "Identifier" && decided.bareFunction(callee)) return "undecided";
     const method = memberName(callee);
     if (
       callee.type === "MemberExpression" &&
@@ -287,6 +290,7 @@ export default defineRule({
     let learned = true;
     const variables = new Map<Node, Set<string>>();
     const functions = new Map<Node, Set<string>>();
+    const bareFunctions = new Map<Node, Set<string>>();
     const declaredAbove =
       (declared: ReadonlyMap<Node, ReadonlySet<string>>) =>
       (identifier: Node & { readonly name: string }) => {
@@ -303,6 +307,7 @@ export default defineRule({
     const decided: Decided = {
       variable: declaredAbove(variables),
       function: declaredAbove(functions),
+      bareFunction: declaredAbove(bareFunctions),
     };
     const learn = (declared: Map<Node, Set<string>>, scope: Node, name: string) => {
       const names = declared.get(scope) ?? new Set<string>();
@@ -342,11 +347,9 @@ export default defineRule({
         learn(variables, scope, node.id.name);
       }
       if (node.type === "FunctionDeclaration" && node.id != null && node.body != null) {
-        const returns = returnsOf(node.body as Node);
-        if (
-          returns.length > 0 &&
-          returns.every((value) => runCollection(value, decided) === "decided")
-        ) {
+        const states = returnsOf(node.body as Node).map((value) => runCollection(value, decided));
+        if (states.includes("undecided")) learn(bareFunctions, scope, node.id.name);
+        else if (states.length > 0 && states.every((state) => state === "decided")) {
           learn(functions, scope, node.id.name);
         }
       }
