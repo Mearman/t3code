@@ -409,7 +409,7 @@ export const BackgroundGitWork = Context.Reference<boolean>("t3/vcs/BackgroundGi
 
 /**
  * The clock file timestamps follow. Waiting for the filesystem to stamp a later second takes real
- * time, so this stays live under a test clock; tests replace it to observe or shorten the wait.
+ * time, so this stays live under a test clock. The driver reads it once, when it is made.
  */
 export const FileTimestampClock = Context.Reference<Clock.Clock>("t3/vcs/FileTimestampClock", {
   defaultValue: () => Clock.Clock.defaultValue(),

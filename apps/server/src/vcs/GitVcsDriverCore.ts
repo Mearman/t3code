@@ -1098,6 +1098,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const isServerInternalPath = yield* makeIsServerInternalPath;
   const digest = yield* Digest.Digest;
   const random = yield* SecureRandom.SecureRandom;
+  const fileTimestampClock = yield* GitVcsDriver.FileTimestampClock;
   const hostPlatform = yield* HostProcess.Platform;
   const serviceScope = yield* Effect.scope;
   const automaticFetchInterval = yield* VcsAutomaticFetchInterval;
@@ -6513,7 +6514,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         mtimeMillis,
         (probe) => fileSystem.remove(probe).pipe(Effect.ignore),
       ).pipe(Effect.orElseSucceed(() => Option.none<number>()));
-      const fileClock = yield* GitVcsDriver.FileTimestampClock;
       // A refresh still in the checkout's second leaves its index just as racy. Two seconds covers
       // the rest of that second at any timestamp resolution down to FAT's two seconds; a filesystem
       // still stamping it after that does not follow this clock, so refresh without waiting more.
@@ -6525,7 +6525,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           INDEX_SECOND_WAIT_LIMIT_MS - waited,
         );
         if (wait <= 0) break;
-        yield* fileClock.sleep(Duration.millis(wait));
+        yield* fileTimestampClock.sleep(Duration.millis(wait));
         waited += wait;
         now = yield* stampedNow;
       }
