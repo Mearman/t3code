@@ -1062,8 +1062,13 @@ const make = Effect.gen(function* () {
     const storedRuns = yield* storedRunsFor(target.idScope, [...lookups.segmentIds]);
     const storedItemRows = yield* inChunks(
       [...lookups.itemIds],
-      (chunk) => sql<{ readonly id: string; readonly status: string }>`
-        SELECT turn_item_id AS "id", status FROM orchestration_v2_projection_turn_items
+      (chunk) => sql<{
+        readonly id: string;
+        readonly status: string;
+        readonly runId: string | null;
+      }>`
+        SELECT turn_item_id AS "id", status, run_id AS "runId"
+        FROM orchestration_v2_projection_turn_items
         WHERE turn_item_id IN ${sql.in(chunk)}
       `,
     );
@@ -1090,7 +1095,10 @@ const make = Effect.gen(function* () {
       own: input.own,
       storedRuns,
       storedItems: new Map(
-        storedItemRows.map((item) => [item.id, { settled: isSettledItemStatus(item.status) }]),
+        storedItemRows.map((item) => [
+          item.id,
+          { settled: isSettledItemStatus(item.status), runId: item.runId },
+        ]),
       ),
       storedToolItems,
       nextRunOrdinal: nextRun?.next ?? 1,
