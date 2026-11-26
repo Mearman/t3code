@@ -198,7 +198,7 @@ import * as PortScanner from "../../preview/PortScanner.ts";
 import {
   claudeDescendants,
   indexClaudeProcessTable,
-  readClaudeProcessTable,
+  makeClaudeProcessTableReader,
   type ClaudeProcessRow,
   type ClaudeProcessTable,
 } from "../../claudeSessions/ClaudeProcessTable.ts";
@@ -1627,8 +1627,7 @@ export const layerQueryRunner: Layer.Layer<
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
-    const psProcessTable = readClaudeProcessTable().pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    const psProcessTable = (yield* makeClaudeProcessTableReader).pipe(
       Effect.orElseSucceed(() => []),
     );
     const monitor = Option.getOrUndefined(yield* Effect.serviceOption(NativeTelemetryClient));
@@ -15275,6 +15274,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           getModelContextWindow: (selection) => claudeContextWindow(selection) ?? undefined,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           backgroundTasksEndWithProcess: true,
+          liveNativeThreadId: Ref.get(queryContext).pipe(
+            Effect.map((live) =>
+              live === null || live.stopping ? undefined : live.nativeThreadId,
+            ),
+          ),
           hasPendingBackgroundWork: Effect.gen(function* () {
             // A wakeup can be up to an hour out, past the idle timeout, and dies with the process.
             if (scheduledWakeupsByNativeThread.size > 0) {

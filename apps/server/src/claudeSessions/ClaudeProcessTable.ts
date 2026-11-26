@@ -40,26 +40,34 @@ export function parseClaudeProcessTable(table: string): ReadonlyArray<ClaudeProc
 
 export class ClaudeProcessTableError extends Schema.TaggedError<ClaudeProcessTableError>()(
   "ClaudeProcessTableError",
-  { cause: Schema.Defect() },
+  { reason: Schema.String, cause: Schema.optional(Schema.Defect()) },
 ) {
   override get message(): string {
-    return "Could not read the process table.";
+    return `Could not read the process table: ${this.reason}.`;
   }
 }
 
-/** Runs `ps` in the C locale and UTC, the form a registry entry's `procStart` is written in. */
-export const readClaudeProcessTable = Effect.fn("readClaudeProcessTable")(function* () {
+/**
+ * Builds a reader that runs `ps` in the C locale and UTC, the form a registry entry's `procStart`
+ * is written in, and fails with the reason when it cannot.
+ */
+export const makeClaudeProcessTableReader = Effect.gen(function* () {
   const runner = yield* ProcessRunner.make();
-  const result = yield* runner
+  return runner
     .run({
       command: "ps",
       args: ["-A", "-o", "pid=,ppid=,pgid=,lstart="],
       env: { LC_ALL: "C", TZ: "UTC0" },
       timeout: "5 seconds",
     })
-    .pipe(Effect.mapError((cause) => new ClaudeProcessTableError({ cause })));
-  if (result.code !== 0) return yield* new ClaudeProcessTableError({ cause: result.stderr });
-  return parseClaudeProcessTable(result.stdout);
+    .pipe(
+      Effect.mapError((cause) => new ClaudeProcessTableError({ reason: "ps did not run", cause })),
+      Effect.flatMap((result) =>
+        result.code === 0
+          ? Effect.succeed(parseClaudeProcessTable(result.stdout))
+          : Effect.fail(new ClaudeProcessTableError({ reason: `ps exited with ${result.code}` })),
+      ),
+    );
 });
 
 export function indexClaudeProcessTable(rows: ReadonlyArray<ClaudeProcessRow>) {
