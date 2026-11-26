@@ -110,7 +110,7 @@ export const makeClaudeProcessTableReader = Effect.fn("makeClaudeProcessTableRea
       readonly pgid?: number | undefined;
       readonly startTimeMicros?: number | undefined;
     }>,
-    unknown
+    { readonly _tag: string }
   >,
 ) {
   const runner = yield* ProcessRunner.make();
@@ -147,7 +147,10 @@ export const makeClaudeProcessTableReader = Effect.fn("makeClaudeProcessTableRea
       return table.length === 0 ? undefined : table;
     }),
     Effect.orElseSucceed(() => undefined),
-    Effect.flatMap((table) => (table === undefined ? listed : Effect.succeed(table))),
+    Effect.filterOrElse(
+      (table): table is Array<ClaudeProcessRow> => table !== undefined,
+      () => listed,
+    ),
   );
 });
 
@@ -179,12 +182,4 @@ export function claudeDescendants(
     }
   }
   return found;
-}
-
-/** `rootPids` and every process below them. */
-export function claudeProcessTree(
-  table: ClaudeProcessTable,
-  rootPids: ReadonlyArray<number>,
-): ReadonlySet<number> {
-  return new Set([...rootPids, ...claudeDescendants(table, rootPids).map((row) => row.pid)]);
 }
