@@ -6,7 +6,12 @@ import * as NodePath from "node:path";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { AuthStandardClientScopes, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
+import {
+  AuthStandardClientScopes,
+  ORCHESTRATION_PROTOCOL_VERSION,
+  SERVER_EXIT_CODE_SCHEMA_BEHIND,
+} from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
@@ -16,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Runtime from "effect/Runtime";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient } from "effect/http";
@@ -30,6 +36,8 @@ import {
   SERVICE_LAUNCHER_PROTOCOL,
 } from "../cloud/serviceProtocol.ts";
 import * as ServiceLauncherClient from "../cloud/serviceLauncherClient.ts";
+import { migrationManifest, runMigrations } from "../persistence/Migrations.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
 import {
@@ -902,6 +910,80 @@ describe("auth scope options", () => {
       }
       assert.equal(scopeError.option, "scope");
       assert.equal(scopeError.value, "admin");
+    }),
+  );
+});
+
+describe("auth session --require-current-schema", () => {
+  const databaseBehindThisBuild = (baseDir: string) =>
+    Effect.gen(function* () {
+      NodeFS.mkdirSync(NodePath.join(baseDir, "userdata"), { recursive: true });
+      const behind = Math.max(...migrationManifest.map(([id]) => id)) - 1;
+      yield* runMigrations({ toMigrationInclusive: behind }).pipe(
+        Effect.provide(
+          NodeSqliteClient.layer({
+            filename: NodePath.join(baseDir, "userdata", "statev2.sqlite"),
+          }),
+        ),
+      );
+    });
+
+  it.effect.each([{ action: "issue" }, { action: "list" }] as const)(
+    "exits with the schema-behind code instead of migrating for auth session $action",
+    ({ action }) =>
+      Effect.gen(function* () {
+        const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-schema-test-"));
+        yield* databaseBehindThisBuild(baseDir);
+        const error = yield* runCli([
+          "auth",
+          "session",
+          action,
+          "--base-dir",
+          baseDir,
+          "--require-current-schema",
+          "--json",
+        ]).pipe(Effect.provide(layerCliRuntime), Effect.flip);
+
+        if (!(error instanceof SqlitePersistence.DatabaseSchemaBehindError)) {
+          return assert.fail(`Expected DatabaseSchemaBehindError, got ${String(error)}`);
+        }
+        // The desktop app reads the process exit code, which the runtime takes from this field.
+        assert.equal(error[Runtime.errorExitCode], SERVER_EXIT_CODE_SCHEMA_BEHIND);
+      }),
+  );
+
+  it.effect("lists the subject a session was issued with", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-schema-test-"));
+      yield* captureStdout(
+        runCli([
+          "auth",
+          "session",
+          "issue",
+          "--base-dir",
+          baseDir,
+          "--subject",
+          "desktop-attach-test",
+          "--json",
+        ]),
+      );
+      const listed = JSON.parse(
+        yield* captureStdout(
+          runCli([
+            "auth",
+            "session",
+            "list",
+            "--base-dir",
+            baseDir,
+            "--require-current-schema",
+            "--json",
+          ]),
+        ),
+      ) as ReadonlyArray<{ readonly subject: string }>;
+      assert.deepEqual(
+        listed.map((session) => session.subject),
+        ["desktop-attach-test"],
+      );
     }),
   );
 });
