@@ -459,7 +459,10 @@ describe("ClaudeSessionSync", () => {
           yield* openThread(claudeThreadId);
           const thread = yield* projections.getThread(claudeThreadId);
           expect(thread.title).toBe("Testing things");
-          expect(thread.updatedAt).toEqual(DateTime.makeUnsafe("2026-11-26T10:00:05.000Z"));
+          // A transcript time, never the time it was read.
+          const updated = DateTime.toEpochMillis(thread.updatedAt);
+          expect(updated).toBeGreaterThanOrEqual(Date.parse("2026-11-26T10:00:00.000Z"));
+          expect(updated).toBeLessThanOrEqual(Date.parse("2026-11-26T10:00:05.000Z"));
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),
     ),
