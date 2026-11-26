@@ -9,7 +9,64 @@ const testFileRule = createOxlintRuleHarness("t3code/explicit-run-origin", {
   filename: "apps/server/src/orchestration-v2/Example.test.ts",
 });
 
+const serverRule = createOxlintRuleHarness("t3code/explicit-run-origin", {
+  filename: "apps/server/src/mcp/Example.ts",
+});
+const clientRule = createOxlintRuleHarness("t3code/explicit-run-origin", {
+  filename: "packages/client-runtime/src/state/Example.ts",
+});
+
 describe("t3code/explicit-run-origin", () => {
+  rule.invalid(
+    "reports runs ordered by start time after a flatMap",
+    `declare const DateTime: { Order: (left: unknown, right: unknown) => number };
+     declare const projection: { runs: ReadonlyArray<{ ordinal: number; startedAt: unknown }> };
+     export const previous = projection.runs
+       .flatMap((run) => (run.startedAt === null ? [] : [{ run, startedAt: run.startedAt }]))
+       .toSorted((left, right) => DateTime.Order(right.startedAt, left.startedAt))[0]?.run;`,
+  );
+
+  rule.invalid(
+    "reports runs compared by completion time in a callback",
+    `declare const DateTime: { isGreaterThan: (left: unknown, right: unknown) => boolean };
+     declare const runs: ReadonlyArray<{ completedAt: unknown }>;
+     declare const source: { completedAt: unknown };
+     export const later = runs.some((run) => DateTime.isGreaterThan(run.completedAt, source.completedAt));`,
+  );
+
+  rule.valid(
+    "allows mapping runs to ids without ordering them",
+    `declare const runs: ReadonlyArray<{ id: string; ordinal: number }>;
+     export const ids = runs.map((run) => run.id);`,
+  );
+
+  serverRule.invalid(
+    "reports matching a run against a shell's latestRunId",
+    `declare const shell: { latestRunId: string | null };
+     declare const run: { id: string };
+     export const isLatest = shell.latestRunId === run.id;`,
+  );
+
+  serverRule.invalid(
+    "reports loading the run a shell's latestRunId names",
+    `declare const shell: { latestRunId: string };
+     declare const load: (filter: { runIds: ReadonlyArray<string> }) => void;
+     load({ runIds: [shell.latestRunId] });`,
+  );
+
+  serverRule.valid(
+    "allows passing a shell's latestRunId on as presentation",
+    `declare const shell: { latestRunId: string | null };
+     export const summary = { latestRunId: shell.latestRunId, hasRun: shell.latestRunId !== null };`,
+  );
+
+  clientRule.valid(
+    "leaves clients, which present runs, alone",
+    `declare const shell: { latestRunId: string | null };
+     declare const run: { id: string };
+     export const isLatest = shell.latestRunId === run.id;`,
+  );
+
   rule.valid(
     "allows a pick from a collection that says which runs it reads",
     `declare const runsByOrigin: <R>(runs: ReadonlyArray<R>, origin: "t3" | "any") => ReadonlyArray<R>;

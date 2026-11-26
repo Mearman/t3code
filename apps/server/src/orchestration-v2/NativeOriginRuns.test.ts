@@ -132,6 +132,29 @@ it("stops T3's run with pending background work, not a transcript run after it",
   assert.equal(target?.id, base.id);
 });
 
+it("times a wake from T3's work, not a transcript turn that started later", () => {
+  const at = (minute: number) => DateTime.makeUnsafe(`2026-11-26T1${minute}:00:00.000Z`);
+  const t3Run = {
+    id: RunId.make("run:wake-timer:t3"),
+    ordinal: 1,
+    status: "completed" as const,
+    startedAt: at(0),
+    workStartedAt: at(0),
+  } as OrchestrationV2Run;
+  const transcriptRun = {
+    id: RunId.make("run:wake-timer:transcript"),
+    ordinal: 2,
+    status: "completed" as const,
+    startedAt: at(1),
+    nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+  } as OrchestrationV2Run;
+  const wake = Orchestrator.wakeWorkStartedAt(
+    { runs: [t3Run, transcriptRun], subagents: [] },
+    { createdBy: "system", creationSource: "server", notification: {} },
+  );
+  assert.deepEqual(wake, { workStartedAt: at(0) });
+});
+
 it.effect("releases an unattended hold when T3's run ends before a transcript run", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

@@ -1564,7 +1564,8 @@ const make = Effect.gen(function* () {
   };
 
   // A background subagent keeps calling tools after the run that started it settles. Its
-  // delegations join that latest run, whose completion cohort wakes the thread once they finish.
+  // delegations join T3's latest run, whose completion cohort wakes the thread once they finish;
+  // the shell's latest run can be a transcript turn that run never sent.
   const backgroundSubagentRun = Effect.fn("OrchestratorMcpService.backgroundSubagentRun")(
     function* (scope: McpInvocationScope, threadId: ThreadId) {
       const shell = yield* threadManagement
@@ -1572,13 +1573,13 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(threadManagementFailure));
       if (
         shell?.activeRunId !== null ||
-        shell.latestRunId === null ||
         !isLiveCallerShell(shell, scope.thread?.providerInstanceId)
       ) {
         return undefined;
       }
       const { runs } = yield* loadThreadRecords(threadId, ["runs"], {
-        runIds: [shell.latestRunId],
+        runStatuses: [],
+        includePresentedRun: "t3",
       });
       return runs[0];
     },

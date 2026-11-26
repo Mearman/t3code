@@ -40,6 +40,7 @@ export function limitRecoveryCommand(
     return null;
   const identity = `${thread.id}:${thread.latestRunId}:${resetMs}`;
   const recovery = thread.limitRecovery;
+  // oxlint-disable-next-line t3code/explicit-run-origin -- limit-recovery candidates carry T3's own latest executed run
   if (recovery?.runId !== thread.latestRunId || recovery.resetAt !== thread.usageLimitResetAt) {
     if (nowMs - resetMs > MAX_OVERDUE_ARM_MS) return null;
     if (!autoResume && (!snooze || resetMs <= nowMs)) return null;
@@ -48,6 +49,7 @@ export function limitRecoveryCommand(
       commandId: CommandId.make(`limit-arm:${identity}`),
       threadId: thread.id,
       limitRecovery: {
+        // oxlint-disable-next-line t3code/explicit-run-origin -- limit-recovery candidates carry T3's own latest executed run
         runId: thread.latestRunId,
         resetAt: thread.usageLimitResetAt,
         autoResume,
@@ -67,6 +69,7 @@ export function limitRecoveryCommand(
     commandId: CommandId.make(`limit-resume:${deliveryIdentity}`),
     messageId: MessageId.make(`limit-resume:${deliveryIdentity}`),
     threadId: thread.id,
+    // oxlint-disable-next-line t3code/explicit-run-origin -- limit-recovery candidates carry T3's own latest executed run
     usageLimitContinuationOfRunId: thread.latestRunId,
     ...(recovery.requestId === undefined
       ? {}
