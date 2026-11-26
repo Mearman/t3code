@@ -51,7 +51,6 @@ import { removeEmptyDirectory, type RemoveEmptyDirectoryError } from "./removeEm
 import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
 import { gitConfigEnv, serverGitConfigEnv, unsetInheritedRepositoryEnv } from "./VcsProcess.ts";
 import { makeWorktreeCheckoutCache } from "./worktreeCheckoutCache.ts";
-import { outsideIndexSwap, reserveIndexSwap } from "./worktreeIndexSwap.ts";
 import { removeLinkedWorktree } from "./worktreeRemoval.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
@@ -1590,7 +1589,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       // Outside the process permit: resolving the repository may itself need one.
       (execution) =>
         input.writesSharedConfig ? withSharedConfigLock(input.cwd, execution) : execution,
-      (execution) => outsideIndexSwap(input.cwd, execution),
     );
 
   const checkoutCache = yield* makeWorktreeCheckoutCache({
@@ -6502,15 +6500,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
     // Older Git (such as 2.30) skips the write when racy entries merely check out clean.
     // A refresh re-reads every checked-out file, so allow five minutes outside shared permits.
-    const refresh = (env?: NodeJS.ProcessEnv) =>
-      runGit(
-        "GitVcsDriver.createWorktree.refreshIndex",
-        worktreePath,
-        ["update-index", "-q", "--refresh", "--force-write-index"],
-        { timeoutMs: WORKTREE_INDEX_REFRESH_TIMEOUT_MS, env },
-      );
+    const refresh = runGit(
+      "GitVcsDriver.createWorktree.refreshIndex",
+      worktreePath,
+      ["update-index", "-q", "--refresh", "--force-write-index"],
+      { timeoutMs: WORKTREE_INDEX_REFRESH_TIMEOUT_MS },
+    );
     const checkoutSecond = yield* indexSecond;
-    yield* refresh();
+    yield* refresh;
     const refreshedSecond = yield* indexSecond;
     if (
       Option.isNone(checkoutSecond) ||
@@ -6526,44 +6523,29 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const checkoutTime = checkoutSecond.value;
     const delay = (checkoutTime + 1) * 1000 + 50 - (yield* Clock.currentTimeMillis);
     if (delay >= 2_000) return;
-    if (delay <= 0) return yield* refresh();
-    // Waiting here would hold up the thread's agent, and refreshing in place later would hold the
-    // index lock while its setup script and agent run Git. So refresh a copy in the background and
-    // take the lock only to swap it in, unless Git holds it or the index changed since the copy.
-    const copyPath = `${indexPath}.t3-refresh`;
-    const lockPath = `${indexPath}.lock`;
-    const stamp = (info: FileSystem.File.Info) =>
-      `${info.size}:${Option.getOrUndefined(info.ino)}:${Option.getOrUndefined(info.mtime)?.getTime()}`;
-    // Reserved before the worktree is returned, so T3's own Git commands there never meet the lock.
-    const swap = yield* reserveIndexSwap([worktreePath, yield* fileSystem.realPath(worktreePath)]);
+    if (delay <= 0) return yield* refresh;
+    // Waiting would hold up the agent, and rewriting the index later would take index.lock under
+    // its Git. Git trusts the stat of entries stamped before the index's second (is_racy_stat), so
+    // move a pinned link's mtime past the checkout second; that inode is the index unless Git has
+    // replaced it since.
+    const nextSecond = checkoutTime + 1;
+    const pinned = Effect.acquireRelease(
+      random.uuidV4().pipe(
+        Effect.map((id) => `${indexPath}.t3-refresh-${id}`),
+        Effect.tap((pinPath) => fileSystem.link(indexPath, pinPath)),
+      ),
+      (pinPath) => fileSystem.remove(pinPath).pipe(Effect.ignore),
+    );
+    const secondOf = (info: FileSystem.File.Info) =>
+      Option.map(info.mtime, (date) => Math.floor(date.getTime() / 1000));
     yield* Effect.gen(function* () {
       yield* Effect.sleep(Duration.millis(delay));
-      const copied = stamp(yield* fileSystem.stat(indexPath));
-      yield* fileSystem.copyFile(indexPath, copyPath);
-      // Keep the checkout's timestamp so this refresh still re-reads the files stamped in it.
-      yield* fileSystem.utimes(copyPath, checkoutTime, checkoutTime);
-      yield* refresh({ GIT_INDEX_FILE: copyPath });
-      yield* Effect.uninterruptible(
-        // link fails when the lock exists; once it is ours, release it on any failure.
-        fileSystem.link(copyPath, lockPath).pipe(
-          Effect.andThen(
-            fileSystem.stat(indexPath).pipe(
-              Effect.flatMap((current) =>
-                stamp(current) === copied
-                  ? fileSystem.rename(lockPath, indexPath)
-                  : fileSystem.remove(lockPath),
-              ),
-              Effect.tapError(() => fileSystem.remove(lockPath).pipe(Effect.ignore)),
-            ),
-          ),
-        ),
-      ).pipe(swap.exclusive);
-    }).pipe(
-      Effect.ensuring(fileSystem.remove(copyPath).pipe(Effect.ignore)),
-      Effect.ensuring(swap.release),
-      Effect.ignore({ log: "Debug" }),
-      Effect.forkIn(serviceScope),
-    );
+      const pinPath = yield* pinned;
+      // A Git that rewrote the index since then made a new inode stamped later; leave that alone.
+      const pinnedSecond = secondOf(yield* fileSystem.stat(pinPath));
+      if (Option.isNone(pinnedSecond) || pinnedSecond.value !== checkoutTime) return;
+      yield* fileSystem.utimes(pinPath, nextSecond, nextSecond);
+    }).pipe(Effect.scoped, Effect.ignore({ log: "Debug" }), Effect.forkIn(serviceScope));
   });
 
   // Git writes the lock reason during registration, before checkout or user hooks can run.
