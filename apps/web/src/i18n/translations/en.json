@@ -13024,5 +13024,7 @@
       "v": "v"
     },
     " more in Linked items"
-  ]
+  ],
+  "fff0f40120d64a95": "Running server",
+  "4e09b4f186002d26": "T3 Code is using the server that was already running for this T3 home, such as the background service. Quitting T3 Code leaves it and its agents running. Change its network access where that server was started."
 }

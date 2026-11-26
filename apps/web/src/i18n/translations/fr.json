@@ -13015,5 +13015,7 @@
       "v": "v"
     },
     " de plus dans Éléments associés"
-  ]
+  ],
+  "fff0f40120d64a95": "Serveur en cours d’exécution",
+  "4e09b4f186002d26": "T3 Code utilise le serveur qui tournait déjà pour ce home T3, par exemple le service en arrière-plan. Quitter T3 Code le laisse tourner avec ses agents. Modifiez son accès réseau là où ce serveur a été démarré."
 }

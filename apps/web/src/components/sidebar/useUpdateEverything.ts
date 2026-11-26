@@ -6,6 +6,7 @@ import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 import { APP_VERSION } from "~/branding";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isElectron } from "~/env";
+import { isDesktopPrimaryAttached } from "~/environments/primary/target";
 import { useEnvironments } from "~/state/environments";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentUpdateStatesAtom, serverEnvironment } from "~/state/server";
@@ -43,7 +44,8 @@ export function isHostedByThisApp(
 ) {
   return (
     isElectron &&
-    (environment.entry.target._tag === "PrimaryConnectionTarget" ||
+    // An attached primary is a service or `t3 serve` that updates itself, not with this app.
+    ((environment.entry.target._tag === "PrimaryConnectionTarget" && !isDesktopPrimaryAttached()) ||
       isDesktopLocalConnectionTarget(environment.entry.target))
   );
 }
