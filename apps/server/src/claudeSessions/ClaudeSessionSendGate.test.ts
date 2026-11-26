@@ -28,7 +28,6 @@ import {
   type ClaudeSessionHold,
 } from "./ClaudeSessionSendGate.ts";
 
-const isClaudeProcessTableError = Schema.is(ClaudeProcessTableError);
 const encodeEntry = Schema.encodeSync(Schema.fromJsonString(ClaudeSessionRegistryEntry));
 
 const START = "Thu Jan  1 00:00:00 2026";
@@ -47,8 +46,11 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
   const probeWith = (
     files: Record<string, string>,
     sessionId: string,
-    // Runs between the two registry reads, as Claude can write an entry during `ps`.
-    duringPs: Record<string, string> | ClaudeProcessTableError = {},
+    // Runs between the probe's two registry reads, as Claude can write an entry during `ps`.
+    readProcesses: (
+      write: (written: Record<string, string>) => Effect.Effect<void>,
+    ) => Effect.Effect<ReadonlyArray<ClaudeProcessRow>, ClaudeProcessTableError> = () =>
+      Effect.succeed(processes),
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -63,11 +65,13 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         sessionsDir,
         sessionId,
         ownRootPids: [100],
-        readProcesses: isClaudeProcessTableError(duringPs)
-          ? Effect.fail(duringPs)
-          : write(duringPs).pipe(Effect.as(processes)),
+        readProcesses: readProcesses(write),
       });
     });
+  const writeDuringPs =
+    (written: Record<string, string>) =>
+    (write: (files: Record<string, string>) => Effect.Effect<void>) =>
+      write(written).pipe(Effect.as(processes));
   const entry = (
     pid: number,
     sessionId: string,
@@ -119,19 +123,24 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
   it.effect("reads a half-written entry again before letting it block", () =>
     Effect.gen(function* () {
       const finished = { "200.json": entry(200, "elsewhere") };
-      expect(yield* probeWith({ "200.json": '{"pid":20' }, "mine", finished)).toBeUndefined();
+      expect(
+        yield* probeWith({ "200.json": '{"pid":20' }, "mine", writeDuringPs(finished)),
+      ).toBeUndefined();
       const holding = { "200.json": entry(200, "mine") };
-      expect(yield* probeWith({ "200.json": '{"pid":20' }, "mine", holding)).toEqual({
-        _tag: "held",
-        pid: 200,
-        sdk: false,
-      });
+      expect(yield* probeWith({ "200.json": '{"pid":20' }, "mine", writeDuringPs(holding))).toEqual(
+        {
+          _tag: "held",
+          pid: 200,
+          sdk: false,
+        },
+      );
     }),
   );
 
   it.effect("reads the process table only for an entry that may name the session", () =>
     Effect.gen(function* () {
-      const unreadable = new ClaudeProcessTableError({ reason: "ps exited with 1" });
+      const unreadable = () =>
+        Effect.fail(new ClaudeProcessTableError({ reason: "ps exited with 1" }));
       const files = { "200.json": entry(200, "terminal") };
       expect(yield* probeWith(files, "other", unreadable)).toBeUndefined();
       const failure = yield* Effect.flip(probeWith(files, "terminal", unreadable));
