@@ -22,6 +22,10 @@ const state: ClaudeSessionSyncState.ClaudeSessionSyncState = {
   providerThreadId: null,
   accountUuids: [],
   hydrationState: "pending",
+  filePath: "/home/me/.claude/projects/-work/s-1.jsonl",
+  parserState: null,
+  fileSize: 0,
+  fileMtimeMs: 0,
   updatedAt: DateTime.makeUnsafe("2026-11-26T12:00:00.000Z"),
 };
 
@@ -68,10 +72,17 @@ describe("ClaudeSessionSyncStateRepository", () => {
         providerThreadId: ProviderThreadId.make("provider-thread:s-1"),
         accountUuids: ["account-1", "account-2"],
         hydrationState: "full",
+        parserState: '{"segment":null,"lastUuid":"line-9"}',
+        fileSize: 8192,
+        fileMtimeMs: 1_795_000_000_000,
         updatedAt: DateTime.makeUnsafe("2026-11-26T12:05:00.000Z"),
       };
       yield* repository.upsert(advanced);
       assert.deepStrictEqual(comparable(yield* repository.get(key)), comparable(advanced));
+      yield* repository.upsert({ ...state, sessionId: "s-2", storeKey: "/other:/other" });
+      assert.deepStrictEqual((yield* repository.listStore(key.storeKey)).map(comparable), [
+        comparable(advanced),
+      ]);
       assert.isUndefined(yield* repository.get({ ...key, sessionId: "s-2" }));
       assert.isUndefined(yield* repository.get({ ...key, storeKey: "/other:/other" }));
     }).pipe(Effect.provide(layer)),

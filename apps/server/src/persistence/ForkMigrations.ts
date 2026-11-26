@@ -3,12 +3,16 @@ import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import ForkMigration0001 from "./ForkMigrations/001_ClaudeSessionSyncState.ts";
+import ForkMigration0002 from "./ForkMigrations/002_ClaudeSessionSyncProgress.ts";
 import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
 
 // Upstream's migrator skips every id at or below the highest it has recorded, so a fork migration in its ledger would suppress the upstream one that later takes that id. Fork schema names start with `fork_` so no upstream CREATE can collide with them.
 const FORK_MIGRATIONS_TABLE = "fork_migrations";
 
-const forkMigrationEntries = [[1, "ClaudeSessionSyncState", ForkMigration0001]] as const;
+const forkMigrationEntries = [
+  [1, "ClaudeSessionSyncState", ForkMigration0001],
+  [2, "ClaudeSessionSyncProgress", ForkMigration0002],
+] as const;
 
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 

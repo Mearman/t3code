@@ -12,9 +12,9 @@ import { NonNegativeInt, ProviderThreadId, ThreadId } from "@t3tools/contracts";
 import { PersistenceDecodeError, PersistenceSqlError } from "./Errors.ts";
 
 /**
- * How much of a session T3 holds: `pending` is discovered only, `entry` is its settled thread entry without history, and `full` has every run read back from the transcript.
+ * How much of a session T3 holds: `pending` is discovered only, `entry` is its settled thread entry without history, `full` has every run read back from the transcript, and `deleted` is a thread the user deleted, which is never recreated.
  */
-const ClaudeSessionHydrationState = Schema.Literals(["pending", "entry", "full"]);
+const ClaudeSessionHydrationState = Schema.Literals(["pending", "entry", "full", "deleted"]);
 export type ClaudeSessionHydrationState = typeof ClaudeSessionHydrationState.Type;
 
 /** A transcript within one Claude store: the realpaths of its `projects/` and `sessions/`. */
@@ -37,9 +37,17 @@ const ClaudeSessionSyncState = Schema.Struct({
   providerThreadId: Schema.NullOr(ProviderThreadId),
   accountUuids: Schema.fromJsonString(Schema.Array(Schema.String)),
   hydrationState: ClaudeSessionHydrationState,
+  filePath: Schema.String,
+  /** The reader's own state at `byteOffset`, as JSON it encodes and decodes itself. */
+  parserState: Schema.NullOr(Schema.String),
+  /** The transcript's size and mtime when last read, so a sweep skips files that have not changed. */
+  fileSize: NonNegativeInt,
+  fileMtimeMs: NonNegativeInt,
   updatedAt: Schema.DateTimeUtcFromString,
 });
 export type ClaudeSessionSyncState = typeof ClaudeSessionSyncState.Type;
+
+const StoreLookup = Schema.Struct({ storeKey: Schema.String });
 
 const NativeSessionLookup = Schema.Struct({ nativeSessionId: Schema.String });
 
@@ -62,6 +70,13 @@ export class ClaudeSessionSyncStateRepository extends Context.Service<
     readonly upsert: (
       state: ClaudeSessionSyncState,
     ) => Effect.Effect<void, ClaudeSessionSyncStateRepositoryError>;
+    /** Every session recorded for one store. */
+    readonly listStore: (
+      storeKey: string,
+    ) => Effect.Effect<
+      ReadonlyArray<ClaudeSessionSyncState>,
+      ClaudeSessionSyncStateRepositoryError
+    >;
     readonly findProviderThreadByNativeSessionId: (
       nativeSessionId: string,
     ) => Effect.Effect<
@@ -94,9 +109,38 @@ const make = Effect.gen(function* () {
         provider_thread_id AS "providerThreadId",
         account_uuids_json AS "accountUuids",
         hydration_state AS "hydrationState",
+        file_path AS "filePath",
+        parser_state_json AS "parserState",
+        file_size AS "fileSize",
+        file_mtime_ms AS "fileMtimeMs",
         updated_at AS "updatedAt"
       FROM fork_claude_session_sync_state
       WHERE store_key = ${storeKey} AND session_id = ${sessionId}
+    `,
+  });
+
+  const listRows = SqlSchema.findAll({
+    Request: StoreLookup,
+    Result: ClaudeSessionSyncState,
+    execute: ({ storeKey }) => sql`
+      SELECT
+        store_key AS "storeKey",
+        session_id AS "sessionId",
+        file_identity AS "fileIdentity",
+        byte_offset AS "byteOffset",
+        guard_hash AS "guardHash",
+        last_uuid AS "lastUuid",
+        thread_id AS "threadId",
+        provider_thread_id AS "providerThreadId",
+        account_uuids_json AS "accountUuids",
+        hydration_state AS "hydrationState",
+        file_path AS "filePath",
+        parser_state_json AS "parserState",
+        file_size AS "fileSize",
+        file_mtime_ms AS "fileMtimeMs",
+        updated_at AS "updatedAt"
+      FROM fork_claude_session_sync_state
+      WHERE store_key = ${storeKey}
     `,
   });
 
@@ -114,6 +158,10 @@ const make = Effect.gen(function* () {
         provider_thread_id,
         account_uuids_json,
         hydration_state,
+        file_path,
+        parser_state_json,
+        file_size,
+        file_mtime_ms,
         updated_at
       )
       VALUES (
@@ -127,6 +175,10 @@ const make = Effect.gen(function* () {
         ${state.providerThreadId},
         ${state.accountUuids},
         ${state.hydrationState},
+        ${state.filePath},
+        ${state.parserState},
+        ${state.fileSize},
+        ${state.fileMtimeMs},
         ${state.updatedAt}
       )
       ON CONFLICT (store_key, session_id) DO UPDATE SET
@@ -138,6 +190,10 @@ const make = Effect.gen(function* () {
         provider_thread_id = excluded.provider_thread_id,
         account_uuids_json = excluded.account_uuids_json,
         hydration_state = excluded.hydration_state,
+        file_path = excluded.file_path,
+        parser_state_json = excluded.parser_state_json,
+        file_size = excluded.file_size,
+        file_mtime_ms = excluded.file_mtime_ms,
         updated_at = excluded.updated_at
     `,
   });
@@ -168,6 +224,12 @@ const make = Effect.gen(function* () {
     upsert: Effect.fn("ClaudeSessionSyncStateRepository.upsert")(function (state) {
       return upsertRow(state).pipe(
         Effect.mapError(toRepositoryError("upsertClaudeSessionSyncState")),
+      );
+    }),
+    listStore: Effect.fn("ClaudeSessionSyncStateRepository.listStore")(function (storeKey) {
+      return listRows({ storeKey }).pipe(
+        NodeSqliteClient.readOnly,
+        Effect.mapError(toRepositoryError("listClaudeSessionSyncStates")),
       );
     }),
     findProviderThreadByNativeSessionId: Effect.fn(
