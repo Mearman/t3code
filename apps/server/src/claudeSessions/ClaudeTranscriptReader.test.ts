@@ -64,8 +64,28 @@ const transcriptFile = Effect.gen(function* () {
   return path.join(directory, `${SESSION}.jsonl`);
 });
 
+// What the consumer stores beside each cursor: the uuids its reads consumed, per file.
+const consumed = new Map<string, ReadonlySet<string>>();
+
 const read = (filePath: string, cursor = initialClaudeTranscriptCursor, maxBytes = BUDGET) =>
-  readClaudeTranscript({ filePath, sessionId: SESSION, cursor: stored(cursor), maxBytes });
+  readClaudeTranscript({
+    filePath,
+    sessionId: SESSION,
+    cursor: stored(cursor),
+    maxBytes,
+    knownUuids: (uuids) => {
+      const known = consumed.get(filePath) ?? new Set<string>();
+      return Effect.succeed(new Set(uuids.filter((uuid) => known.has(uuid))));
+    },
+  }).pipe(
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        const fromTop = result.rewritten || cursor.offset === 0;
+        const earlier = fromTop ? [] : [...(consumed.get(filePath) ?? [])];
+        consumed.set(filePath, new Set([...earlier, ...result.consumedUuids]));
+      }),
+    ),
+  );
 
 it.layer(NodeServices.layer)("readClaudeTranscript", (it) => {
   it.effect("leaves an unterminated last line for the next read", () =>
@@ -144,6 +164,47 @@ it.layer(NodeServices.layer)("readClaudeTranscript", (it) => {
 
       expect(itemTexts(result.events)).toEqual(["Short", long, "Tail"]);
       expect(result.cursor.offset).toBe(bytes(content));
+    }),
+  );
+
+  it.effect("skips lines Claude Code writes again after an earlier read consumed them", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const filePath = yield* transcriptFile;
+      const history = prompt("p1", null, "First") + reply("a1", "p1", "Answer");
+      yield* fileSystem.writeFileString(filePath, history);
+      const initial = yield* read(filePath);
+
+      yield* fileSystem.writeFileString(
+        filePath,
+        history + history + prompt("p2", "a1", "Second"),
+        {
+          flag: "w",
+        },
+      );
+      const next = yield* read(filePath, initial.cursor);
+
+      expect(next.rewritten).toBe(false);
+      expect(startedIds(next.events)).toEqual(["p2"]);
+      expect(next.consumedUuids).toEqual(["p2"]);
+    }),
+  );
+
+  it.effect("asks for no known uuids when it reads from the top", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const filePath = yield* transcriptFile;
+      yield* fileSystem.writeFileString(filePath, prompt("p1", null, "First"));
+
+      const result = yield* readClaudeTranscript({
+        filePath,
+        sessionId: SESSION,
+        cursor: initialClaudeTranscriptCursor,
+        maxBytes: BUDGET,
+        knownUuids: () => Effect.die("asked"),
+      });
+
+      expect(startedIds(result.events)).toEqual(["p1"]);
     }),
   );
 

@@ -89,7 +89,8 @@ const lines = (records: ReadonlyArray<unknown>) =>
 const parse = (
   records: ReadonlyArray<unknown>,
   state: ClaudeTranscriptParserState = initialClaudeTranscriptParserState,
-) => parseClaudeTranscriptLines({ sessionId: SESSION, state, lines: lines(records) });
+  known: ReadonlySet<string> = new Set(),
+) => parseClaudeTranscriptLines({ sessionId: SESSION, state, lines: lines(records), known });
 
 const id = (lineUuid: string, block?: number) =>
   block === undefined ? `x:${SESSION}:${lineUuid}` : `x:${SESSION}:${lineUuid}:${block}`;
@@ -215,11 +216,14 @@ describe("parseClaudeTranscriptLines", () => {
         sessionId: SESSION,
         state: initialClaudeTranscriptParserState,
         lines: all.slice(0, split),
+        known: new Set(),
       });
+      // The consumer stores the uuids each read consumed and names them to the next.
       const second = parseClaudeTranscriptLines({
         sessionId: SESSION,
         state: decodeState(encodeState(first.state)),
         lines: all.slice(split),
+        known: new Set(first.consumedUuids),
       });
       expect([...first.events, ...second.events], `split at ${split}`).toEqual(whole.events);
       expect([...first.malformed, ...second.malformed].map((error) => error.offset)).toEqual(
@@ -505,6 +509,137 @@ describe("parseClaudeTranscriptLines", () => {
     const { state } = parse(records);
 
     expect(encodeState(state).length).toBeLessThan(64 * 1024);
+  });
+
+  it("files reply lines written after the next prompt under the reply they continue", () => {
+    const { events } = parse([
+      user("p0", null, "First", { promptId: "prompt-0" }),
+      assistant("a0", "p0", toolUse("tool-0"), "tool_use", "m0"),
+      user("r0", "a0", [toolResult("tool-0")], { promptId: "prompt-0" }),
+      // Typed while the reply streamed; Claude Code writes the reply's remaining lines after it.
+      user("p1", "r0", "Typed during the reply", { promptId: "prompt-1" }),
+      attachment("at1", "p1", { type: "hook_success" }),
+      assistant("a1", "r0", { type: "thinking", thinking: "", signature: "s" }, "tool_use", "m1"),
+      assistant("a2", "a1", text("Late text"), "tool_use", "m1"),
+      assistant("a3", "a2", toolUse("tool-1"), "tool_use", "m1"),
+      user("r1", "a3", [toolResult("tool-1")], { promptId: "prompt-0" }),
+      user("i1", "r1", [text(INTERRUPT)], { promptId: "prompt-0" }),
+      assistant("b1", "at1", text("Answer to the typed prompt"), "end_turn"),
+    ]);
+
+    const itemsBySegment = new Map<string, Array<string>>();
+    for (const event of events) {
+      if (event._tag !== "Item") continue;
+      itemsBySegment.set(event.segmentId, [
+        ...(itemsBySegment.get(event.segmentId) ?? []),
+        event.item.lineUuid,
+      ]);
+    }
+    expect(Object.fromEntries(itemsBySegment)).toEqual({
+      p0: ["p0", "a0", "r0", "a1", "a2", "a3", "r1", "i1"],
+      p1: ["p1", "b1"],
+    });
+    const ends = events.filter((event) => event._tag === "SegmentEnded");
+    expect(ends.filter((end) => end.segmentId === "p0").at(-1)).toMatchObject({
+      reason: "interrupted",
+      lastAssistantUuid: "a3",
+    });
+    expect(ends.at(-1)).toMatchObject({
+      segmentId: "p1",
+      reason: "turn-end",
+      lastAssistantUuid: "b1",
+    });
+    expect(events.filter((event) => event._tag === "Branch")).toEqual([]);
+  });
+
+  it("keeps an interrupt written after the prompt that points forward to it", () => {
+    const { events } = parse([
+      user("p0", null, "First", { promptId: "prompt-0" }),
+      assistant("a0", "p0", text("Working"), "tool_use"),
+      user("p1", "i0", "Next", { promptId: "prompt-1" }),
+      user("i0", "a0", [text("[Request interrupted by user]")], { promptId: "prompt-0" }),
+    ]);
+
+    expect(summary(events)).toEqual([
+      "start p0",
+      `item ${id("p0")}`,
+      `item ${id("a0", 0)}`,
+      "end p0 next-prompt a0",
+      "start p1",
+      `item ${id("p1")}`,
+      `item ${id("i0", 0)}`,
+      "end p0 interrupted a0",
+    ]);
+  });
+
+  it("keeps a command line written after compaction with an earlier timestamp", () => {
+    const { events } = parse([
+      user("p0", null, "First", { promptId: "prompt-0", timestamp: "2026-01-01T00:00:10.000Z" }),
+      {
+        ...system("compact_boundary", "b1", null, {
+          compactMetadata: { trigger: "manual", preTokens: 9 },
+        }),
+        timestamp: "2026-01-01T00:01:00.000Z",
+      },
+      user("s0", "later", "Resumed", {
+        promptId: "prompt-1",
+        timestamp: "2026-01-01T00:01:01.000Z",
+      }),
+      user("cs", "b1", "Summary", {
+        isCompactSummary: true,
+        timestamp: "2026-01-01T00:01:01.000Z",
+      }),
+      user("c1", "cs", "<command-name>/compact</command-name>", {
+        promptId: "prompt-2",
+        timestamp: "2026-01-01T00:00:50.000Z",
+      }),
+    ]);
+
+    expect(prompts(events).map((prompt) => prompt?.text)).toEqual(["First", "Resumed", "/compact"]);
+  });
+
+  it("skips lines an earlier read consumed, however far back, and moves nothing for them", () => {
+    const records: Array<unknown> = [user("p1", null, "Go", { promptId: "prompt-1" })];
+    let parent = "p1";
+    for (let index = 0; index < 2000; index += 1) {
+      records.push(attachment(`n${index}`, parent, { type: "hook_success" }));
+      parent = `n${index}`;
+    }
+    records.push(assistant("a1", parent, text("Done"), "end_turn"));
+    const first = parse(records);
+    const replayed = [
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "n1999", text("Done"), "end_turn"),
+    ];
+
+    const across = parse(
+      [...replayed, user("p2", "a1", "Next", { promptId: "prompt-2" })],
+      first.state,
+      new Set(first.consumedUuids),
+    );
+    const within = parse([...records, ...replayed]);
+
+    expect(summary(across.events)).toEqual(["start p2", `item ${id("p2")}`]);
+    expect(across.consumedUuids).toEqual(["p2"]);
+    expect(summary(within.events)).toEqual(summary(first.events));
+    expect(within.state).toEqual(first.state);
+  });
+
+  it("opens a segment for a slash command whose parent is outside the running turn", () => {
+    const { events } = parse([
+      user("p0", null, "First", { promptId: "prompt-0" }),
+      assistant("a0", "p0", text("Done"), "end_turn"),
+      user("p1", "a0", "Second", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      system("local_command", "lc1", "a0", { content: "<command-name>/status</command-name>" }),
+    ]);
+
+    expect(summary(events).slice(-4)).toEqual([
+      "end p1 next-prompt a1",
+      "start lc1",
+      `item ${id("lc1")}`,
+      "end lc1 turn-end undefined",
+    ]);
   });
 
   it("ends a meta-opened turn that is interrupted before its reply, leaving the turn before it", () => {
