@@ -198,11 +198,10 @@ import * as PortScanner from "../../preview/PortScanner.ts";
 import {
   claudeDescendants,
   indexClaudeProcessTable,
-  parseClaudeProcessTable,
+  readClaudeProcessTable,
   type ClaudeProcessRow,
   type ClaudeProcessTable,
 } from "../../claudeSessions/ClaudeProcessTable.ts";
-import * as ProcessRunner from "../../processRunner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
@@ -1628,18 +1627,10 @@ export const layerQueryRunner: Layer.Layer<
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
-    const processRunner = yield* ProcessRunner.make();
-    const psProcessTable = processRunner
-      .run({
-        command: "ps",
-        args: ["-A", "-o", "pid=,ppid=,pgid=,lstart="],
-        env: { LC_ALL: "C", TZ: "UTC0" },
-        timeout: "5 seconds",
-      })
-      .pipe(
-        Effect.map((result) => (result.code === 0 ? parseClaudeProcessTable(result.stdout) : [])),
-        Effect.orElseSucceed(() => []),
-      );
+    const psProcessTable = readClaudeProcessTable().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.orElseSucceed(() => []),
+    );
     const monitor = Option.getOrUndefined(yield* Effect.serviceOption(NativeTelemetryClient));
     const nativeTable = platform === "darwin" ? monitor?.processIdentities : undefined;
     // Both readers use epoch seconds so a sidecar restart preserves tracked orphans.

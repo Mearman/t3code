@@ -1,6 +1,9 @@
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+
+import * as ProcessRunner from "../processRunner.ts";
 
 export interface ClaudeProcessRow {
   readonly pid: number;
@@ -35,6 +38,30 @@ export function parseClaudeProcessTable(table: string): ReadonlyArray<ClaudeProc
   });
 }
 
+export class ClaudeProcessTableError extends Schema.TaggedError<ClaudeProcessTableError>()(
+  "ClaudeProcessTableError",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Could not read the process table.";
+  }
+}
+
+/** Runs `ps` in the C locale and UTC, the form a registry entry's `procStart` is written in. */
+export const readClaudeProcessTable = Effect.fn("readClaudeProcessTable")(function* () {
+  const runner = yield* ProcessRunner.make();
+  const result = yield* runner
+    .run({
+      command: "ps",
+      args: ["-A", "-o", "pid=,ppid=,pgid=,lstart="],
+      env: { LC_ALL: "C", TZ: "UTC0" },
+      timeout: "5 seconds",
+    })
+    .pipe(Effect.mapError((cause) => new ClaudeProcessTableError({ cause })));
+  if (result.code !== 0) return yield* new ClaudeProcessTableError({ cause: result.stderr });
+  return parseClaudeProcessTable(result.stdout);
+});
+
 export function indexClaudeProcessTable(rows: ReadonlyArray<ClaudeProcessRow>) {
   return {
     byPid: new Map(rows.map((row) => [row.pid, row] as const)),
@@ -60,4 +87,12 @@ export function claudeDescendants(
     }
   }
   return found;
+}
+
+/** `rootPids` and every process below them. */
+export function claudeProcessTree(
+  table: ClaudeProcessTable,
+  rootPids: ReadonlyArray<number>,
+): ReadonlySet<number> {
+  return new Set([...rootPids, ...claudeDescendants(table, rootPids).map((row) => row.pid)]);
 }
