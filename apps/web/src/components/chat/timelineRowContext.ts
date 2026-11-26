@@ -10,7 +10,6 @@ import type {
 import {
   type EnvironmentId,
   type MessageId,
-  type OrchestrationV2ProviderFailure,
   type OrchestrationV2TurnItem,
   type RunAttemptId,
   type ScopedThreadRef,
@@ -94,10 +93,8 @@ export interface TimelineRowSharedState {
   onForkFromRun:
     | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
     | undefined;
-  /** The run a fork offered on a refused run's error starts from; null hides the offer. */
-  forkSourceForRefusedRun:
-    | ((refusedRunId: RunId, failure: OrchestrationV2ProviderFailure) => RunId | undefined)
-    | null;
+  /** Per run refused for a held session, the run the fork offered on its error starts from. */
+  heldSessionForkSources: ReadonlyMap<RunId, RunId>;
   onToggleTurnFold: (runId: RunId) => void;
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;

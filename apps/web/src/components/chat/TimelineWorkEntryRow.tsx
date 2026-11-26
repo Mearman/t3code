@@ -391,9 +391,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         : gt("Usage limit reached.")
       : workEntry.label;
     const forkRunId =
-      failureItem.runId === null || ctx.forkSourceForRefusedRun === null
-        ? undefined
-        : ctx.forkSourceForRefusedRun(failureItem.runId, failureItem.failure);
+      failureItem.runId === null ? undefined : ctx.heldSessionForkSources.get(failureItem.runId);
     const sourceThreadId = workEntry.projectedItem?.sourceThreadId ?? failureItem.threadId;
     const retryRunId =
       failureItem.runId !== null &&

@@ -82,10 +82,8 @@ import {
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
-  type OrchestrationV2ProviderFailure,
   type PreviewAnnotationPayload,
   ProviderInstanceId,
-  type RunId,
   type ServerProvider,
   type ScopedThreadRef,
   type ThreadId,
@@ -113,7 +111,7 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   getUserQueuedThreadRuns,
-  heldSessionForkSourceRunId,
+  heldSessionForkSources,
   threadCanSteer,
   threadSupportsProviderHandoff,
 } from "@t3tools/client-runtime/state/thread-workflows";
@@ -3065,11 +3063,9 @@ export default function ChatView(props: ChatViewProps) {
   const openSideChatStable = useStableCallback(() => void sideChat.open());
   const openSurfaceInMainView = useOpenSurfaceInMainView(activeThreadRef);
   const sendSideChatStable = useStableCallback(sideChat.open);
-  // Stable, so the timeline's remembered rows never hold a replaced projection.
-  const forkSourceForRefusedRun = useStableCallback(
-    (refusedRunId: RunId, failure: OrchestrationV2ProviderFailure) =>
-      heldSessionForkSourceRunId({ runs: serverProjection?.runs ?? [], refusedRunId, failure }),
-  );
+  // A value rather than a closure, so the timeline's remembered rows never hold a projection.
+  const heldSessionForkRunSources =
+    serverProjection === null ? undefined : heldSessionForkSources(serverProjection);
   const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
     useTimelineRewind({
       environmentId,
@@ -3743,7 +3739,9 @@ export default function ChatView(props: ChatViewProps) {
                     ? {}
                     : {
                         onForkFromRun: onForkFromRunStable,
-                        forkSourceForRefusedRun,
+                        ...(heldSessionForkRunSources === undefined
+                          ? {}
+                          : { heldSessionForkSources: heldSessionForkRunSources }),
                       })}
                   onOpenThread={onOpenRelatedThreadStable}
                   parentThreadLink={parentThreadLink}
