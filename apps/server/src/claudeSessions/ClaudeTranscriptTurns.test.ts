@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   claudeTranscriptFixture,
+  expectTrackerFollows,
   indexClaudeTranscriptLines,
 } from "./ClaudeTranscriptTestLines.ts";
 import {
@@ -43,18 +44,26 @@ function permute(lines: ReadonlyArray<Line>, next: (bound: number) => number): A
 }
 
 const PERMUTATIONS = 64;
+// Following every append re-derives the whole structure each time, so long fixtures follow fewer orders.
+const FOLLOWED_ORDERS = 8;
+const FOLLOWED_LINES = 100;
 
 /**
- * The structure of these lines, after checking the property every structure must have: any order that keeps each uuid's first line before its copies gives the same turns.
+ * The structure of these lines, after checking the properties every structure must have: any order that keeps each uuid's first line before its copies gives the same turns, and the tracker fed those lines one at a time equals the definition after every append.
  */
 function structureOf(lines: ReadonlyArray<Line>): ClaudeTranscriptStructure {
   const structure = claudeTranscriptStructure(indexClaudeTranscriptLines(lines));
   const expected = JSON.stringify(structure.turns);
+  expectTrackerFollows(lines, "file order");
   for (let seed = 1; seed <= PERMUTATIONS; seed++) {
-    const shuffled = claudeTranscriptStructure(
-      indexClaudeTranscriptLines(permute(lines, random(seed))),
-    );
-    expect(JSON.stringify(shuffled.turns), `permutation seed ${seed}`).toBe(expected);
+    const shuffled = permute(lines, random(seed));
+    expect(
+      JSON.stringify(claudeTranscriptStructure(indexClaudeTranscriptLines(shuffled)).turns),
+      `permutation seed ${seed}`,
+    ).toBe(expected);
+    if (seed <= FOLLOWED_ORDERS && lines.length <= FOLLOWED_LINES) {
+      expectTrackerFollows(shuffled, `permutation seed ${seed}`);
+    }
   }
   return structure;
 }
@@ -241,16 +250,107 @@ describe("claudeTranscriptStructure", () => {
     expect(turnOf(structure, "a2")).toBe("p1");
   });
 
-  // Round 4 finding 4: "waits on a tool" is checked, so a call that never got its result keeps nothing.
-  it("opens a turn for a command chained to a tool call that has no result", () => {
+  // Round 3 finding 5 and round 4 finding 4: a later prompt shows the call died, so the command opens.
+  it("opens a turn for a command chained to a tool call that died without a result", () => {
     const f = claudeTranscriptFixture();
     const structure = structureOf([
       f.prompt("p1", null, "Go"),
       f.toolUse("a1", "p1", "t1"),
       f.command("c1", "a1", "status"),
+      f.prompt("p2", "c1", "Next"),
     ]);
 
-    expect(turnIds(structure)).toEqual(["p1", "c1"]);
+    expect(turnIds(structure)).toEqual(["p1", "c1", "p2"]);
+  });
+
+  // Round 4 finding 3 with a command: the result written after a newer prompt brings the command back.
+  it("files a command with its tool call once the call's result arrives after a newer prompt", () => {
+    const f = claudeTranscriptFixture();
+    const structure = structureOf([
+      f.prompt("p1", null, "Go"),
+      f.toolUse("a1", "p1", "t1"),
+      f.command("c1", "a1", "status"),
+      f.prompt("p2", "c1", "Next"),
+      f.result("r1", "a1", "t1"),
+    ]);
+
+    expect(turnIds(structure)).toEqual(["p1", "p2"]);
+    expect(turn(structure, "p1").lineUuids).toEqual(["p1", "a1", "c1", "r1"]);
+  });
+
+  // Rewrite inspection finding 6: the command stays in the running turn whether or not the result comes.
+  it("keeps a command chained to a waiting tool call in its turn until a later prompt", () => {
+    const f = claudeTranscriptFixture();
+    const waiting = [
+      f.prompt("p2", null, "Go"),
+      f.toolUse("a2", "p2", "t2"),
+      f.command("c2", "a2", "status"),
+    ];
+    const before = structureOf(waiting);
+    const after = structureOf([...waiting, f.result("r2", "a2", "t2")]);
+
+    expect(turnIds(before)).toEqual(["p2"]);
+    expect(turn(before, "p2").lineUuids).toEqual(["p2", "a2", "c2"]);
+    expect(turnIds(after)).toEqual(["p2"]);
+  });
+
+  // Rewrite inspection finding 6: a reply written before its parent already sits in the turn it joins.
+  it("files a line whose parent is not yet written with the turn running when it was stamped", () => {
+    const f = claudeTranscriptFixture();
+    const early = [f.prompt("p1", null, "Go"), f.toolUse("call", "think", "t1")];
+    const before = structureOf(early);
+    const after = structureOf([...early, f.thinking("think", "p1", { timestamp: f.iso(0.5) })]);
+
+    expect(turnIds(before)).toEqual(["p1"]);
+    expect(turn(before, "p1")).toMatchObject({ lineUuids: ["p1", "call"], end: undefined });
+    expect(turnIds(after)).toEqual(["p1"]);
+    expect(turn(after, "p1")).toMatchObject({ lineUuids: ["p1", "think", "call"], end: undefined });
+  });
+
+  // Rewrite inspection finding 2: an auto-compaction whose logical parent is not in the file.
+  it("files a compaction whose logical parent is gone with the turn it interrupted", () => {
+    const f = claudeTranscriptFixture();
+    const structure = structureOf([
+      f.prompt("p0", null, "Go"),
+      f.text("a0", "p0", "Working", null),
+      f.boundary("cb", "gone"),
+      f.summary("s1", "cb", { promptId: "pid-p0" }),
+      f.text("a1", "s1", "Continuing"),
+    ]);
+
+    expect(turnIds(structure)).toEqual(["p0"]);
+    expect(turn(structure, "p0")).toMatchObject({
+      lineUuids: ["p0", "a0", "cb", "a1"],
+      end: { reason: "turn-end" },
+    });
+  });
+
+  it("opens an orphan turn for a line filed by time before any turn has started", () => {
+    const f = claudeTranscriptFixture();
+    const structure = structureOf([
+      f.text("a0", "gone", "Before", null),
+      f.prompt("p1", null, "Go", { timestamp: f.iso(30) }),
+      f.text("a1", "gone2", "After", "end_turn", { timestamp: f.iso(40) }),
+    ]);
+
+    expect(turnIds(structure)).toEqual(["a0", "p1"]);
+    expect(turnOf(structure, "a1")).toBe("p1");
+  });
+
+  // Rewrite inspection finding 3: a stop-hook continuation chained to the turn_duration line.
+  it("keeps a reply chained to a turn_duration line in that turn", () => {
+    const f = claudeTranscriptFixture();
+    const structure = structureOf([
+      f.prompt("p1", null, "Go"),
+      f.text("a1", "p1", "Done", null),
+      f.duration("d1", "a1", 900),
+      f.text("a2", "d1", "More", null),
+    ]);
+
+    expect(turn(structure, "p1")).toMatchObject({
+      lineUuids: ["p1", "a1", "a2"],
+      end: { reason: "turn-duration" },
+    });
   });
 
   it("opens a turn for a prompt with no text that carries a new prompt id", () => {
@@ -580,6 +680,33 @@ describe("claudeTranscriptStructure", () => {
     expect(turn(structure, "a").lineUuids).toEqual(["a", "b"]);
   });
 
+  // Rewrite inspection finding 1: only the loop is cut, never the lines hanging below it.
+  it("keeps the lines below a parent loop under the loop's cut", () => {
+    const f = claudeTranscriptFixture();
+    const structure = structureOf([
+      f.text("b", "a", "One"),
+      f.toolUse("a", "b", "t1"),
+      f.result("0", "a", "t1"),
+      f.text("1", "0", "After"),
+    ]);
+
+    expect(turnIds(structure)).toEqual(["a"]);
+    expect(turn(structure, "a").lineUuids.toSorted()).toEqual(["0", "1", "a", "b"]);
+  });
+
+  it("cuts a loop closed by a parent written last, through lines filed by time", () => {
+    const f = claudeTranscriptFixture();
+    const structure = structureOf([
+      f.prompt("p0", null, "Go"),
+      f.text("x", "y", "One", null),
+      f.text("z", "x", "Two", null),
+      f.text("y", "z", "Three", null),
+    ]);
+
+    expect(turnIds(structure)).toEqual(["p0", "x"]);
+    expect(turn(structure, "x").lineUuids.toSorted()).toEqual(["x", "y", "z"]);
+  });
+
   it("changes a turn's digest when its lines or end change, and only then", () => {
     const f = claudeTranscriptFixture();
     const base = [
@@ -592,6 +719,21 @@ describe("claudeTranscriptStructure", () => {
 
     expect(turn(after, "p1").digest).not.toBe(turn(before, "p1").digest);
     expect(turn(after, "p2").digest).toBe(turn(before, "p2").digest);
+  });
+
+  // Rewrite inspection finding 9: the digest covers each line's bytes, not only which lines there are.
+  it("changes a turn's digest when an unreadable line is replaced by its good copy", () => {
+    const f = claudeTranscriptFixture();
+    const unreadable = f.user("r1", "a1", [{ type: "tool_result" }]);
+    const base = [f.prompt("p1", null, "Go"), f.toolUse("a1", "p1", "t1"), unreadable];
+    const before = structureOf(base);
+    const after = structureOf([
+      ...base,
+      { ...f.result("r1", "a1", "t1"), timestamp: unreadable.timestamp },
+    ]);
+
+    expect(turn(after, "p1").lineUuids).toEqual(turn(before, "p1").lineUuids);
+    expect(turn(after, "p1").digest).not.toBe(turn(before, "p1").digest);
   });
 
   it("takes the titles and derivation from the latest line, and the fork from the first turn", () => {
