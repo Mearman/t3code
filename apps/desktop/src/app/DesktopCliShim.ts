@@ -99,14 +99,15 @@ export const renderCliShim = (input: {
     "work=",
     `trap 'if [ -n "$cli" ]; then kill -TERM "$cli" 2>/dev/null; else stop=TERM; fi' TERM`,
     `trap 'if [ -n "$cli" ]; then kill -HUP "$cli" 2>/dev/null; else stop=HUP; fi' HUP`,
-    // The terminal sends Ctrl-C to the CLI itself. One that lands before $cli is known becomes TERM.
+    // A Ctrl-C that lands before $cli is known becomes TERM.
     `trap '[ -n "$cli" ] || stop=TERM' INT`,
     // The mounter unmounts itself on TERM, which it ignores here, so this trap unmounts it, lazily
     // like the runtime since the server's children may still be exiting. It and the commands it
     // runs ignore further stops, or a second Ctrl-C would leave the extracted image behind.
     `trap 'trap "" INT TERM HUP; [ -z "$mount" ] || fusermount3 -uz "$mount" 2>/dev/null || fusermount -uz "$mount" 2>/dev/null; kill -HUP "$mounter" 2>/dev/null; rm -rf "$work"' EXIT`,
-    // A stop to the process group also kills mktemp or the extraction, which is then no failure.
-    'work=$(mktemp -d) || { [ -z "$stop" ] || exit 130; exit 1; }',
+    // mktemp ignores stops: one killing it after it made the directory would leave that behind. One
+    // that lands before then, or on the extraction, kills it, which is then no failure.
+    `work=$(trap '' INT TERM HUP; mktemp -d) || { [ -z "$stop" ] || exit 130; exit 1; }`,
     // dash drops a signal that reaches a background process before it resets these traps, so wait
     // for the file each touches first. Sleep in a substitution: if Ctrl-C and then a second stop
     // arrive during a plain `sleep`, bash answers every later `wait` with that stop.
@@ -140,6 +141,9 @@ export const renderCliShim = (input: {
     `{ : >"$work/cli-started"; exec ${run("$mount")}; } <&9 9<&- &`,
     'await_start "$work/cli-started"',
     "cli=$!",
+    // The terminal sends Ctrl-C to the CLI itself. A trapped one would end the wait below, and a CLI
+    // that exits before the launcher looks again would leave it exiting 130.
+    "trap '' INT",
     "exec 9<&-",
     '[ -z "$stop" ] || kill -"$stop" "$cli" 2>/dev/null',
     "status=0",
@@ -149,11 +153,6 @@ export const renderCliShim = (input: {
     "  status=0",
     '  wait "$cli" || status=$?',
     "done",
-    // The CLI can also exit before that check, leaving the interrupted status, so ask once more.
-    // 127 means the shell has no status left to give: an earlier wait already took it.
-    "last=0",
-    'wait "$cli" 2>/dev/null || last=$?',
-    '[ "$last" -eq 127 ] || status=$last',
     'exit "$status"',
     "",
   ].join("\n");
