@@ -289,7 +289,7 @@ export function heldSessionRefusedRunIds(
       refused.add(item.runId);
     }
   }
-  return [...refused].toSorted();
+  return [...refused].sort();
 }
 
 export function canDetachThreadProviderSession(projection: Projection): boolean {
