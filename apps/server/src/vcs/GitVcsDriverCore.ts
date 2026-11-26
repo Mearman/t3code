@@ -6528,6 +6528,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         yield* fileTimestampClock.sleep(Duration.millis(wait));
         waited += wait;
         now = yield* stampedNow;
+        break;
       }
     }
     // Older Git (such as 2.30) skips the write when racy entries merely check out clean. Git
