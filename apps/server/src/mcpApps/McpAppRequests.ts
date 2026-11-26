@@ -56,6 +56,12 @@ const toolTitle = (tool: ProviderAdapter.ProviderAdapterV2McpTool) =>
     ? tool.annotations.title
     : undefined;
 
+/** Why a request to a thread's Claude session was not sent, without the turn-oriented advice. */
+export const heldSessionRequestDetail = (holderObserved: boolean, request: string) =>
+  holderObserved
+    ? `Another Claude Code process has this thread's session open, so ${request} was not sent. Close that process and try again.`
+    : `T3 Code could not check whether another Claude Code process has this thread's session open, so ${request} was not sent. Try again.`;
+
 const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -65,15 +71,20 @@ const make = Effect.gen(function* () {
   const fail = (threadId: ThreadId, reason: McpAppRequestError["reason"], cause?: unknown) =>
     new McpAppRequestError({ threadId, reason, ...(cause === undefined ? {} : { cause }) });
   const adapterFailure = (threadId: ThreadId) => (cause: ProviderAdapter.ProviderAdapterV2Error) =>
-    fail(
-      threadId,
-      cause._tag === "ProviderAdapterSessionStoppedError"
-        ? "session-stopped"
-        : cause._tag === "ProviderAdapterThreadInUseError"
-          ? "session-held"
-          : "request-failed",
-      cause,
-    );
+    cause._tag === "ProviderAdapterThreadInUseError"
+      ? new McpAppRequestError({
+          threadId,
+          reason: "request-failed",
+          detail: heldSessionRequestDetail(cause.holderObserved === true, "the app's request"),
+          cause,
+        })
+      : fail(
+          threadId,
+          cause._tag === "ProviderAdapterSessionStoppedError"
+            ? "session-stopped"
+            : "request-failed",
+          cause,
+        );
 
   const resolveApp = Effect.fn("McpAppRequests.resolveApp")(function* (input: {
     readonly threadId: ThreadId;

@@ -215,13 +215,18 @@ describe("McpAppRequests", () => {
     ),
   );
 
-  it.effect("reports a tool call refused for a held session as a held session", () =>
+  it.effect.each([
+    [true, "Another Claude Code process has this thread's session open"],
+    [false, "T3 Code could not check whether another Claude Code process"],
+  ] as const)("says why a tool call to a held session was not sent: %s", ([observed, text]) =>
     Effect.gen(function* () {
       const requests = yield* McpAppRequests.McpAppRequests;
-      assert.equal(
-        yield* reason(requests.callTool({ threadId, itemId, name: "refresh", arguments: {} })),
-        "session-held",
+      const failure = yield* Effect.flip(
+        requests.callTool({ threadId, itemId, name: "refresh", arguments: {} }),
       );
+      assert.equal(failure.reason, "request-failed");
+      assert.include(failure.message, text);
+      assert.include(failure.message, "the app's request was not sent");
     }).pipe(
       Effect.provide(
         makeLayer({
@@ -233,9 +238,9 @@ describe("McpAppRequests", () => {
                 new ProviderAdapter.ProviderAdapterThreadInUseError({
                   driver: ProviderDriverKind.make("claudeAgent"),
                   providerThreadId: input.providerThread.id,
-                  detail: "Another Claude Code process (pid 200) has this session open.",
+                  detail: "turn-oriented refusal",
                   cause: "held",
-                  holderObserved: true,
+                  ...(observed ? { holderObserved: true } : {}),
                 }),
               ),
           },
