@@ -8,11 +8,12 @@ import {
   generateMeshIdentityKeyPair,
   meshIdentityFingerprint,
   meshIdentityFingerprintMatches,
-  signMeshPeerHello,
+  signMeshInitiatorHello,
   signMeshStaticKeyCertificate,
-  verifyMeshPeerHello,
+  verifyMeshInitiatorHello,
   verifyMeshStaticKeyCertificate,
 } from "./identity.ts";
+import { failureOf } from "./errors.testkit.ts";
 import { generateNoiseKeyPair } from "./noise.ts";
 
 const environmentId = EnvironmentId.make("env-mesh");
@@ -118,14 +119,65 @@ describe("mesh static key certificate", () => {
       malformed.map(() => ({ ok: false, reason: "malformed" })),
     );
   });
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1.5, 2 ** 53])(
+    "refuses to judge expiry against a clock reading of %s",
+    (nowSeconds) => {
+      const { certificate, expected } = certified();
+      expect(verifyMeshStaticKeyCertificate(certificate, { ...expected, nowSeconds })).toEqual({
+        ok: false,
+        reason: "invalid_input",
+      });
+    },
+  );
+
+  it("returns a result rather than throwing for a pinned key of the wrong length", () => {
+    const { certificate, expected } = certified();
+    expect(
+      verifyMeshStaticKeyCertificate(certificate, {
+        ...expected,
+        identityPublicKey: new Uint8Array(31),
+      }),
+    ).toEqual({ ok: false, reason: "invalid_input" });
+  });
+
+  it("does not accept an initiator hello signature as a certificate", () => {
+    const { identity, certificate, expected } = certified();
+    const hello = signMeshInitiatorHello({
+      identityPrivateKey: identity.privateKey,
+      environmentId,
+      handshakeHash: new Uint8Array(32).fill(7),
+    });
+    expect(
+      verifyMeshStaticKeyCertificate({ ...certificate, signature: hello.signature }, expected),
+    ).toEqual({ ok: false, reason: "invalid_signature" });
+  });
+
+  it.each([
+    ["a static key of the wrong length", { staticPublicKey: new Uint8Array(31) }],
+    ["a fractional expiry", { notAfter: 1.5 }],
+    ["a zero expiry", { notAfter: 0 }],
+  ])("refuses to sign %s", (_input, change) => {
+    const identity = generateMeshIdentityKeyPair();
+    expect(
+      failureOf(() =>
+        signMeshStaticKeyCertificate({
+          identityPrivateKey: identity.privateKey,
+          environmentId,
+          staticPublicKey: generateNoiseKeyPair().publicKey,
+          notAfter,
+          ...change,
+        }),
+      ),
+    ).toEqual({ reason: "invalid_input", fatal: false });
+  });
 });
 
-describe("mesh peer-hello", () => {
+describe("mesh initiator hello", () => {
   const handshakeHash = new Uint8Array(32).fill(7);
 
   function hello() {
     const identity = generateMeshIdentityKeyPair();
-    const signed = signMeshPeerHello({
+    const signed = signMeshInitiatorHello({
       identityPrivateKey: identity.privateKey,
       environmentId,
       handshakeHash,
@@ -137,12 +189,15 @@ describe("mesh peer-hello", () => {
   it("binds the initiator's pinned identity to the channel's handshake hash", () => {
     const { signed, pinnedIdentityKey } = hello();
     const received: unknown = JSON.parse(JSON.stringify(signed));
-    expect(verifyMeshPeerHello(received, { handshakeHash, pinnedIdentityKey })).toEqual({
+    expect(verifyMeshInitiatorHello(received, { handshakeHash, pinnedIdentityKey })).toEqual({
       ok: true,
       environmentId,
     });
     expect(
-      verifyMeshPeerHello(signed, { handshakeHash: new Uint8Array(32).fill(8), pinnedIdentityKey }),
+      verifyMeshInitiatorHello(signed, {
+        handshakeHash: new Uint8Array(32).fill(8),
+        pinnedIdentityKey,
+      }),
     ).toEqual({ ok: false, reason: "invalid_signature" });
   });
 
@@ -150,32 +205,62 @@ describe("mesh peer-hello", () => {
     const { signed, pinnedIdentityKey } = hello();
     const imposter = generateMeshIdentityKeyPair();
     expect(
-      verifyMeshPeerHello(signed, { handshakeHash, pinnedIdentityKey: () => imposter.publicKey }),
+      verifyMeshInitiatorHello(signed, {
+        handshakeHash,
+        pinnedIdentityKey: () => imposter.publicKey,
+      }),
     ).toEqual({ ok: false, reason: "invalid_signature" });
     expect(
-      verifyMeshPeerHello(
+      verifyMeshInitiatorHello(
         { ...signed, environmentId: otherEnvironmentId },
         { handshakeHash, pinnedIdentityKey },
       ),
     ).toEqual({ ok: false, reason: "unknown_environment" });
   });
 
-  it("does not accept a certificate signature as a peer-hello", () => {
+  it("does not accept a certificate signature as an initiator hello", () => {
     const { identity, certificate } = certified();
     const pinnedIdentityKey = () => identity.publicKey;
     expect(
-      verifyMeshPeerHello(
+      verifyMeshInitiatorHello(
         { environmentId, signature: certificate.signature },
         { handshakeHash, pinnedIdentityKey },
       ),
     ).toEqual({ ok: false, reason: "invalid_signature" });
   });
 
+  it("returns a result rather than throwing for a bad pinned key or handshake hash", () => {
+    const { signed, pinnedIdentityKey } = hello();
+    expect([
+      verifyMeshInitiatorHello(signed, {
+        handshakeHash,
+        pinnedIdentityKey: () => new Uint8Array(33),
+      }),
+      verifyMeshInitiatorHello(signed, { handshakeHash: new Uint8Array(31), pinnedIdentityKey }),
+    ]).toEqual([
+      { ok: false, reason: "invalid_input" },
+      { ok: false, reason: "invalid_input" },
+    ]);
+  });
+
+  it("refuses to sign a handshake hash of the wrong length", () => {
+    const identity = generateMeshIdentityKeyPair();
+    expect(
+      failureOf(() =>
+        signMeshInitiatorHello({
+          identityPrivateKey: identity.privateKey,
+          environmentId,
+          handshakeHash: new Uint8Array(31),
+        }),
+      ),
+    ).toEqual({ reason: "invalid_input", fatal: false });
+  });
+
   it("rejects a malformed hello", () => {
     const { signed, pinnedIdentityKey } = hello();
     expect(
       [{ environmentId }, { ...signed, signature: respell(signed.signature) }, null].map((value) =>
-        verifyMeshPeerHello(value, { handshakeHash, pinnedIdentityKey }),
+        verifyMeshInitiatorHello(value, { handshakeHash, pinnedIdentityKey }),
       ),
     ).toEqual([
       { ok: false, reason: "malformed" },
