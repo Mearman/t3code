@@ -3,7 +3,11 @@ import {
   isCompactionCommandMessage,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderCapabilities,
+  type OrchestrationV2ProviderFailure,
+  type OrchestrationV2Run,
+  type RunId,
 } from "@t3tools/contracts";
+import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
 import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { copySorted } from "@t3tools/shared/Array";
 import { mFallback, msg } from "gt-i18n";
@@ -260,6 +264,31 @@ export function canForkProjectedAssistantItem(input: {
     capabilities.threads.canForkFromTurn &&
     capabilities.identity.nativeThreadIds === "strong";
   return canForkNatively || capabilities.context.supportsFullThreadHandoff;
+}
+
+/**
+ * Where the fork offered on a run refused because another process holds the session starts: the
+ * latest finished run before it, whose response the fork keeps, else the refused run, which forks
+ * what T3 Code recorded. Undefined when the failure is another kind or the run is unknown.
+ */
+export function heldSessionForkSourceRunId(input: {
+  readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "ordinal" | "status">>;
+  readonly refusedRunId: RunId;
+  readonly failure: Pick<OrchestrationV2ProviderFailure, "code">;
+}): RunId | undefined {
+  if (input.failure.code !== PROVIDER_THREAD_IN_USE_FAILURE_CODE) return undefined;
+  const refused = input.runs.find((run) => run.id === input.refusedRunId);
+  if (refused === undefined) return undefined;
+  const finished = input.runs
+    .filter(
+      (run) =>
+        run.ordinal < refused.ordinal && (run.status === "completed" || run.status === "waiting"),
+    )
+    .reduce<(typeof input.runs)[number] | undefined>(
+      (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
+      undefined,
+    );
+  return (finished ?? refused).id;
 }
 
 export function canDetachThreadProviderSession(projection: Projection): boolean {

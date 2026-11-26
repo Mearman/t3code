@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import { RunId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
 
 import {
   canForkProjectedAssistantItem,
   deriveThreadQueueWorkflowState,
   getUserQueuedThreadRuns,
+  heldSessionForkSourceRunId,
   resolveLatestMergeBackRun,
   threadCanSteer,
   threadSupportsProviderHandoff,
@@ -456,4 +458,42 @@ describe("thread workflows", () => {
       expect(resolveLatestMergeBackRun(projection)).toBeNull();
     },
   );
+});
+
+describe("heldSessionForkSourceRunId", () => {
+  const run = (id: string, ordinal: number, status: "completed" | "waiting" | "failed") => ({
+    id: RunId.make(id),
+    ordinal,
+    status,
+  });
+  const held = { code: PROVIDER_THREAD_IN_USE_FAILURE_CODE };
+
+  it("forks from the latest finished run before the refused one", () => {
+    const runs = [
+      run("one", 1, "completed"),
+      run("two", 2, "waiting"),
+      run("refused", 3, "failed"),
+    ];
+    expect(
+      heldSessionForkSourceRunId({ runs, refusedRunId: RunId.make("refused"), failure: held }),
+    ).toBe("two");
+  });
+
+  it("forks from the refused run when nothing finished before it", () => {
+    const runs = [run("refused", 1, "failed"), run("later", 2, "completed")];
+    expect(
+      heldSessionForkSourceRunId({ runs, refusedRunId: RunId.make("refused"), failure: held }),
+    ).toBe("refused");
+  });
+
+  it("offers nothing for another failure or an unknown run", () => {
+    const runs = [run("one", 1, "completed"), run("refused", 2, "failed")];
+    const refusedRunId = RunId.make("refused");
+    expect(heldSessionForkSourceRunId({ runs, refusedRunId, failure: { code: null } })).toBe(
+      undefined,
+    );
+    expect(
+      heldSessionForkSourceRunId({ runs, refusedRunId: RunId.make("gone"), failure: held }),
+    ).toBe(undefined);
+  });
 });
