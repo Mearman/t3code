@@ -1816,6 +1816,21 @@ const make = Effect.gen(function* () {
         yield* syncState.upsert({ ...linked, ...caughtUp, hydrationState: "pending" });
         return "pending" satisfies StepOutcome;
       }
+      // A thread the sync follows reads history back from the transcript, so T3 Code's next run sorts after every turn before it.
+      if (thread.historyOrigin !== "native") {
+        yield* eventSink.write({
+          events: [
+            {
+              id: yield* idAllocator.allocate.event({ threadId }),
+              type: "thread.metadata-updated",
+              threadId,
+              providerInstanceId: thread.providerInstanceId,
+              occurredAt: thread.updatedAt,
+              payload: { ...thread, historyOrigin: "native" },
+            },
+          ],
+        });
+      }
       if (input.mode === "entry") {
         // An entry whose file changed shows the session's latest title and activity.
         const changed =

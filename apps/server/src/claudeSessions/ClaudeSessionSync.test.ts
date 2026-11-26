@@ -754,6 +754,9 @@ describe("ClaudeSessionSync", () => {
           // The session's thread is T3 Code's own; the terminal's turn joins it, its own does not.
           expect(yield* count("orchestration_v2_projection_threads")).toBe(1);
           expect(yield* nativeRuns(t3ThreadId)).toEqual([[1, "completed", "p2"]]);
+          // Marked as read back from the transcript, so T3 Code's next run takes at least the current second.
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          expect((yield* projections.getThread(t3ThreadId)).historyOrigin).toBe("native");
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),
     ),
