@@ -3740,7 +3740,6 @@ export default function ChatView(props: ChatViewProps) {
                   {...(embedded ? {} : { onForkFromRun: onForkFromRunStable })}
                   // Promoting is the way forward when another process holds the session.
                   heldSessionRefusedRuns={heldSessionRefusedRuns}
-                  onForkHeldSession={onForkFromRunStable}
                   onOpenThread={onOpenRelatedThreadStable}
                   parentThreadLink={parentThreadLink}
                   workflowOpening={workflowOpening}
