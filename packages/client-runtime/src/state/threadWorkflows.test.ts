@@ -6,7 +6,7 @@ import {
   canForkProjectedAssistantItem,
   deriveThreadQueueWorkflowState,
   getUserQueuedThreadRuns,
-  heldSessionForkSourceRunId,
+  heldSessionForkSources,
   resolveLatestMergeBackRun,
   threadCanSteer,
   threadSupportsProviderHandoff,
@@ -460,40 +460,49 @@ describe("thread workflows", () => {
   );
 });
 
-describe("heldSessionForkSourceRunId", () => {
-  const run = (id: string, ordinal: number, status: "completed" | "waiting" | "failed") => ({
-    id: RunId.make(id),
-    ordinal,
-    status,
+describe("heldSessionForkSources", () => {
+  const threadId = "thread";
+  const run = (id: string, ordinal: number, status: string, turn = true) => ({
+    run: { id: RunId.make(id), ordinal, status, activeAttemptId: `attempt-${id}` },
+    turn: turn ? [{ runAttemptId: `attempt-${id}` }] : [],
   });
-  const held = { code: PROVIDER_THREAD_IN_USE_FAILURE_CODE };
+  const refusal = (runId: string, code: string | null = PROVIDER_THREAD_IN_USE_FAILURE_CODE) => ({
+    type: "error",
+    threadId,
+    runId,
+    failure: { code },
+  });
+  const sources = (
+    runs: ReadonlyArray<ReturnType<typeof run>>,
+    turnItems: ReadonlyArray<ReturnType<typeof refusal>>,
+  ) =>
+    Object.fromEntries(
+      heldSessionForkSources({
+        thread: { id: threadId },
+        runs: runs.map((entry) => entry.run),
+        providerTurns: runs.flatMap((entry) => entry.turn),
+        turnItems,
+      } as unknown as OrchestrationV2ThreadProjection),
+    );
 
-  it("forks from the latest finished run before the refused one", () => {
+  it("forks from the latest earlier run the provider took a turn for, failed ones included", () => {
     const runs = [
       run("one", 1, "completed"),
-      run("two", 2, "waiting"),
-      run("refused", 3, "failed"),
+      run("interrupted", 2, "interrupted"),
+      run("local-login", 3, "completed", false),
+      run("refused", 4, "failed", false),
     ];
-    expect(
-      heldSessionForkSourceRunId({ runs, refusedRunId: RunId.make("refused"), failure: held }),
-    ).toBe("two");
+    expect(sources(runs, [refusal("refused")])).toEqual({ refused: "interrupted" });
   });
 
-  it("forks from the refused run when nothing finished before it", () => {
-    const runs = [run("refused", 1, "failed"), run("later", 2, "completed")];
-    expect(
-      heldSessionForkSourceRunId({ runs, refusedRunId: RunId.make("refused"), failure: held }),
-    ).toBe("refused");
+  it("forks from the refused run when no earlier run reached the provider", () => {
+    const runs = [run("local-login", 1, "completed", false), run("refused", 2, "failed", false)];
+    expect(sources(runs, [refusal("refused")])).toEqual({ refused: "refused" });
   });
 
-  it("offers nothing for another failure or an unknown run", () => {
-    const runs = [run("one", 1, "completed"), run("refused", 2, "failed")];
-    const refusedRunId = RunId.make("refused");
-    expect(heldSessionForkSourceRunId({ runs, refusedRunId, failure: { code: null } })).toBe(
-      undefined,
-    );
-    expect(
-      heldSessionForkSourceRunId({ runs, refusedRunId: RunId.make("gone"), failure: held }),
-    ).toBe(undefined);
+  it("offers nothing for another failure or another thread's refusal", () => {
+    const runs = [run("one", 1, "completed"), run("refused", 2, "failed", false)];
+    expect(sources(runs, [refusal("refused", null)])).toEqual({});
+    expect(sources(runs, [{ ...refusal("refused"), threadId: "parent" }])).toEqual({});
   });
 });
