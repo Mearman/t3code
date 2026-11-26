@@ -145,9 +145,31 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
 
   it.effect("counts a claude another Claude's agent ran as another writer", () =>
     Effect.gen(function* () {
-      const files = { "102.json": entry(102, "launched"), "104.json": entry(104, "nested") };
-      expect(yield* probeWith(files, "nested")).toEqual({ _tag: "held", pid: 104, sdk: false });
-      expect(yield* probeWith(files, "launched")).toBeUndefined();
+      // Behind a launcher (101 runs 102), and with the spawned CLI itself writing the entry (101).
+      const behindLauncher = {
+        "102.json": entry(102, "launched"),
+        "104.json": entry(104, "nested"),
+      };
+      expect(yield* probeWith(behindLauncher, "nested")).toEqual({
+        _tag: "held",
+        pid: 104,
+        sdk: false,
+      });
+      expect(yield* probeWith(behindLauncher, "launched")).toBeUndefined();
+      const spawnedDirectly = {
+        "101.json": entry(101, "spawned"),
+        "102.json": entry(102, "nested"),
+      };
+      expect(yield* probeWith(spawnedDirectly, "nested")).toEqual({
+        _tag: "held",
+        pid: 102,
+        sdk: false,
+      });
+      expect(yield* probeWith(spawnedDirectly, "spawned")).toBeUndefined();
+      // The same rule decides an unreadable entry below the spawned CLI's own.
+      expect(
+        yield* probeWith({ "101.json": entry(101, "spawned"), "102.json": '{"pid":102' }, "any"),
+      ).toEqual({ _tag: "unreadable", pid: 102 });
     }),
   );
 
@@ -164,6 +186,18 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         Effect.fail(new ClaudeProcessTableError({ reason: "ps exited with 1" }));
       expect(
         yield* probeWith({ "101.json": entry(101, "own") }, "own", unreadable),
+      ).toBeUndefined();
+    }),
+  );
+
+  it.effect("keeps a spawned CLI that exits during the read as T3 Code's own", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      // 101 launches 102, which wrote the entry; an unrelated entry forces the process read.
+      const ownRootPids = Effect.sync(() => (reads++ === 0 ? [101] : []));
+      const files = { "102.json": entry(102, "closing"), "300.json": entry(300, "closing") };
+      expect(
+        yield* probeWith(files, "closing", () => Effect.succeed(processes), true, ownRootPids),
       ).toBeUndefined();
     }),
   );

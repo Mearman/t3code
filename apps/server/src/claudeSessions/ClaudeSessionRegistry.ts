@@ -116,8 +116,8 @@ function holderIdentity(
 
 /**
  * Whether `pid` is one of T3 Code's own: a spawned CLI in `ownRootPids`, or a process below one
- * with no other Claude registry entry on the way, as when a launcher runs `claude` as its child.
- * A `claude` under another entry's process was started by that Claude, from its agent's shell.
+ * through processes with no Claude registry entry, as when a launcher runs `claude` as its child.
+ * Anything below a process with an entry, spawned or not, is a `claude` its agent's shell ran.
  */
 export function ownedByRoot(
   pid: number,
@@ -125,15 +125,15 @@ export function ownedByRoot(
   ownRootPids: ReadonlySet<number>,
   entryPids: ReadonlySet<number>,
 ): boolean {
-  const seen = new Set<number>();
+  if (ownRootPids.has(pid)) return true;
+  const seen = new Set([pid]);
   for (let current = table.byPid.get(pid); current !== undefined;) {
-    if (ownRootPids.has(current.pid)) return true;
-    if (seen.has(current.pid)) return false;
-    seen.add(current.pid);
     const parent = table.byPid.get(current.ppid);
     // Windows never reparents, so a parent started later is not this process's parent.
     if (parent === undefined || parent.startTimeSeconds > current.startTimeSeconds) return false;
-    if (entryPids.has(parent.pid) && !ownRootPids.has(parent.pid)) return false;
+    if (seen.has(parent.pid) || entryPids.has(parent.pid)) return false;
+    if (ownRootPids.has(parent.pid)) return true;
+    seen.add(parent.pid);
     current = parent;
   }
   return false;
