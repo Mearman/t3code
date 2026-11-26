@@ -86,6 +86,7 @@ const makeFakeBackendProcess = Effect.fn("test.makeFakeBackendProcess")(function
 });
 
 const runningConfig = {
+  _tag: "Spawn",
   executablePath: "/electron",
   args: [],
   entryPath: "/server/bin.mjs",
@@ -239,6 +240,7 @@ const makeUpdateMarkerFixture = () =>
     const files = new Map([[markerPath, JSON.stringify({ startedAt: 0, expiresAt: 60_000 })]]);
     const removed: string[] = [];
     const config: DesktopBackendStartConfig = {
+      _tag: "Spawn",
       executablePath: "/electron",
       args: [],
       entryPath: "/server/bin.mjs",

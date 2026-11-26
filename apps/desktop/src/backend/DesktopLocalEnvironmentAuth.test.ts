@@ -6,6 +6,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as HttpClient from "effect/http/HttpClient";
@@ -18,6 +19,7 @@ import {
 } from "@t3tools/shared/desktopBootstrapToken";
 import * as TestClock from "effect/testing/TestClock";
 
+import type * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopLocalEnvironmentAuth from "./DesktopLocalEnvironmentAuth.ts";
 
@@ -41,6 +43,52 @@ const config = {
 };
 
 describe("DesktopLocalEnvironmentAuth", () => {
+  it.effect("hands out the attached server's session without a desktop token exchange", () =>
+    Effect.gen(function* () {
+      const issued = yield* Ref.make(0);
+      const attached: DesktopBackendManager.DesktopBackendAttachConfig = {
+        _tag: "Attach",
+        probe: Effect.succeed({ _tag: "Waiting" }),
+        server: Option.none(),
+        bearerToken: Ref.updateAndGet(issued, (count) => count + 1).pipe(
+          Effect.map((count) => `attached-token-${count}`),
+        ),
+        renewRejectedSession: Effect.succeed(false),
+      };
+      const layerPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
+        list: Effect.succeed([
+          {
+            id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+            label: Effect.succeed("Local environment"),
+            currentConfig: Effect.succeedSome(attached),
+            waitForReady: () => Effect.succeed(true),
+          },
+        ]),
+      } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]);
+      const tokens = yield* Effect.gen(function* () {
+        const auth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth;
+        return [yield* auth.getBearerToken, yield* auth.getBearerToken];
+      }).pipe(
+        Effect.provide(
+          DesktopLocalEnvironmentAuth.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                layerPool,
+                Layer.succeed(
+                  HttpClient.HttpClient,
+                  HttpClient.make(() => Effect.die("an attached server needs no token exchange")),
+                ),
+                NodeCrypto.layerMac,
+              ),
+            ),
+          ),
+        ),
+      );
+      // Its own cache and renewal own the token, so a renewed session reaches the next reload.
+      assert.deepStrictEqual(tokens, ["attached-token-1", "attached-token-2"]);
+    }),
+  );
+
   it.effect("exchanges the desktop bootstrap credential only once", () =>
     Effect.gen(function* () {
       const requestCount = yield* Ref.make(0);

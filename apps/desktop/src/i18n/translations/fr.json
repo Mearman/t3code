@@ -20,11 +20,6 @@
   "eeb7ea62dc4706c1": "T3 Code utilisera le backend Windows pour ce lancement et réessaiera WSL au prochain démarrage de l’app.",
   "b5435aa5b470bafd": "Le backend WSL n’a pas pu démarrer",
   "d82d7c96e1904629": "Retour au backend Windows pour que T3 Code puisse s’ouvrir. Réactivez le backend WSL depuis Paramètres > Partage et accès une fois la distribution WSL réparée.",
-  "a4acf18834787a4f": "Un autre serveur T3 Code, comme le service en arrière-plan, utilise ce répertoire de données, ou un ancien service en arrière-plan est configuré pour lui. Arrêtez ce serveur ou essayez `t3 update`. Si l’ancien lanceur ne peut pas se mettre à jour, exécutez `t3 service uninstall` puis, si besoin, réinstallez avec `t3 service install` depuis une CLI à jour. Utilisez `npx t3@latest` si `t3` est absent ou obsolète, et passez `--base-dir` avec le home T3 du service à chaque commande. Rouvrez ensuite T3 Code. Vous pouvez aussi définir un T3CODE_HOME distinct et vous appairer avec le serveur en cours d’exécution.",
-  "0e306130a55a3954": "Le service en arrière-plan de T3 Code utilise ce home T3 (PID {pid}, port {port}, version {version}). Arrêtez-le avec `t3 service uninstall` en passant `--base-dir` avec ce home T3, puis rouvrez T3 Code. Vous pouvez aussi définir un T3CODE_HOME distinct et vous appairer avec le serveur en cours d’exécution.",
-  "7379a43c1ac009d2": "Le service en arrière-plan de T3 Code utilise ce home T3 (PID {pid}, port {port}). Arrêtez-le avec `t3 service uninstall` en passant `--base-dir` avec ce home T3, puis rouvrez T3 Code. Vous pouvez aussi définir un T3CODE_HOME distinct et vous appairer avec le serveur en cours d’exécution.",
-  "1510c6547cde9c2e": "Un autre serveur T3 Code (par exemple `t3 serve`, ou un serveur démarré via SSH) utilise ce home T3 (PID {pid}, port {port}, version {version}). Si une app T3 Code sur une autre machine l’a démarré via SSH, cette app le redémarre : supprimez ou déconnectez-y cet environnement SSH, ou quittez cette app. Arrêtez ensuite le serveur et rouvrez T3 Code. Vous pouvez aussi définir un T3CODE_HOME distinct et vous appairer avec le serveur en cours d’exécution.",
-  "8d8628520de0d9f1": "Un autre serveur T3 Code (par exemple `t3 serve`, ou un serveur démarré via SSH) utilise ce home T3 (PID {pid}, port {port}). Si une app T3 Code sur une autre machine l’a démarré via SSH, cette app le redémarre : supprimez ou déconnectez-y cet environnement SSH, ou quittez cette app. Arrêtez ensuite le serveur et rouvrez T3 Code. Vous pouvez aussi définir un T3CODE_HOME distinct et vous appairer avec le serveur en cours d’exécution.",
   "6574442caf8bfd15": "Configurer l’enregistrement de l’écran",
   "a8210440c691b062": "Configurer l’accessibilité",
   "0cbbbd8abd25f9d4": "Configurer l’accès complet au disque",
@@ -130,5 +125,14 @@
   "8af79268f2349f4c": "Copier l’adresse e-mail",
   "a9f9254d458e49fe": "Copier l’image",
   "9c1b20fbc881de5d": "Configuration du bureau",
-  "1b14230874f19eb9": "Images"
+  "1b14230874f19eb9": "Images",
+  "ac5b392578bacdc3": "Un ancien service en arrière-plan de T3 Code est configuré pour ce home T3 et exécute peut-être encore une version sans verrou de propriété. Mettez-le à jour avec `t3 update` ou supprimez-le avec `t3 service uninstall` en passant `--base-dir` avec ce home T3. Utilisez `npx t3@latest` si `t3` est absent ou obsolète. Rouvrez ensuite T3 Code.",
+  "e04a6102ad392f46": "Un autre serveur T3 Code occupe ce home T3 mais ne répond pas. S’il démarre ou se met à jour, attendez-le puis rouvrez T3 Code. Sinon, arrêtez-le, puis rouvrez T3 Code.",
+  "43106dd4d9823ba2": "Un autre serveur T3 Code (PID {pid}, port {port}) occupe ce home T3 mais ne répond pas. S’il démarre ou se met à jour, attendez-le puis rouvrez T3 Code. Sinon, arrêtez-le, puis rouvrez T3 Code.",
+  "fb7fc26cb0bff28a": "Un serveur T3 Code d’une ancienne version (PID {pid}, port {port}) utilise ce home T3. Il est antérieur au verrou de propriété, T3 Code ne peut donc pas s’y connecter. Arrêtez ce processus, puis rouvrez T3 Code.",
+  "dd614b4ab1eeb617": "Un serveur de développement T3 Code (PID {pid}, port {port}) utilise ce home T3. Arrêtez-le ou attribuez-lui un T3CODE_HOME distinct, puis rouvrez T3 Code.",
+  "aa448fa4491a5d4f": "Le serveur T3 Code qui utilise ce home T3 (PID {pid}) n’écoute que sur {origin}, T3 Code ne peut donc pas s’y connecter sur cette machine. Redémarrez-le sans hôte particulier, puis rouvrez T3 Code.",
+  "c5079de7e1299c60": "Un autre environnement a répondu sur le port {port}, où devrait se trouver le serveur T3 Code qui utilise ce home T3 (PID {pid}). Arrêtez ce qui écoute d’autre sur ce port, puis rouvrez T3 Code.",
+  "32112d61c684d3a7": "Le serveur T3 Code qui utilise ce home T3 (PID {pid}, version {version}) est trop ancien pour cette application. Mettez-le à jour avec `t3 update` en passant `--base-dir` avec ce home T3, puis rouvrez T3 Code.",
+  "c008ff68ac1804b7": "Le serveur T3 Code qui utilise ce home T3 (PID {pid}, version {version}) est plus récent que cette application. Mettez à jour T3 Code, puis rouvrez-le."
 }

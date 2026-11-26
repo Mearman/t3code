@@ -20,11 +20,6 @@
   "eeb7ea62dc4706c1": "本次启动 T3 Code 将使用 Windows 后端，并在下次启动应用时重试 WSL。",
   "b5435aa5b470bafd": "WSL 后端无法启动",
   "d82d7c96e1904629": "正在回退到 Windows 后端，以便打开 T3 Code。修复 WSL 发行版后，请在“设置 > 共享与访问”中重新启用 WSL 后端。",
-  "a4acf18834787a4f": "另一个 T3 Code 服务器（例如后台服务）正在使用此数据目录，或此目录已配置旧版后台服务。请停止该服务器，或尝试 `t3 update`。如果旧版启动器无法更新，请运行 `t3 service uninstall`，并可使用当前 CLI 运行 `t3 service install` 重新安装。如果 `t3` 缺失或过旧，请使用 `npx t3@latest`，并在每条命令中通过 `--base-dir` 指定该服务的 T3 主目录。然后重新打开 T3 Code。你也可以设置单独的 T3CODE_HOME，并与正在运行的服务器配对。",
-  "0e306130a55a3954": "T3 Code 后台服务正在使用此 T3 主目录（PID {pid}，端口 {port}，版本 {version}）。请使用 `t3 service uninstall` 停止它，并通过 `--base-dir` 传入此 T3 主目录，然后重新打开 T3 Code。你也可以设置单独的 T3CODE_HOME 并与正在运行的服务器配对。",
-  "7379a43c1ac009d2": "T3 Code 后台服务正在使用此 T3 主目录（PID {pid}，端口 {port}）。请使用 `t3 service uninstall` 停止它，并通过 `--base-dir` 传入此 T3 主目录，然后重新打开 T3 Code。你也可以设置单独的 T3CODE_HOME 并与正在运行的服务器配对。",
-  "1510c6547cde9c2e": "另一个 T3 Code 服务器（例如 `t3 serve`，或通过 SSH 启动的服务器）正在使用此 T3 主目录（PID {pid}，端口 {port}，版本 {version}）。如果是另一台机器上的 T3 Code 应用通过 SSH 启动了它，该应用会重新启动它：请在那里移除或断开该 SSH 环境，或退出该应用。然后停止该服务器，并重新打开 T3 Code。你也可以设置单独的 T3CODE_HOME 并与正在运行的服务器配对。",
-  "8d8628520de0d9f1": "另一个 T3 Code 服务器（例如 `t3 serve`，或通过 SSH 启动的服务器）正在使用此 T3 主目录（PID {pid}，端口 {port}）。如果是另一台机器上的 T3 Code 应用通过 SSH 启动了它，该应用会重新启动它：请在那里移除或断开该 SSH 环境，或退出该应用。然后停止该服务器，并重新打开 T3 Code。你也可以设置单独的 T3CODE_HOME 并与正在运行的服务器配对。",
   "6574442caf8bfd15": "设置屏幕录制",
   "a8210440c691b062": "设置辅助功能",
   "0cbbbd8abd25f9d4": "设置完全磁盘访问权限",
@@ -130,5 +125,14 @@
   "8af79268f2349f4c": "复制邮箱地址",
   "a9f9254d458e49fe": "复制图片",
   "9c1b20fbc881de5d": "桌面配置",
-  "1b14230874f19eb9": "图片"
+  "1b14230874f19eb9": "图片",
+  "ac5b392578bacdc3": "此 T3 主目录配置了一个较旧的 T3 Code 后台服务，它可能仍在运行没有所有权锁的版本。请使用 `t3 update` 更新它，或使用 `t3 service uninstall` 移除它，并通过 `--base-dir` 传入此 T3 主目录。如果没有 `t3` 或版本过旧，请使用 `npx t3@latest`。然后重新打开 T3 Code。",
+  "e04a6102ad392f46": "另一个 T3 Code 服务器占用了此 T3 主目录，但没有响应。如果它正在启动或更新，请等待完成后重新打开 T3 Code。否则请停止它，然后重新打开 T3 Code。",
+  "43106dd4d9823ba2": "另一个 T3 Code 服务器（PID {pid}，端口 {port}）占用了此 T3 主目录，但没有响应。如果它正在启动或更新，请等待完成后重新打开 T3 Code。否则请停止它，然后重新打开 T3 Code。",
+  "fb7fc26cb0bff28a": "一个旧版本的 T3 Code 服务器（PID {pid}，端口 {port}）正在使用此 T3 主目录。它早于所有权锁，因此 T3 Code 无法连接到它。请停止该进程，然后重新打开 T3 Code。",
+  "dd614b4ab1eeb617": "一个 T3 Code 开发服务器（PID {pid}，端口 {port}）正在使用此 T3 主目录。请停止它或为它设置单独的 T3CODE_HOME，然后重新打开 T3 Code。",
+  "aa448fa4491a5d4f": "使用此 T3 主目录的 T3 Code 服务器（PID {pid}）只在 {origin} 上监听，因此 T3 Code 无法在这台机器上连接到它。请在不指定主机的情况下重启它，然后重新打开 T3 Code。",
+  "c5079de7e1299c60": "在端口 {port} 上响应的是另一个环境，而使用此 T3 主目录的 T3 Code 服务器（PID {pid}）应在该端口上。请停止在该端口上监听的其他程序，然后重新打开 T3 Code。",
+  "32112d61c684d3a7": "使用此 T3 主目录的 T3 Code 服务器（PID {pid}，版本 {version}）对此应用来说太旧了。请使用 `t3 update` 更新它，并通过 `--base-dir` 传入此 T3 主目录，然后重新打开 T3 Code。",
+  "c008ff68ac1804b7": "使用此 T3 主目录的 T3 Code 服务器（PID {pid}，版本 {version}）比此应用更新。请更新 T3 Code，然后重新打开它。"
 }

@@ -173,6 +173,19 @@ export const getLocalEnvironmentBootstraps = DesktopIpc.makeSyncIpcMethod({
       const isPrimary = instance.id === PRIMARY_LOCAL_ENVIRONMENT_ID;
       const config = yield* instance.currentConfig;
       const snapshot = yield* instance.snapshot;
+      if (Option.isSome(config) && config.value._tag === "Attach") {
+        // The renderer authenticates with the attached server's bearer session, never a launch token.
+        const httpBaseUrl = Option.getOrNull(Option.map(config.value.server, (s) => s.httpBaseUrl));
+        bootstraps.push({
+          id: instance.id,
+          label: yield* instance.label,
+          runningDistro: null,
+          httpBaseUrl: httpBaseUrl?.href ?? null,
+          wsBaseUrl: httpBaseUrl === null ? null : toWebSocketBaseUrl(httpBaseUrl),
+          attached: true,
+        });
+        continue;
+      }
       if (Option.isNone(config) || Option.isSome(config.value.preflightFailure)) {
         const fatalPreflight =
           Option.isSome(config) &&
@@ -307,7 +320,10 @@ export const toLocalBackendPath = DesktopIpc.makeIpcMethod({
     const instance = yield* pool.get(DesktopBackendManager.BackendInstanceId(backendId));
     if (Option.isNone(instance)) return null;
     const config = yield* instance.value.currentConfig;
-    if (Option.isNone(config) || Option.isSome(config.value.preflightFailure)) return null;
+    if (Option.isNone(config)) return null;
+    // An attached server runs on this machine, where paths need no translation.
+    if (config.value._tag === "Attach") return path;
+    if (Option.isSome(config.value.preflightFailure)) return null;
     const { runningDistro } = config.value;
     if (runningDistro === undefined) return path;
     const uncDistro = extractDistroFromUncPath(path);

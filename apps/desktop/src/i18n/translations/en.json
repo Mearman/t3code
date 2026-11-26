@@ -20,11 +20,6 @@
   "eeb7ea62dc4706c1": "T3 Code will use the Windows backend for this launch and retry WSL the next time the app starts.",
   "b5435aa5b470bafd": "WSL backend couldn't start",
   "d82d7c96e1904629": "Falling back to the Windows backend so T3 Code can open. Re-enable the WSL backend from Settings > Sharing & access once the WSL distro is fixed.",
-  "a4acf18834787a4f": "Another T3 Code server, such as the background service, is using this data directory, or an older background service is set up for it. Stop that server or try `t3 update`. If the older launcher cannot update, run `t3 service uninstall` and optionally reinstall with `t3 service install` from a current CLI. Use `npx t3@latest` if `t3` is missing or outdated, and pass `--base-dir` with the service's T3 home to each command. Then reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
-  "0e306130a55a3954": "The T3 Code background service is using this T3 home (PID {pid}, port {port}, version {version}). Stop it with `t3 service uninstall`, passing `--base-dir` with this T3 home, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
-  "7379a43c1ac009d2": "The T3 Code background service is using this T3 home (PID {pid}, port {port}). Stop it with `t3 service uninstall`, passing `--base-dir` with this T3 home, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
-  "1510c6547cde9c2e": "Another T3 Code server (for example `t3 serve`, or one started over SSH) is using this T3 home (PID {pid}, port {port}, version {version}). If a T3 Code app on another machine started it over SSH, that app restarts it: remove or disconnect that SSH environment there, or quit that app. Then stop the server, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
-  "8d8628520de0d9f1": "Another T3 Code server (for example `t3 serve`, or one started over SSH) is using this T3 home (PID {pid}, port {port}). If a T3 Code app on another machine started it over SSH, that app restarts it: remove or disconnect that SSH environment there, or quit that app. Then stop the server, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
   "6574442caf8bfd15": "Set up Screen Recording",
   "a8210440c691b062": "Set up Accessibility",
   "0cbbbd8abd25f9d4": "Set up Full Disk Access",
@@ -130,5 +125,14 @@
   "8af79268f2349f4c": "Copy Email Address",
   "a9f9254d458e49fe": "Copy Image",
   "9c1b20fbc881de5d": "Desktop config",
-  "1b14230874f19eb9": "Images"
+  "1b14230874f19eb9": "Images",
+  "ac5b392578bacdc3": "An older T3 Code background service is set up for this T3 home and may still run a release without the ownership lock. Update it with `t3 update`, or remove it with `t3 service uninstall`, passing `--base-dir` with this T3 home. Use `npx t3@latest` if `t3` is missing or outdated. Then reopen T3 Code.",
+  "e04a6102ad392f46": "Another T3 Code server holds this T3 home but is not answering. If it is starting or updating, wait for it and reopen T3 Code. Otherwise stop it, then reopen T3 Code.",
+  "43106dd4d9823ba2": "Another T3 Code server (PID {pid}, port {port}) holds this T3 home but is not answering. If it is starting or updating, wait for it and reopen T3 Code. Otherwise stop it, then reopen T3 Code.",
+  "fb7fc26cb0bff28a": "A T3 Code server from an older release (PID {pid}, port {port}) is using this T3 home. It predates the ownership lock, so T3 Code cannot connect to it. Stop that process, then reopen T3 Code.",
+  "dd614b4ab1eeb617": "A T3 Code development server (PID {pid}, port {port}) is using this T3 home. Stop it or give it a separate T3CODE_HOME, then reopen T3 Code.",
+  "aa448fa4491a5d4f": "The T3 Code server using this T3 home (PID {pid}) listens only on {origin}, so T3 Code cannot connect to it on this machine. Restart it without a specific host, then reopen T3 Code.",
+  "c5079de7e1299c60": "Another environment answered on port {port}, where the T3 Code server using this T3 home (PID {pid}) should be. Stop whatever else listens on that port, then reopen T3 Code.",
+  "32112d61c684d3a7": "The T3 Code server using this T3 home (PID {pid}, version {version}) is too old for this app. Update it with `t3 update`, passing `--base-dir` with this T3 home, then reopen T3 Code.",
+  "c008ff68ac1804b7": "The T3 Code server using this T3 home (PID {pid}, version {version}) is newer than this app. Update T3 Code, then reopen it."
 }

@@ -47,6 +47,7 @@ import {
 } from "./window.ts";
 
 const readyWslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+  _tag: "Spawn",
   executablePath: "wsl.exe",
   args: ["-d", "Ubuntu", "--", "node", "/app/bin.mjs"],
   entryPath: "/app/bin.mjs",
@@ -98,7 +99,47 @@ const backendConfigurationLayer = Layer.succeed(
 const bootstrapsLayer = (instances: ReadonlyArray<DesktopBackendManager.DesktopBackendInstance>) =>
   Layer.merge(DesktopBackendPool.layerTest([...instances]), backendConfigurationLayer);
 
+const attachedPrimaryConfig: DesktopBackendManager.DesktopBackendAttachConfig = {
+  _tag: "Attach",
+  probe: Effect.succeed({ _tag: "Waiting" }),
+  server: Option.some({
+    httpBaseUrl: new URL("http://127.0.0.1:4888"),
+    pid: 4321,
+    ownerId: "owner-1",
+    serviceManaged: true,
+  }),
+  bearerToken: Effect.die("the bootstrap must not issue a session"),
+  renewRejectedSession: Effect.succeed(false),
+};
+
 describe("getLocalEnvironmentBootstraps", () => {
+  it.effect("marks an attached primary and hands out its address without a launch token", () =>
+    Effect.gen(function* () {
+      const result = yield* getLocalEnvironmentBootstraps.handler();
+      assert.deepEqual(result, [
+        {
+          id: "primary",
+          label: "Local environment",
+          runningDistro: null,
+          httpBaseUrl: "http://127.0.0.1:4888/",
+          wsBaseUrl: "ws://127.0.0.1:4888/",
+          attached: true,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        bootstrapsLayer([
+          {
+            ...defaultWslInstance,
+            id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
+            label: Effect.succeed("Local environment"),
+            currentConfig: Effect.succeedSome(attachedPrimaryConfig),
+          },
+        ]),
+      ),
+    ),
+  );
+
   it.effect("hands out the current window's token to a backend launched with the secret", () =>
     Effect.gen(function* () {
       const result = yield* getLocalEnvironmentBootstraps.handler();

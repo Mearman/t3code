@@ -191,6 +191,9 @@ const restartOnFeatureFlagChange = Effect.fn("desktop.restartOnFeatureFlagChange
         const flags = snapshot.environment.T3CODE_FEATURE_FLAGS ?? undefined;
         if (flags === startedWith || (yield* Ref.get(state.quitting))) return;
         startedWith = flags;
+        // An attached server read its own flags where it started.
+        const config = yield* backend.currentConfig;
+        if (Option.isSome(config) && config.value._tag === "Attach") return;
         yield* logBootstrapInfo("restarting backend for changed T3CODE_FEATURE_FLAGS");
         yield* backend.stop();
         yield* backend.start;
@@ -235,21 +238,24 @@ const startLocalBackend = Effect.gen(function* () {
   }
 
   yield* DesktopBackendPool.recoverLocalBackend;
-  // A backend started while another server holds this home's lock can only exit with code 78.
-  if (
-    !(settings.wslOnly && settings.wslBackendEnabled) &&
-    !(yield* DesktopHomeOwner.awaitHomeOwnershipRelease())
-  ) {
-    const owner = yield* DesktopHomeOwner.readLiveHomeOwner();
-    yield* logBootstrapWarning("bootstrap found another server owning the T3 home", {
-      owner: Option.getOrNull(owner),
-    });
-    yield* (yield* ElectronDialog.ElectronDialog).showErrorBox(
-      m(msg("This T3 home is unavailable")),
-      DesktopHomeOwner.homeOwnedMessage(owner),
-    );
-    yield* (yield* ElectronApp.ElectronApp).quit;
-    return false;
+  // A server holding the home once a quitting backend has let go is attached to when the primary
+  // starts, or is the reason to stop here.
+  if (!(settings.wslOnly && settings.wslBackendEnabled)) {
+    const owner = yield* DesktopHomeOwner.resolveStartupHomeOwner();
+    if (owner._tag === "Unavailable") {
+      yield* logBootstrapWarning("bootstrap found a server it cannot use owning the T3 home", {
+        reason: owner.unavailable.reason,
+      });
+      yield* (yield* ElectronDialog.ElectronDialog).showErrorBox(
+        DesktopHomeOwner.homeUnavailableTitle(),
+        DesktopHomeOwner.homeUnavailableMessage(owner.unavailable),
+      );
+      yield* (yield* ElectronApp.ElectronApp).quit;
+      return false;
+    }
+    if (owner._tag !== "Free") {
+      yield* logBootstrapInfo("bootstrap attaching to the server that owns the T3 home");
+    }
   }
 
   const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
@@ -351,7 +357,7 @@ const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: bool
   if (
     !environment.isDevelopment &&
     Option.isSome(config) &&
-    Option.isNone(config.value.preflightFailure)
+    (config.value._tag === "Attach" || Option.isNone(config.value.preflightFailure))
   ) {
     yield* desktopWindow.ensureMain;
   }

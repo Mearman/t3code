@@ -44,6 +44,7 @@ const encodeDesktopTelemetryControl = Schema.encodeSync(
 );
 
 const baseConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+  _tag: "Spawn",
   executablePath: "/electron",
   args: ["/server/bin.mjs", "--bootstrap-fd", "3"],
   entryPath: "/server/bin.mjs",
@@ -86,6 +87,28 @@ const pollingConfig: DesktopBackendManager.DesktopBackendStartConfig = {
   bootstrap: pollingBootstrap,
   bootstrapDelivery: "stdin",
 };
+
+const attachedServer = (ownerId: string): DesktopBackendManager.AttachedServer => ({
+  httpBaseUrl: new URL("http://127.0.0.1:4888"),
+  pid: 4321,
+  ownerId,
+  serviceManaged: true,
+});
+
+const attachConfig = (
+  probe: Effect.Effect<DesktopBackendManager.AttachedServerProbe>,
+): DesktopBackendManager.DesktopBackendAttachConfig => ({
+  _tag: "Attach",
+  probe,
+  server: Option.none(),
+  bearerToken: Effect.succeed("attached-token"),
+  renewRejectedSession: Effect.succeed(false),
+});
+
+const layerNoSpawn = Layer.succeed(
+  ChildProcessSpawner.ChildProcessSpawner,
+  ChildProcessSpawner.make(() => Effect.die("an attached run must not spawn a backend")),
+);
 
 function makeProcess(options?: {
   readonly stdout?: Stream.Stream<Uint8Array, PlatformError.PlatformError>;
@@ -153,7 +176,7 @@ interface MakeInstanceInput {
   ) => Effect.Effect<boolean>;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
   readonly configResolve?: Effect.Effect<
-    DesktopBackendManager.DesktopBackendStartConfig,
+    DesktopBackendManager.DesktopBackendRunConfig,
     PlatformError.PlatformError
   >;
   readonly desktopTelemetryStream?: Stream.Stream<Uint8Array>;
@@ -811,6 +834,129 @@ describe("DesktopBackendManager", () => {
       assert.isFalse(snapshot.restartScheduled);
       yield* TestClock.adjust(Duration.minutes(1));
       assert.equal(startCount, 1);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("attaches to the server owning the home without spawning or stopping it", () =>
+    Effect.gen(function* () {
+      const probes = yield* Queue.unbounded<DesktopBackendManager.AttachedServerProbe>();
+      const ready = yield* Deferred.make<void>();
+      const instance = yield* makeTestInstance({
+        configResolve: Effect.succeed(attachConfig(Queue.take(probes))),
+        spawnerLayer: layerNoSpawn,
+        onReady: Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+      });
+      yield* Queue.offer(probes, { _tag: "Ready", server: attachedServer("owner-1") });
+      yield* instance.start;
+      yield* Deferred.await(ready);
+      const config = Option.getOrThrow(yield* instance.currentConfig);
+      assert.equal(config._tag, "Attach");
+      if (config._tag === "Attach") {
+        assert.equal(Option.getOrThrow(config.server).httpBaseUrl.href, "http://127.0.0.1:4888/");
+      }
+      const snapshot = yield* instance.snapshot;
+      assert.isTrue(snapshot.ready);
+      assert.isTrue(Option.isNone(snapshot.activePid));
+      yield* instance.stop();
+      assert.isFalse((yield* instance.snapshot).ready);
+      assert.isFalse((yield* instance.snapshot).restartScheduled);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("stays attached while the owner restarts, ready only while it answers", () =>
+    Effect.gen(function* () {
+      const probes = yield* Queue.unbounded<DesktopBackendManager.AttachedServerProbe>();
+      const events = yield* Queue.unbounded<"ready" | "shutdown">();
+      let resolves = 0;
+      const instance = yield* makeTestInstance({
+        configResolve: Effect.sync(() => {
+          resolves += 1;
+          return attachConfig(Queue.take(probes));
+        }),
+        spawnerLayer: layerNoSpawn,
+        onReady: Queue.offer(events, "ready").pipe(Effect.asVoid),
+        onShutdown: Queue.offer(events, "shutdown").pipe(Effect.asVoid),
+      });
+      yield* Queue.offer(probes, { _tag: "Ready", server: attachedServer("owner-1") });
+      yield* instance.start;
+      assert.equal(yield* Queue.take(events), "ready");
+      yield* Queue.offer(probes, { _tag: "Waiting" });
+      yield* TestClock.adjust(Duration.seconds(2));
+      assert.equal(yield* Queue.take(events), "shutdown");
+      assert.isFalse((yield* instance.snapshot).ready);
+      yield* Queue.offer(probes, { _tag: "Ready", server: attachedServer("owner-2") });
+      yield* TestClock.adjust(Duration.seconds(2));
+      assert.equal(yield* Queue.take(events), "ready");
+      const config = Option.getOrThrow(yield* instance.currentConfig);
+      assert.equal(
+        config._tag === "Attach" ? Option.getOrThrow(config.server).ownerId : null,
+        "owner-2",
+      );
+      assert.equal(resolves, 1);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("re-resolves the home once its server is gone, then starts its own", () =>
+    Effect.gen(function* () {
+      const probes = yield* Queue.unbounded<DesktopBackendManager.AttachedServerProbe>();
+      const spawned = yield* Deferred.make<void>();
+      const attached = yield* Deferred.make<void>();
+      const gone = yield* Deferred.make<void>();
+      const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      let resolves = 0;
+      const instance = yield* makeTestInstance({
+        configResolve: Effect.sync(() => {
+          resolves += 1;
+          return resolves === 1 ? attachConfig(Queue.take(probes)) : baseConfig;
+        }),
+        spawnerLayer: Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Deferred.succeed(spawned, undefined).pipe(
+              Effect.andThen(
+                Effect.acquireRelease(
+                  Effect.succeed(makeProcess({ exitCode: Deferred.await(exit) })),
+                  () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
+                ),
+              ),
+            ),
+          ),
+        ),
+        onReady: Deferred.succeed(attached, undefined).pipe(Effect.asVoid),
+        onShutdown: Deferred.succeed(gone, undefined).pipe(Effect.asVoid),
+      });
+      yield* Queue.offer(probes, { _tag: "Ready", server: attachedServer("owner-1") });
+      yield* instance.start;
+      yield* Deferred.await(attached);
+      yield* Queue.offer(probes, { _tag: "Gone" });
+      yield* TestClock.adjust(Duration.seconds(2));
+      yield* Deferred.await(gone);
+      yield* TestClock.adjust(Duration.minutes(1));
+      yield* Deferred.await(spawned);
+      assert.equal(resolves, 2);
+      yield* instance.stop();
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("reports a home that now belongs to an unusable server without retrying", () =>
+    Effect.gen(function* () {
+      let resolves = 0;
+      const refused = yield* Deferred.make<void>();
+      const instance = yield* makeTestInstance({
+        configResolve: Effect.sync(() => {
+          resolves += 1;
+          return attachConfig(Effect.succeed({ _tag: "Refused" }));
+        }),
+        spawnerLayer: layerNoSpawn,
+        onStateDirOwned: Deferred.succeed(refused, undefined).pipe(Effect.asVoid),
+      });
+      yield* instance.start;
+      yield* Deferred.await(refused);
+      const snapshot = yield* instance.snapshot;
+      assert.isFalse(snapshot.desiredRunning);
+      assert.isFalse(snapshot.restartScheduled);
+      yield* TestClock.adjust(Duration.minutes(1));
+      assert.equal(resolves, 1);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
