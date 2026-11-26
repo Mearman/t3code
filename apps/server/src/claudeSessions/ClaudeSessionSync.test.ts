@@ -189,8 +189,8 @@ const itemWrites = (threadId: ThreadId) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const rows = yield* sql<{ readonly n: number }>`
-      SELECT COUNT(*) AS n FROM orchestration_v2_events
-      WHERE thread_id = ${threadId} AND event_type = 'turn-item.updated'
+      SELECT COUNT(*) AS n FROM orchestration_events
+      WHERE stream_id = ${threadId} AND event_type = 'turn-item.updated'
     `;
     const [row] = rows;
     if (row === undefined) return yield* Effect.die("COUNT returned no row.");
@@ -364,10 +364,10 @@ describe("ClaudeSessionSync", () => {
           yield* openThread(claudeThreadId);
 
           yield* replaceFile(home);
-          const events = yield* count("orchestration_v2_events");
+          const events = yield* count("orchestration_events");
           const items = yield* count("orchestration_v2_projection_turn_items", claudeThreadId);
           yield* syncAll({ full: true });
-          expect(yield* count("orchestration_v2_events")).toBe(events);
+          expect(yield* count("orchestration_events")).toBe(events);
           expect(yield* count("orchestration_v2_projection_turn_items", claudeThreadId)).toBe(
             items,
           );
@@ -389,9 +389,9 @@ describe("ClaudeSessionSync", () => {
           expect(yield* sync.drain).toEqual([]);
           expect(yield* nativeRuns(claudeThreadId)).toEqual([[1, "completed", "p1"]]);
           // Nothing is left with only an entry, so the fill stops rather than picking it again.
-          const events = yield* count("orchestration_v2_events");
+          const events = yield* count("orchestration_events");
           expect(yield* sync.drain).toEqual([]);
-          expect(yield* count("orchestration_v2_events")).toBe(events);
+          expect(yield* count("orchestration_events")).toBe(events);
         }).pipe(Effect.provide(syncLayer(settingsFor([home], { backgroundFill: true }))));
       }),
     ),
@@ -530,10 +530,10 @@ describe("ClaudeSessionSync", () => {
         yield* Effect.gen(function* () {
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
-          const events = yield* count("orchestration_v2_events");
+          const events = yield* count("orchestration_events");
           yield* syncAll({ full: true });
           yield* syncAll({ full: true });
-          expect(yield* count("orchestration_v2_events")).toBe(events);
+          expect(yield* count("orchestration_events")).toBe(events);
           expect((yield* sessionRow(home))?.filePath).toBe(yield* fileSystem.realPath(newer));
           expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
@@ -807,9 +807,9 @@ describe("ClaudeSessionSync", () => {
           yield* openThread(claudeThreadId);
           expect(yield* nativeRuns(claudeThreadId)).toHaveLength(3);
           yield* replaceFile(home);
-          const events = yield* count("orchestration_v2_events");
+          const events = yield* count("orchestration_events");
           yield* syncAll({ full: true });
-          expect(yield* count("orchestration_v2_events")).toBe(events);
+          expect(yield* count("orchestration_events")).toBe(events);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),
     ),
@@ -926,10 +926,10 @@ describe("ClaudeSessionSync", () => {
               expect(yield* nativeRuns(ThreadId.make(`claude:${id}`))).toHaveLength(2);
             }
             // Nothing changed, so a later poll asks for nothing and writes nothing.
-            const events = yield* count("orchestration_v2_events");
+            const events = yield* count("orchestration_events");
             yield* sync.pollLive;
             expect(yield* sync.drain).toEqual([]);
-            expect(yield* count("orchestration_v2_events")).toBe(events);
+            expect(yield* count("orchestration_events")).toBe(events);
           }).pipe(
             Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 0 }), realCapacity)),
           );
@@ -1047,13 +1047,13 @@ describe("ClaudeSessionSync", () => {
           const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
           yield* syncAll({ full: true });
           expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
-          const events = yield* count("orchestration_v2_events");
+          const events = yield* count("orchestration_events");
           // The same lines, uuids and all, appended again.
           yield* append(home, [...firstTurn, ...secondTurn]);
           yield* sync.pollLive;
           expect(yield* sync.drain).toEqual([]);
           expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
-          expect(yield* count("orchestration_v2_events")).toBe(events);
+          expect(yield* count("orchestration_events")).toBe(events);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),
     ),
