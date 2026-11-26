@@ -1463,7 +1463,7 @@ export const layer: Layer.Layer<
                     toProviderInstanceId: run.providerInstanceId,
                     coveredRunOrdinals: {
                       from: missedRuns[0]!.ordinal,
-                      to: missedRuns.at(-1)!.ordinal,
+                      to: runsByOrigin(missedRuns, "t3").at(-1)!.ordinal,
                     },
                     strategy: "delta_since_target_last_seen",
                     items: missedItems,
