@@ -6,17 +6,22 @@ import * as Path from "effect/Path";
 
 import {
   readClaudeTranscriptTurn,
+  type ClaudeTranscriptItem,
   type ClaudeTranscriptTurnContent,
 } from "./ClaudeTranscriptContent.ts";
-import { ClaudeTranscriptIndex, syncClaudeTranscriptIndex } from "./ClaudeTranscriptIndex.ts";
 import {
   checkClaudeTranscriptTurns,
   type ClaudeTranscriptViolationKind,
 } from "./ClaudeTranscriptInvariants.ts";
 import { claudeTranscriptFixture } from "./ClaudeTranscriptTestLines.ts";
 import {
+  ClaudeTranscriptTurnTracker,
+  syncClaudeTranscript,
+} from "./ClaudeTranscriptTurnTracker.ts";
+import {
   claudeTranscriptStructure,
   type ClaudeTranscriptStructure,
+  type ClaudeTranscriptTurn,
 } from "./ClaudeTranscriptTurns.ts";
 
 interface Parsed {
@@ -24,6 +29,9 @@ interface Parsed {
   readonly structure: ClaudeTranscriptStructure;
   readonly contents: ReadonlyArray<ClaudeTranscriptTurnContent>;
 }
+type Change = Partial<Parsed> & {
+  readonly others?: ReadonlyArray<{ name: string; structure: ClaudeTranscriptStructure }>;
+};
 
 const parse = (records: ReadonlyArray<unknown>) =>
   Effect.gen(function* () {
@@ -33,23 +41,26 @@ const parse = (records: ReadonlyArray<unknown>) =>
     const filePath = path.join(directory, "transcript.jsonl");
     const lines = records.map((record) => JSON.stringify(record));
     yield* fileSystem.writeFileString(filePath, lines.map((line) => `${line}\n`).join(""));
-    const index = new ClaudeTranscriptIndex();
-    yield* syncClaudeTranscriptIndex({ filePath, index });
-    const structure = claudeTranscriptStructure(index);
+    const tracker = new ClaudeTranscriptTurnTracker();
+    yield* syncClaudeTranscript({ filePath, tracker });
+    const structure = claudeTranscriptStructure(tracker.index);
     const contents: Array<ClaudeTranscriptTurnContent> = [];
     for (const turn of structure.turns) {
-      contents.push(yield* readClaudeTranscriptTurn({ filePath, index, idScope: "s", turn }));
+      contents.push(
+        yield* readClaudeTranscriptTurn({
+          filePath,
+          index: tracker.index,
+          idScope: "s",
+          turn,
+          known: new Map(),
+        }),
+      );
     }
     const parsed: Parsed = { lines, structure, contents };
     return parsed;
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
-const kinds = (
-  parsed: Parsed,
-  change: (parsed: Parsed) => Partial<Parsed> & {
-    others?: ReadonlyArray<{ name: string; structure: ClaudeTranscriptStructure }>;
-  } = () => ({}),
-) => {
+const kinds = (parsed: Parsed, change: (parsed: Parsed) => Change = () => ({})) => {
   const changed = { ...parsed, others: [], ...change(parsed) };
   return [
     ...new Set(
@@ -60,29 +71,48 @@ const kinds = (
   ].toSorted();
 };
 
+const itemsOf = (content: ClaudeTranscriptTurnContent) =>
+  content.lines.flatMap((line) => line.items);
+// Regroups items into lines, as a parser that produced exactly these items would give.
+const withItems = (
+  content: ClaudeTranscriptTurnContent,
+  items: ReadonlyArray<ClaudeTranscriptItem>,
+): ClaudeTranscriptTurnContent => {
+  const lines = new Map<string, Array<ClaudeTranscriptItem>>();
+  for (const item of items) lines.set(item.lineUuid, [...(lines.get(item.lineUuid) ?? []), item]);
+  return {
+    ...content,
+    lines: [...lines].map(([lineUuid, lineItems]) => ({ lineUuid, hash: 0, items: lineItems })),
+  };
+};
+const editItems = (
+  parsed: Parsed,
+  edit: (
+    items: ReadonlyArray<ClaudeTranscriptItem>,
+    content: ClaudeTranscriptTurnContent,
+  ) => ReadonlyArray<ClaudeTranscriptItem>,
+): Change => ({
+  contents: parsed.contents.map((content) => withItems(content, edit(itemsOf(content), content))),
+});
+
 // Moves the items of one line to another turn, as a parser that filed it there would give.
 const refile = (parsed: Parsed, lineUuid: string, toTurn: string): Pick<Parsed, "contents"> => {
   const moved = parsed.contents.flatMap((content) =>
-    content.items.filter((item) => item.lineUuid === lineUuid),
+    itemsOf(content).filter((item) => item.lineUuid === lineUuid),
   );
   return {
-    contents: parsed.contents.map((content) => ({
-      ...content,
-      items:
-        content.turn.id === toTurn
-          ? [...content.items.filter((item) => item.lineUuid !== lineUuid), ...moved]
-          : content.items.filter((item) => item.lineUuid !== lineUuid),
-    })),
+    contents: parsed.contents.map((content) => {
+      const kept = itemsOf(content).filter((item) => item.lineUuid !== lineUuid);
+      return withItems(content, content.turn.id === toTurn ? [...kept, ...moved] : kept);
+    }),
   };
 };
 
 const withTurn = (
   parsed: Parsed,
   id: string,
-  change: (
-    turn: ClaudeTranscriptStructure["turns"][number],
-  ) => ClaudeTranscriptStructure["turns"][number],
-): Partial<Parsed> => {
+  change: (turn: ClaudeTranscriptTurn) => ClaudeTranscriptTurn,
+): Change => {
   const turns = parsed.structure.turns.map((turn) => (turn.id === id ? change(turn) : turn));
   return {
     structure: { ...parsed.structure, turns },
@@ -131,24 +161,82 @@ describe("checkClaudeTranscriptTurns", () => {
     }),
   );
 
+  // Rewrite inspection findings 1, 2, 3 and 7: inputs where the parser is right must pass.
+  it.effect.each([
+    [
+      "a reply chained to a turn_duration line",
+      () => [
+        f.prompt("q1", null, "Go"),
+        f.text("e1", "q1", "Done", null),
+        f.duration("e2", "e1", 900),
+        f.text("e3", "e2", "More", null),
+      ],
+    ],
+    [
+      "a parent loop with lines below it",
+      () => [
+        f.text("b", "a", "One"),
+        f.toolUse("a", "b", "t1"),
+        f.result("0", "a", "t1"),
+        f.text("1", "0", "After"),
+      ],
+    ],
+    [
+      "a compaction whose logical parent is gone",
+      () => [
+        f.prompt("q0", null, "Go"),
+        f.text("g0", "q0", "x", null),
+        f.boundary("cb", "gone"),
+        f.summary("cs", "cb", { promptId: "pid-q0" }),
+        f.text("g1", "cs", "Continuing"),
+      ],
+    ],
+    [
+      "a reply written before its parent",
+      () => [f.prompt("q2", null, "Go"), f.toolUse("call", "think", "t1")],
+    ],
+    [
+      "a command while a tool runs",
+      () => [
+        f.prompt("q3", null, "Go"),
+        f.toolUse("h1", "q3", "t3"),
+        f.command("h2", "h1", "status"),
+      ],
+    ],
+  ] as const)("passes %s", ([, lines]) =>
+    Effect.gen(function* () {
+      const parsed = yield* parse(lines());
+
+      expect(kinds(parsed)).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps the compaction item of a compaction whose logical parent is gone", () =>
+    Effect.gen(function* () {
+      const parsed = yield* parse([
+        f.prompt("q0", null, "Go"),
+        f.text("g0", "q0", "x", null),
+        f.boundary("cb", "gone"),
+        f.summary("cs", "cb", { promptId: "pid-q0" }),
+        f.text("g1", "cs", "Continuing"),
+      ]);
+
+      expect(
+        parsed.contents.flatMap((content) => itemsOf(content).map((item) => item._tag)),
+      ).toContain("Compaction");
+    }),
+  );
+
   it.effect.each([
     [
       "content-line-missing",
-      (parsed: Parsed) => ({
-        contents: parsed.contents.map((content) => ({
-          ...content,
-          items: content.items.filter((item) => item.lineUuid !== "a2"),
-        })),
-      }),
+      (parsed: Parsed) =>
+        editItems(parsed, (items) => items.filter((item) => item.lineUuid !== "a2")),
     ],
     [
       "content-line-missing",
-      (parsed: Parsed) => ({
-        contents: parsed.contents.map((content) => ({
-          ...content,
-          items: content.items.filter((item) => item._tag !== "CommandOutput"),
-        })),
-      }),
+      (parsed: Parsed) =>
+        editItems(parsed, (items) => items.filter((item) => item._tag !== "CommandOutput")),
     ],
     ["item-outside-its-chain", (parsed: Parsed) => refile(parsed, "a2", "p2")],
     ["item-outside-its-chain", (parsed: Parsed) => refile(parsed, "b3", "p3")],
@@ -202,23 +290,20 @@ describe("checkClaudeTranscriptTurns", () => {
     ],
     [
       "unreadable-but-readable",
-      (parsed: Parsed) => ({
-        contents: parsed.contents.map((content) => ({
-          ...content,
-          items: content.items.map((item) =>
+      (parsed: Parsed) =>
+        editItems(parsed, (items) =>
+          items.map((item) =>
             item.lineUuid === "a2"
               ? { _tag: "Unreadable" as const, id: item.id, lineUuid: item.lineUuid, offset: 0 }
               : item,
           ),
-        })),
-      }),
+        ),
     ],
     [
       "raw-command-markup",
-      (parsed: Parsed) => ({
-        contents: parsed.contents.map((content) => ({
-          ...content,
-          items: content.items.map((item) =>
+      (parsed: Parsed) =>
+        editItems(parsed, (items) =>
+          items.map((item) =>
             item._tag === "CommandOutput"
               ? {
                   ...item,
@@ -231,21 +316,18 @@ describe("checkClaudeTranscriptTurns", () => {
                 }
               : item,
           ),
-        })),
-      }),
+        ),
     ],
     [
       "raw-command-markup",
-      (parsed: Parsed) => ({
-        contents: parsed.contents.map((content) => ({
-          ...content,
-          items: content.items.map((item) =>
+      (parsed: Parsed) =>
+        editItems(parsed, (items) =>
+          items.map((item) =>
             item._tag === "Command"
               ? { ...item, text: "<command-name>/status</command-name>" }
               : item,
           ),
-        })),
-      }),
+        ),
     ],
     [
       "differs-from-whole-read",
@@ -266,6 +348,56 @@ describe("checkClaudeTranscriptTurns", () => {
     }),
   );
 
+  // Rewrite inspection finding 10: a reader that keeps only a line's first block.
+  it.effect("reports a line that lost blocks", () =>
+    Effect.gen(function* () {
+      const g = claudeTranscriptFixture();
+      const image = {
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: "AA==" },
+      };
+      const parsed = yield* parse([
+        g.user("p1", null, [{ type: "text", text: "Look" }, image], { promptId: "pid-p1" }),
+        g.blocks("a1", "p1", [
+          { type: "text", text: "a" },
+          { type: "text", text: "b" },
+        ]),
+      ]);
+      const firstBlocks = (current: Parsed) =>
+        editItems(current, (items) =>
+          items.filter((item) => item._tag !== "Block" || (item.blockIndex ?? 0) === 0),
+        );
+
+      expect(kinds(parsed)).toEqual([]);
+      expect(kinds(parsed, firstBlocks)).toEqual(["items-not-one-per-block"]);
+    }),
+  );
+
+  it.effect("reports a command filed against a tool call that a later prompt shows died", () =>
+    Effect.gen(function* () {
+      const g = claudeTranscriptFixture();
+      const parsed = yield* parse([
+        g.prompt("p1", null, "Go"),
+        g.toolUse("a1", "p1", "t1"),
+        g.command("c1", "a1", "status"),
+        g.prompt("p2", "c1", "Next"),
+      ]);
+      const folded = (current: Parsed) => {
+        const merged = refile(current, "c1", "p1");
+        return {
+          structure: {
+            ...current.structure,
+            turns: current.structure.turns.filter((turn) => turn.id !== "c1"),
+          },
+          contents: merged.contents.filter((content) => content.turn.id !== "c1"),
+        };
+      };
+
+      expect(kinds(parsed)).toEqual([]);
+      expect(kinds(parsed, folded)).toContain("command-filed-wrongly");
+    }),
+  );
+
   // Round 5 finding 12: a parser that opens a turn for every user line, tool results included.
   it.effect("reports a turn opened at a tool result", () =>
     Effect.gen(function* () {
@@ -280,7 +412,7 @@ describe("checkClaudeTranscriptTurns", () => {
             ...parsed,
             contents: [
               ...parsed.contents,
-              { turn: opened, prompt: undefined, forkedFrom: undefined, items: [] },
+              { turn: opened, opener: undefined, lines: [], removedLineUuids: [] },
             ],
           },
           "r1",
@@ -318,10 +450,9 @@ describe("checkClaudeTranscriptTurns", () => {
         g.text("a1", "p1", "Ran"),
         g.user("o1", "a1", "<bash-stdout>out</bash-stdout><bash-stderr></bash-stderr>"),
       ]);
-      const change = (current: Parsed) => ({
-        contents: current.contents.map((content) => ({
-          ...content,
-          items: content.items.map((item) =>
+      const change = (current: Parsed) =>
+        editItems(current, (items) =>
+          items.map((item) =>
             item._tag === "CommandOutput"
               ? {
                   _tag: "Block" as const,
@@ -337,8 +468,7 @@ describe("checkClaudeTranscriptTurns", () => {
                 }
               : item,
           ),
-        })),
-      });
+        );
 
       expect(kinds(parsed)).toEqual([]);
       expect(kinds(parsed, change)).toEqual(["raw-command-markup"]);
