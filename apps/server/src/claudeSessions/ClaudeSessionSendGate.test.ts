@@ -20,11 +20,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import {
-  ClaudeProcessTableError,
-  parseClaudeProcessTable,
-  type ClaudeProcessRow,
-} from "./ClaudeProcessTable.ts";
+import { ClaudeProcessTableError, parseClaudeProcessTable } from "./ClaudeProcessTable.ts";
 import { ClaudeSessionRegistryEntry } from "./ClaudeSessionRegistry.ts";
 import {
   gateHeldClaudeSessionRuntime,
