@@ -2004,7 +2004,9 @@ export function threadShellFromProjection(
       ),
     latestRunBackgroundWake:
       latestRun != null && isBackgroundWakeRunForShell(latestRun, projection),
-    ...(latestRun != null && isNativeOriginRun(latestRun) ? { latestRunNativeOrigin: true } : {}),
+    ...(latestRun != null && isNativeOriginRun(latestRun)
+      ? { latestRunNativeOrigin: true as const }
+      : {}),
     activeRunId: activeRun?.id ?? null,
     blockedOnThreadWait: deriveBlockedOnThreadWait({ activeRun, turnItems: projection.turnItems }),
     activityRunStatus: activityRun?.status ?? null,
@@ -2325,7 +2327,7 @@ function shellFromState(input: {
     latestRunCompletedAt: input.state.latestRunCompletedAt,
     latestRunStopRequested: input.state.latestRunStopRequested,
     latestRunBackgroundWake: input.state.latestRunBackgroundWake,
-    ...(input.state.latestRunNativeOrigin ? { latestRunNativeOrigin: true } : {}),
+    ...(input.state.latestRunNativeOrigin ? { latestRunNativeOrigin: true as const } : {}),
     activeRunId: input.state.activeRunId,
     blockedOnThreadWait: input.state.blockedOnThreadWait,
     activityRunStatus: input.state.activityRunStatus,
@@ -9607,7 +9609,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               latestRunCompletedAt: state.latestRunCompletedAt,
               latestRunStopRequested: state.latestRunStopRequested,
               latestRunBackgroundWake: state.latestRunBackgroundWake,
-              ...(state.latestRunNativeOrigin ? { latestRunNativeOrigin: true } : {}),
+              ...(state.latestRunNativeOrigin ? { latestRunNativeOrigin: true as const } : {}),
               pendingRuntimeRequest: state.pendingRuntimeRequest,
               pendingBackgroundTasks: state.pendingBackgroundTasks,
             })),
