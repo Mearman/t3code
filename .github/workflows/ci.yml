@@ -361,7 +361,8 @@ jobs:
             for package in $TEST_PACKAGES; do filters+=(--filter "$package"); done
           fi
           # The runner's trace writer can crash on surrogate pairs in test output.
-          vp run --parallel --concurrency-limit 4 "${filters[@]}" test 2>&1 | python3 -u -c '
+          # Half of upstream's limit, for a runner with half the cores: oversubscribed, tests overrun their timeouts.
+          vp run --parallel --concurrency-limit 2 "${filters[@]}" test 2>&1 | python3 -u -c '
           import sys
           for line in sys.stdin:
               sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
