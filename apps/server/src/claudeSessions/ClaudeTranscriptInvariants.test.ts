@@ -46,9 +46,7 @@ const parse = (records: ReadonlyArray<unknown>) =>
 
 const kinds = (
   parsed: Parsed,
-  change: (
-    parsed: Parsed,
-  ) => Partial<Parsed> & {
+  change: (parsed: Parsed) => Partial<Parsed> & {
     others?: ReadonlyArray<{ name: string; structure: ClaudeTranscriptStructure }>;
   } = () => ({}),
 ) => {
