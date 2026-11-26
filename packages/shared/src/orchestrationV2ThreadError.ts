@@ -59,6 +59,17 @@ export function threadErrorSummary(
   };
 }
 
+/**
+ * The run T3 last executed: the latest executed run, ignoring runs read back from a provider
+ * transcript (`nativeOrigin`). Every decision T3 acts on (queue holds and starts, usage limits,
+ * resume, Stop, worktree setup) reads this; presentation reads `latestExecutedRun`.
+ */
+export function latestT3ExecutedRun(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+): OrchestrationV2Run | null {
+  return latestExecutedRun(runs.filter((run) => run.nativeOrigin === undefined));
+}
+
 export function latestExecutedRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): OrchestrationV2Run | null {
@@ -80,7 +91,7 @@ export function orchestrationV2WorktreePending(
   worktreePath: string | null,
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): boolean {
-  const latest = latestExecutedRun(runs);
+  const latest = latestT3ExecutedRun(runs);
   return (
     worktreePath === null &&
     (latest?.status === "preparing" ||
@@ -108,20 +119,25 @@ export function usageLimitBlockedRun(
   turnItems: ReadonlyArray<FailureScanTurnItem>,
   sessionError: string | null,
 ): OrchestrationV2Run | null {
-  const executed = latestExecutedRun(runs);
+  const executed = latestT3ExecutedRun(runs);
   if (executed?.status !== "failed") return null;
   const summary = threadErrorSummary(latestRootProviderFailure(executed, turnItems), sessionError);
   return summary.lastErrorClass === "usage_limit" ? executed : null;
 }
 
-/** Retains a limited run's outcome when higher-ordinal runs never started. */
+/**
+ * Retains a limited run's outcome when higher-ordinal runs never started. A transcript run after
+ * it shows the session went on outside T3, so the limit is no longer the thread's latest news.
+ */
 export function usageLimitRunPresentedAsLatest(
   runs: ReadonlyArray<OrchestrationV2Run>,
   turnItems: ReadonlyArray<FailureScanTurnItem>,
   sessionError: string | null,
 ): OrchestrationV2Run | null {
   const blocked = usageLimitBlockedRun(runs, turnItems, sessionError);
-  return blocked !== null && runs.some((run) => run.ordinal > blocked.ordinal) ? blocked : null;
+  if (blocked === null) return null;
+  const later = runs.filter((run) => run.ordinal > blocked.ordinal);
+  return later.length > 0 && later.every((run) => run.nativeOrigin === undefined) ? blocked : null;
 }
 
 export function latestUnheldRun(

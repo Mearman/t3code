@@ -15,6 +15,7 @@ import {
   cancelledTurnItemWork,
   isAwaitedWork,
   isRestartNoteContinuation,
+  latestStartedRun,
   pendingRestartCancelledBackgroundWork,
   pendingStoppedDelegatedTasks,
   restartContinuationNote,
@@ -25,6 +26,11 @@ import {
 const claudeThread = ProviderThreadId.make("provider-thread:claude");
 const codexThread = ProviderThreadId.make("provider-thread:codex");
 const lost = [{ kind: "subagent" as const, label: "Background subagent test" }];
+const nativeOrigin = {
+  kind: "claude_transcript" as const,
+  nativeSessionId: "session-1",
+  promptUuid: "prompt-1",
+};
 
 function run(
   ordinal: number,
@@ -328,4 +334,20 @@ it("tells the next completed turn about delegated tasks its Stop interrupted, on
   assert.deepEqual(pending([spawning, racing, run(3, claudeThread, { requestedAt: at(2) })]), []);
   // A fresh-context turn on another provider thread never carried the note.
   assert.deepEqual(pending([spawning, run(3, codexThread, { requestedAt: at(2) })]), [stopped]);
+  // Nor did a turn read back from the session's transcript, which T3 never sent.
+  const transcriptTurn = run(3, claudeThread, { requestedAt: at(2), nativeOrigin });
+  assert.deepEqual(pending([spawning, transcriptTurn]), [stopped]);
+});
+
+it("never carries lost background work into a transcript run", () => {
+  const root = run(1, claudeThread, {
+    startedAt: DateTime.makeUnsafe("2026-10-03T10:00:00.000Z"),
+    completedAt: DateTime.makeUnsafe("2026-10-03T10:00:30.000Z"),
+  });
+  const transcriptTurn = run(2, claudeThread, {
+    startedAt: DateTime.makeUnsafe("2026-10-03T10:01:00.000Z"),
+    completedAt: DateTime.makeUnsafe("2026-10-03T10:02:00.000Z"),
+    nativeOrigin,
+  });
+  assert.equal(latestStartedRun([root, transcriptTurn], claudeThread)?.id, root.id);
 });

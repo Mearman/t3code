@@ -11,7 +11,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { isSlashCommand } from "@t3tools/shared/composerTrigger";
-import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
+import { latestT3ExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -173,7 +173,8 @@ export function followUpOwnerRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): OrchestrationV2Run | null {
   return (
-    runs.filter(isActiveRun).toSorted((a, b) => b.ordinal - a.ordinal)[0] ?? latestExecutedRun(runs)
+    runs.filter(isActiveRun).toSorted((a, b) => b.ordinal - a.ordinal)[0] ??
+    latestT3ExecutedRun(runs)
   );
 }
 

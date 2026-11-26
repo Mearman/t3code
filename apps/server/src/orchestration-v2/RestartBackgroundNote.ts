@@ -1,5 +1,6 @@
 import {
   isDeliveredProviderTurn,
+  isNativeOriginRun,
   type NodeId,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2PendingBackgroundTask,
@@ -179,10 +180,12 @@ export function pendingStoppedDelegatedTasks(input: {
       .filter((turn) => turn.status === "completed")
       .map((turn) => turn.runAttemptId),
   );
+  // A transcript turn on the same provider thread never carried T3's note.
   const toldRunRequests = input.runs
     .filter(
       (run) =>
         run.providerThreadId === input.providerThreadId &&
+        !isNativeOriginRun(run) &&
         !input.compactionMessageIds.has(run.userMessageId) &&
         input.attempts.some(
           (attempt) => attempt.runId === run.id && completedAttemptIds.has(attempt.id),
@@ -268,7 +271,7 @@ export function runOutcome(
     : run.status;
 }
 
-/** The run whose continuation carries a provider thread's lost background work. */
+/** The run whose continuation carries a provider thread's lost background work; never a transcript run. */
 export function latestStartedRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
   providerThreadId: OrchestrationV2Run["providerThreadId"],
@@ -276,6 +279,7 @@ export function latestStartedRun(
   return runs.reduce<OrchestrationV2Run | undefined>(
     (latest, run) =>
       run.providerThreadId === providerThreadId &&
+      !isNativeOriginRun(run) &&
       run.status !== "queued" &&
       run.status !== "rolled_back" &&
       !neverStarted(run) &&
