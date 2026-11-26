@@ -285,9 +285,9 @@ const make = Effect.gen(function* () {
     }),
     findProviderThreadInInstances: Effect.fn(
       "ClaudeSessionSyncStateRepository.findProviderThreadInInstances",
-    )(function (input) {
-      if (input.providerInstanceIds.length === 0) return Effect.succeed(undefined);
-      return providerThreadInInstancesRow(input).pipe(
+    )(function* (input) {
+      if (input.providerInstanceIds.length === 0) return undefined;
+      return yield* providerThreadInInstancesRow(input).pipe(
         NodeSqliteClient.readOnly,
         Effect.map(Option.getOrUndefined),
         Effect.mapError(toRepositoryError("findClaudeSessionProviderThreadInInstances")),
@@ -303,9 +303,9 @@ const make = Effect.gen(function* () {
       },
     ),
     nextEntryToHydrate: Effect.fn("ClaudeSessionSyncStateRepository.nextEntryToHydrate")(
-      function (storeKeys) {
-        if (storeKeys.length === 0) return Effect.succeed(undefined);
-        return nextEntryRow({ storeKeys }).pipe(
+      function* (storeKeys) {
+        if (storeKeys.length === 0) return undefined;
+        return yield* nextEntryRow({ storeKeys }).pipe(
           NodeSqliteClient.readOnly,
           Effect.map(Option.getOrUndefined),
           Effect.mapError(toRepositoryError("nextClaudeSessionEntryToHydrate")),
