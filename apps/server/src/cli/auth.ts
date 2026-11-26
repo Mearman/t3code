@@ -32,6 +32,18 @@ import {
 } from "./config.ts";
 import * as RunningServer from "./runningServer.ts";
 
+type CliDatabaseLayer =
+  | typeof SqlitePersistence.layerCliConfig
+  | typeof SqlitePersistence.layerCliConfigCurrentSchema;
+type CliDatabase = Layer.Layer<
+  Layer.Success<CliDatabaseLayer>,
+  Layer.Error<CliDatabaseLayer>,
+  Layer.Services<CliDatabaseLayer>
+>;
+const layerDatabase: CliDatabase = SqlitePersistence.layerCliConfig;
+// A client of a running server must never change that server's schema.
+const layerDatabaseCurrentSchema: CliDatabase = SqlitePersistence.layerCliConfigCurrentSchema;
+
 const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function* <A, E, R>(
   flags: CliAuthLocationFlags,
   run: (environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"]) => Effect.Effect<A, E, R>,
@@ -49,10 +61,7 @@ const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function
   }).pipe(
     Effect.provide(
       EnvironmentAuth.layerRuntimeWith(
-        // A client of a running server must never change that server's schema.
-        options?.requireCurrentSchema
-          ? SqlitePersistence.layerCliConfigCurrentSchema
-          : SqlitePersistence.layerCliConfig,
+        options?.requireCurrentSchema ? layerDatabaseCurrentSchema : layerDatabase,
       ).pipe(
         Layer.provideMerge(ServerConfig.layer(config)),
         Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
