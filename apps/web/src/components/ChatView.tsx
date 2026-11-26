@@ -82,8 +82,10 @@ import {
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
+  type OrchestrationV2ProviderFailure,
   type PreviewAnnotationPayload,
   ProviderInstanceId,
+  type RunId,
   type ServerProvider,
   type ScopedThreadRef,
   type ThreadId,
@@ -111,6 +113,7 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   getUserQueuedThreadRuns,
+  heldSessionForkSourceRunId,
   threadCanSteer,
   threadSupportsProviderHandoff,
 } from "@t3tools/client-runtime/state/thread-workflows";
@@ -3062,6 +3065,8 @@ export default function ChatView(props: ChatViewProps) {
   const openSideChatStable = useStableCallback(() => void sideChat.open());
   const openSurfaceInMainView = useOpenSurfaceInMainView(activeThreadRef);
   const sendSideChatStable = useStableCallback(sideChat.open);
+  const forkSourceForRefusedRun = (refusedRunId: RunId, failure: OrchestrationV2ProviderFailure) =>
+    heldSessionForkSourceRunId({ runs: serverProjection?.runs ?? [], refusedRunId, failure });
   const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
     useTimelineRewind({
       environmentId,
@@ -3731,7 +3736,12 @@ export default function ChatView(props: ChatViewProps) {
                   announceTurnStatus={!isProviderSubagent}
                   onOpenToolDiff={parentPanel?.openToolDiff ?? onOpenToolDiffStable}
                   // A fork would promote the side chat.
-                  {...(embedded ? {} : { onForkFromRun: onForkFromRunStable })}
+                  {...(embedded
+                    ? {}
+                    : {
+                        onForkFromRun: onForkFromRunStable,
+                        forkSourceForRefusedRun,
+                      })}
                   onOpenThread={onOpenRelatedThreadStable}
                   parentThreadLink={parentThreadLink}
                   workflowOpening={workflowOpening}

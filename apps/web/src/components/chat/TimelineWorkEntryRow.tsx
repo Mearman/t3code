@@ -9,6 +9,7 @@ import {
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type EnvironmentId,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -45,6 +46,7 @@ import {
   ExternalLinkIcon,
   XIcon,
   RotateCcwIcon,
+  GitForkIcon,
 } from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
 import { useAssetUrls } from "../../assets/assetUrls";
@@ -66,6 +68,7 @@ import {
   TimelineRowActivityCtx,
   WorkGroupViewCtx,
   type TimelineRow,
+  type TimelineRowSharedState,
   type TimelineWorkEntry,
 } from "./timelineRowContext";
 import { MESSAGE_HEADING_LEVEL, TimelineRowTimestamp } from "./TimelineRowParts";
@@ -289,6 +292,34 @@ export function ViewedImagesTimelineRow({
   );
 }
 
+// Offered where another process holds the session: the fork continues in a session of its own.
+function HeldSessionForkAction(props: {
+  readonly onFork: NonNullable<TimelineRowSharedState["onForkFromRun"]>;
+  readonly sourceThreadId: ThreadId;
+  readonly runId: RunId;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="ms-7 pb-1">
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          void props
+            .onFork({ sourceThreadId: props.sourceThreadId, runId: props.runId })
+            .finally(() => setBusy(false));
+        }}
+      >
+        <GitForkIcon aria-hidden />
+        <T>Fork into a new session</T>
+      </Button>
+    </div>
+  );
+}
+
 function WorkEntryLogRow(props: WorkEntryRowProps) {
   const { workEntry, workspaceRoot, displayLabel } = props;
   const ctx = use(TimelineRowCtx);
@@ -359,6 +390,11 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         ? gt("Usage limit reached. Retry after {resetTime}.", { resetTime })
         : gt("Usage limit reached.")
       : workEntry.label;
+    const forkRunId =
+      failureItem.runId === null || ctx.forkSourceForRefusedRun === null
+        ? undefined
+        : ctx.forkSourceForRefusedRun(failureItem.runId, failureItem.failure);
+    const sourceThreadId = workEntry.projectedItem?.sourceThreadId ?? failureItem.threadId;
     const retryRunId =
       failureItem.runId !== null &&
       retryableWorkspacePreparationRunIds.has(failureItem.runId) &&
@@ -406,6 +442,13 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               <ExternalLinkIcon aria-hidden />
             </Button>
           </div>
+        ) : null}
+        {forkRunId !== undefined && ctx.onForkFromRun ? (
+          <HeldSessionForkAction
+            onFork={ctx.onForkFromRun}
+            sourceThreadId={sourceThreadId}
+            runId={forkRunId}
+          />
         ) : null}
         {retryRunId !== null && onRetryWorkspacePreparation ? (
           <div className="ms-7 pb-1">

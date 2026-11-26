@@ -308,6 +308,7 @@ interface MessagesTimelineProps {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
+  forkSourceForRefusedRun?: NonNullable<TimelineRowSharedState["forkSourceForRefusedRun"]>;
   supportsConversationRollback: boolean;
   threadStartCheckpointAvailable?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
@@ -411,6 +412,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   parentThreadLink = null,
   workflowOpening = null,
   onForkFromRun,
+  forkSourceForRefusedRun,
   supportsConversationRollback,
   threadStartCheckpointAvailable = false,
   availableRevertTurnCounts,
@@ -1161,6 +1163,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     turnItemSource,
     workflowOpening,
     onForkFromRun,
+    forkSourceForRefusedRun: forkSourceForRefusedRun ?? null,
     onToggleTurnFold,
     onToggleAttemptFold,
     onToggleWorkGroup,
