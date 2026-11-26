@@ -203,6 +203,131 @@ describe("checkClaudeTranscriptTurns", () => {
         f.command("h2", "h1", "status"),
       ],
     ],
+    // Rewrite inspection 3 finding 1: a queued opener at a true root takes no prompt id.
+    [
+      "a queued opener at a true root before a compaction naming a prompt id",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.queued("q", null, "Next", t(1)),
+          g.boundary("cb", "gone", t(2)),
+          g.summary("s", "cb", { ...t(3), promptId: "X" }),
+        ];
+      },
+    ],
+    [
+      "a queued opener at a true root beside a prompt at the same time",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.prompt("z", null, "Go", { ...t(1), promptId: "A" }),
+          g.queued("a", null, "Next", t(1)),
+          g.text("a1", "a", "Ok", "end_turn", t(2)),
+          g.queued("q2", "a1", "More", t(3)),
+          g.text("x", "q2", "Ok", "end_turn", t(4)),
+          g.boundary("cb", "gone", t(5)),
+          g.summary("s", "cb", { ...t(6), promptId: "A" }),
+        ];
+      },
+    ],
+    // Rewrite inspection 3 finding 3: a summary the parser cannot read names nothing.
+    [
+      "a compaction whose only summary cannot be read",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+          g.prompt("p2", "p1", "Next", { ...t(2), promptId: "B" }),
+          g.boundary("cb", "gone", t(3)),
+          g.user("s", "cb", [{ type: "text" }], { ...t(4), promptId: "A", isCompactSummary: true }),
+          g.text("a2", "s", "More", "end_turn", t(5)),
+        ];
+      },
+    ],
+    // Rewrite inspection 3 finding 6, line 404: a queued turn carries the prompt id of the turn above.
+    [
+      "a compaction naming the prompt id a queued turn inherited",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+          g.text("a1", "p1", "Done", "end_turn", t(2)),
+          g.queued("q", "a1", "Next", t(3)),
+          g.text("a2", "q", "Ok", "end_turn", t(4)),
+          g.prompt("p2", "a2", "Other", { ...t(5), promptId: "B" }),
+          g.text("a3", "p2", "Ok", "end_turn", t(6)),
+          g.boundary("cb", "gone", t(7)),
+          g.summary("s", "cb", { ...t(8), promptId: "A" }),
+          g.text("a4", "s", "More", "end_turn", t(9)),
+        ];
+      },
+    ],
+    // Line 406: a command's turn carries no prompt id, whatever its line records.
+    [
+      "a compaction naming a prompt id that only a command line records",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+          g.text("a1", "p1", "Done", "end_turn", t(2)),
+          g.command("c1", "a1", "status", { ...t(3), promptId: "A" }),
+          g.boundary("cb", "gone", t(4)),
+          g.summary("s", "cb", { ...t(5), promptId: "A" }),
+          g.text("a2", "s", "More", "end_turn", t(6)),
+        ];
+      },
+    ],
+    // Line 421 and inspection 3 finding 5: of two summaries, the earliest names the prompt id.
+    [
+      "a compaction with two summaries naming different prompt ids",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+          g.text("a1", "p1", "Done", null, t(2)),
+          g.prompt("p2", "a1", "Next", { ...t(3), promptId: "B" }),
+          g.text("a2", "p2", "Done", null, t(4)),
+          g.boundary("cb", "gone", t(5)),
+          g.summary("s2", "cb", { ...t(7), promptId: "B" }),
+          g.summary("s1", "cb", { ...t(6), promptId: "A" }),
+          g.text("a3", "s1", "More", "end_turn", t(8)),
+        ];
+      },
+    ],
+    // Line 429: a turn that started at the root's own time is one it may join.
+    [
+      "a root stamped at the same time as the turn it joins",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+          g.text("a1", "p1", "Done", null, t(2)),
+          g.prompt("p2", "a1", "Next", { ...t(3), promptId: "B" }),
+          g.text("r1", "gone", "Early", "end_turn", t(3)),
+        ];
+      },
+    ],
+    // Line 431: a later root's tree is not one an earlier root may join.
+    [
+      "a later root whose tree holds a turn stamped before an earlier root",
+      () => {
+        const g = claudeTranscriptFixture();
+        const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+        return [
+          g.prompt("p0", null, "Go", { ...t(1), promptId: "A" }),
+          g.text("r1", "gone-1", "First", "end_turn", t(10)),
+          g.text("r2", "gone-2", "Second", null, t(20)),
+          g.prompt("p5", "r2", "Early", { ...t(5), promptId: "B" }),
+        ];
+      },
+    ],
   ] as const)("passes %s", ([, lines]) =>
     Effect.gen(function* () {
       const parsed = yield* parse(lines());
@@ -388,6 +513,45 @@ describe("checkClaudeTranscriptTurns", () => {
 
       expect(kinds(parsed)).toEqual([]);
       expect(kinds(parsed, byTime)).toContain("item-outside-its-chain");
+    }),
+  );
+
+  // Rewrite inspection 3 finding 2: wrong parser output is reported, never a crash.
+  it.effect("reports, without throwing, a queued opener's parent filed in the queued turn", () =>
+    Effect.gen(function* () {
+      const g = claudeTranscriptFixture();
+      const t = (seconds: number) => ({ timestamp: g.iso(seconds) });
+      const parsed = yield* parse([
+        g.prompt("p1", null, "Go", t(1)),
+        g.text("a1", "p1", "Ok", "end_turn", t(2)),
+        g.queued("q", "a1", "Next", t(3)),
+        g.text("a2", "q", "Ok", "end_turn", t(4)),
+        g.boundary("cb", "gone", t(5)),
+        g.summary("s", "cb", { ...t(6), promptId: "pid-p1" }),
+        g.text("a3", "s", "More", "end_turn", t(7)),
+      ]);
+
+      expect(kinds(parsed)).toEqual([]);
+      expect(kinds(parsed, (current) => refile(current, "a1", "q"))).not.toEqual([]);
+    }),
+  );
+
+  // Line 539: a compaction dropped from every turn is reported.
+  it.effect("reports a compaction whose item is in no turn", () =>
+    Effect.gen(function* () {
+      const g = claudeTranscriptFixture();
+      const parsed = yield* parse([
+        g.prompt("p0", null, "Go"),
+        g.text("a0", "p0", "Working", null),
+        g.boundary("cb", "gone"),
+        g.summary("s1", "cb", { promptId: "pid-p0" }),
+        g.text("a1", "s1", "Continuing"),
+      ]);
+      const dropped = (current: Parsed) =>
+        editItems(current, (items) => items.filter((item) => item._tag !== "Compaction"));
+
+      expect(kinds(parsed)).toEqual([]);
+      expect(kinds(parsed, dropped)).toContain("content-line-missing");
     }),
   );
 
