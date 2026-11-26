@@ -235,10 +235,13 @@ const outcomeUnknown = (error: unknown): boolean =>
   OUTCOME_UNKNOWN_TAGS.some((tag) => Predicate.isTagged(error, tag)) ||
   (Predicate.hasProperty(error, "cause") && outcomeUnknown(error.cause));
 
-// Another process holds the native thread until the user closes it; retrying cannot change that.
-const threadInUse = (error: unknown): boolean =>
-  Predicate.isTagged(error, "ProviderAdapterThreadInUseError") ||
-  (Predicate.hasProperty(error, "cause") && threadInUse(error.cause));
+// A holder seen in another process stays until the user closes it; retrying cannot change that.
+// A failed check is retried, and so is an in-use error a provider raises without seeing one.
+const holderObserved = (error: unknown): boolean =>
+  (Predicate.isTagged(error, "ProviderAdapterThreadInUseError") &&
+    Predicate.hasProperty(error, "holderObserved") &&
+    error.holderObserved === true) ||
+  (Predicate.hasProperty(error, "cause") && holderObserved(error.cause));
 
 /**
  * Whether a non-truncating provider's native session lost the conversation kept before `run`.
@@ -1200,7 +1203,7 @@ export const layer: Layer.Layer<
         if (
           input.willRetry === true &&
           !outcomeUnknown(loaded.failure) &&
-          !threadInUse(loaded.failure)
+          !holderObserved(loaded.failure)
         ) {
           return yield* loaded.failure;
         }
@@ -1869,22 +1872,18 @@ export const layer: Layer.Layer<
           );
         const resumed = yield* Effect.result(
           uncertainDelivery || nativeSessionLacksKeptTurns || rejectedHistory
-            ? // The fresh session below replaces this one, which another process may still hold.
-              Effect.andThen(
-                session.checkNativeThreadFree?.(providerThread) ?? Effect.void,
-                Effect.fail(
-                  new ProviderAdapter.ProviderAdapterTurnStartError({
-                    driver: session.driver,
-                    threadId: projection.thread.id,
-                    providerThreadId: providerThread.id,
-                    runId,
-                    cause: uncertainDelivery
-                      ? "Uncertain native history injection"
-                      : nativeSessionLacksKeptTurns
-                        ? "Native session holds none of the kept conversation"
-                        : "Rejected native history",
-                  }),
-                ),
+            ? Effect.fail(
+                new ProviderAdapter.ProviderAdapterTurnStartError({
+                  driver: session.driver,
+                  threadId: projection.thread.id,
+                  providerThreadId: providerThread.id,
+                  runId,
+                  cause: uncertainDelivery
+                    ? "Uncertain native history injection"
+                    : nativeSessionLacksKeptTurns
+                      ? "Native session holds none of the kept conversation"
+                      : "Rejected native history",
+                }),
               )
             : session.resumeThread({
                 providerThread,
@@ -1939,6 +1938,11 @@ export const layer: Layer.Layer<
         ) {
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         }
+        // Every way into a fresh session leaves this one behind, which another process may hold.
+        const free = yield* Effect.result(
+          session.checkNativeThreadFree?.(providerThread) ?? Effect.void,
+        );
+        if (free._tag === "Failure") return yield* loadFromProvider(Effect.fail(free.failure));
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
           driver: session.driver,

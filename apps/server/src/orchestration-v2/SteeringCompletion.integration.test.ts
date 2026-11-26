@@ -1552,6 +1552,7 @@ it.effect.each(declinedSteerTimings)(
                       providerThreadId: turn.providerThread.id,
                       detail: "Another Claude Code process has this session open.",
                       cause: "held",
+                      holderObserved: true,
                     })
                   : new ProviderAdapter.ProviderAdapterSteerDeclinedError({
                       driver,
