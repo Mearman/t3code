@@ -4752,7 +4752,7 @@ function isClaudeAssistantToolResultContentBlock(
   return "tool_use_id" in part && typeof part.tool_use_id === "string";
 }
 
-export function isClaudeUserToolResultContentBlock(
+function isClaudeUserToolResultContentBlock(
   part: ClaudeUserContentBlock,
 ): part is ClaudeUserToolResultContentBlock {
   return "tool_use_id" in part && typeof part.tool_use_id === "string";
@@ -5781,7 +5781,7 @@ export function isClaudeTranscriptTurnEnd(entry: unknown): boolean {
   return typeof stopReason === "string" && stopReason !== "tool_use";
 }
 
-export function isClaudeTranscriptConversationLine(
+function isClaudeTranscriptConversationLine(
   entry: unknown,
 ): entry is SDKAssistantMessage | SDKUserMessage {
   const type = field(entry, "type");
