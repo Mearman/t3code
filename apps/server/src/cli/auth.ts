@@ -22,6 +22,7 @@ import {
   formatSessionList,
 } from "../cliAuthFormat.ts";
 import * as ServerConfig from "../config.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { authScopesFlag } from "./authScopes.ts";
 import {
   authLocationFlags,
@@ -36,6 +37,7 @@ const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function
   run: (environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"]) => Effect.Effect<A, E, R>,
   options?: {
     readonly quietLogs?: boolean;
+    readonly requireCurrentSchema?: boolean;
   },
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
@@ -46,7 +48,12 @@ const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function
     return yield* run(environmentAuth);
   }).pipe(
     Effect.provide(
-      EnvironmentAuth.layerRuntime.pipe(
+      EnvironmentAuth.layerRuntimeWith(
+        // A client of a running server must never change that server's schema.
+        options?.requireCurrentSchema
+          ? SqlitePersistence.layerCliConfigCurrentSchema
+          : SqlitePersistence.layerCliConfig,
+      ).pipe(
         Layer.provideMerge(ServerConfig.layer(config)),
         Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
       ),
@@ -290,6 +297,13 @@ const connectDeviceCommand = Command.make("connect-device").pipe(
   ]),
 );
 
+const requireCurrentSchemaFlag = Flag.Boolean("require-current-schema").pipe(
+  Flag.withDescription(
+    "Fail instead of migrating a database that is behind this CLI, even with no server running.",
+  ),
+  Flag.withDefault(false),
+);
+
 const sessionIssueCommand = Command.make("issue", {
   ...authLocationFlags,
   scopes: authScopesFlag(AuthStandardClientScopes),
@@ -298,6 +312,7 @@ const sessionIssueCommand = Command.make("issue", {
   subject: subjectFlag,
   tokenOnly: tokenOnlyFlag,
   json: jsonFlag,
+  requireCurrentSchema: requireCurrentSchemaFlag,
 }).pipe(
   Command.withDescription("Issue a scoped bearer access token for headless or remote clients."),
   Command.withHandler((flags) =>
@@ -320,6 +335,7 @@ const sessionIssueCommand = Command.make("issue", {
         }),
       {
         quietLogs: flags.json || flags.tokenOnly,
+        requireCurrentSchema: flags.requireCurrentSchema,
       },
     ),
   ),

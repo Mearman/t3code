@@ -1,8 +1,10 @@
+import { SERVER_EXIT_CODE_SCHEMA_BEHIND } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
+import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
@@ -21,6 +23,18 @@ export class ServerOwnsDatabaseError extends Schema.TaggedError<ServerOwnsDataba
 ) {
   override get message(): string {
     return `Another T3 Code process, usually a running server, owns ${this.stateDir}, and this CLI would change its database schema. Use the \`t3\` that matches the running server, or stop that server, then retry. The database was not changed.`;
+  }
+}
+
+export class DatabaseSchemaBehindError extends Schema.TaggedError<DatabaseSchemaBehindError>()(
+  "DatabaseSchemaBehindError",
+  { dbPath: Schema.String },
+) {
+  // Lets a client tell "update the server that owns this home" from any other failure.
+  override readonly [Runtime.errorExitCode] = SERVER_EXIT_CODE_SCHEMA_BEHIND;
+
+  override get message(): string {
+    return `The database at ${this.dbPath} lacks migrations this T3 Code CLI expects, so the server that uses it is older than this CLI. Update that server, or use the \`t3\` that matches it, then retry. The database was not changed.`;
   }
 }
 
@@ -63,6 +77,16 @@ const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")
   );
   yield* runMigrations();
 }, Effect.scoped);
+
+// Never migrates, even with the home's lock free: a service restarting must find its own schema.
+const requireCurrentSchema = Effect.fn("SqlitePersistence.requireCurrentSchema")(function* () {
+  if (yield* hasPendingMigrations()) {
+    const { dbPath } = yield* ServerConfig.ServerConfig;
+    return yield* new DatabaseSchemaBehindError({ dbPath });
+  }
+  // With nothing pending, runMigrations only validates the recorded history and writes nothing.
+  return yield* runMigrations();
+});
 
 const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
   Layer.effectDiscard(
@@ -155,4 +179,9 @@ export const layerConfig = makeLayerConfig(layerFromPath);
 /** For CLI commands: pending migrations run only while no server owns the T3 home. */
 export const layerCliConfig = makeLayerConfig(
   makeLayerFromPath(() => makeLayerSetup(runMigrationsAsOwner())),
+);
+
+/** For clients of a running server, such as the desktop app: fails rather than migrating. */
+export const layerCliConfigCurrentSchema = makeLayerConfig(
+  makeLayerFromPath(() => makeLayerSetup(requireCurrentSchema())),
 );
