@@ -815,6 +815,15 @@ export interface ProviderAdapterV2SessionRuntime {
     /** The native session is the only copy of the thread's imported history: fail when it is gone. */
     readonly importedNativeSession?: boolean;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
+  /**
+   * Fails with `ProviderAdapterThreadInUseError` when another process holds the native thread.
+   * Checked before the native thread is replaced with a fresh one, which would split it.
+   */
+  readonly checkNativeThreadFree?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** The native thread id this session's own process has open, if any. */
+  readonly liveNativeThreadId?: Effect.Effect<string | undefined>;
   /** False means the native protocol explicitly does not support history injection. */
   readonly injectHistory?: (
     input: ProviderAdapterV2HistoricalContext & {
