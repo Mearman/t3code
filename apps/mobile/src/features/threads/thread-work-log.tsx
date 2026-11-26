@@ -58,7 +58,7 @@ import * as DateTime from "effect/DateTime";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { isHeldSessionFailure } from "@t3tools/client-runtime/state/thread-workflows";
+import { heldSessionForkRunId } from "@t3tools/client-runtime/state/thread-workflows";
 import { HeldSessionForkButton } from "./HeldSessionForkButton";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
@@ -923,6 +923,10 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
   const failureItem = row.projectedItem.item;
   if (failureItem.type === "error" && failureItem.status === "failed") {
     const warning = failureItem.failure.class === "usage_limit";
+    const forkRunId = heldSessionForkRunId({
+      visibility: row.projectedItem.visibility,
+      item: failureItem,
+    });
     const timestamp = new Date(row.createdAt);
     const resetAt = failureItem.failure.resetAt;
     // The reset time is the viewer's local time; naming the zone keeps it unambiguous.
@@ -992,13 +996,11 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               {failureItem.failure.message}
             </Text>
           ) : null}
-          {isHeldSessionFailure(failureItem.failure) &&
-          failureItem.runId !== null &&
-          row.projectedItem.visibility === "local" ? (
+          {forkRunId !== undefined ? (
             <HeldSessionForkButton
               environmentId={props.environmentId}
               threadId={failureItem.threadId}
-              refusedRunId={failureItem.runId}
+              refusedRunId={forkRunId}
             />
           ) : null}
           {failureItem.failure.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE &&

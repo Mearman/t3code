@@ -6,6 +6,7 @@ import {
   canForkProjectedAssistantItem,
   deriveThreadQueueWorkflowState,
   getUserQueuedThreadRuns,
+  heldSessionForkRunId,
   heldSessionRefusedRunIds,
   resolveLatestMergeBackRun,
   threadCanSteer,
@@ -480,5 +481,23 @@ describe("heldSessionRefusedRunIds", () => {
 
   it("leaves out other failures and another thread's refusals", () => {
     expect(refused([refusal("a", null), { ...refusal("b"), threadId: "parent" }])).toEqual([]);
+  });
+});
+
+describe("heldSessionForkRunId", () => {
+  const row = (
+    visibility: "local" | "inherited" | "synthetic",
+    code: string | null = PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+    runId: string | null = "refused",
+  ) => ({ visibility, item: { runId, failure: { code } } }) as never;
+
+  it("offers the row's own refused run only on the thread's own row with the in-use code", () => {
+    expect(heldSessionForkRunId(row("local"))).toBe("refused");
+    expect(heldSessionForkRunId(row("inherited"))).toBe(undefined);
+    expect(heldSessionForkRunId(row("synthetic"))).toBe(undefined);
+    expect(heldSessionForkRunId(row("local", null))).toBe(undefined);
+    expect(heldSessionForkRunId(row("local", PROVIDER_THREAD_IN_USE_FAILURE_CODE, null))).toBe(
+      undefined,
+    );
   });
 });
