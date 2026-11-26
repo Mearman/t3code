@@ -215,11 +215,12 @@ export const makeAttachConfig = Effect.fn("DesktopAttachedServer.makeAttachConfi
       yield* issue;
       return true;
     }).pipe(
-      Effect.catchTag("AttachedSessionError", (error) =>
-        logAttachedWarning("could not renew the desktop session", { reason: error.reason }).pipe(
-          Effect.as(false),
-        ),
-      ),
+      Effect.catchTags({
+        AttachedSessionError: (error) =>
+          logAttachedWarning("could not renew the desktop session", { reason: error.reason }).pipe(
+            Effect.as(false),
+          ),
+      }),
     ),
   );
 
