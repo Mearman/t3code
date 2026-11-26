@@ -16,7 +16,6 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 
 import {
   CLAUDE_PROVIDER,
@@ -26,58 +25,23 @@ import {
   fileNameFromClaudeTool,
 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { field } from "../orchestration-v2/unknownField.ts";
-import type { ClaudeTranscriptEvent, ClaudeTranscriptItem } from "./ClaudeTranscriptSegments.ts";
+import type {
+  ClaudeTranscriptItem,
+  ClaudeTranscriptTurnContent,
+} from "./ClaudeTranscriptContent.ts";
+import {
+  ClaudeTranscriptLineKind,
+  hashClaudeTranscriptText,
+  type ClaudeTranscriptIndex,
+} from "./ClaudeTranscriptIndex.ts";
+import { CLAUDE_SYNTHETIC_MODEL } from "./ClaudeTranscriptLine.ts";
+import type { ClaudeTranscriptStructure } from "./ClaudeTranscriptTurns.ts";
 
 /** Tool input and output are copied up to this many characters; the transcript keeps the rest. */
 export const NATIVE_TOOL_TEXT_MAX_CHARS = 8 * 1024;
 
 /** Native provider turns carry this id prefix, so T3 Code's own turns are told apart from them. */
 export const NATIVE_PROVIDER_TURN_PREFIX = "claude-turn:";
-
-/** A written native run as the projection holds it, which a later read compares against. */
-const StoredNativeRun = Schema.Struct({
-  ordinal: Schema.Number,
-  providerTurnOrdinal: Schema.Number,
-  requestedAt: Schema.String,
-  completedAt: Schema.String,
-  interrupted: Schema.Boolean,
-  lastAssistantUuid: Schema.optional(Schema.String),
-  model: Schema.optional(Schema.String),
-});
-export type StoredNativeRun = typeof StoredNativeRun.Type;
-
-const NativeSegmentRecord = Schema.Struct({
-  ...StoredNativeRun.fields,
-  segmentId: Schema.String,
-  /** T3 Code ran this turn, so its own run already holds it. */
-  own: Schema.Boolean,
-  turnOrigin: Schema.optional(Schema.String),
-  branchedFrom: Schema.optional(Schema.String),
-  /** Tool uses still waiting for their result, by `tool_use_id`, as their item ids. */
-  pendingTools: Schema.Record(Schema.String, Schema.String),
-  /** Results read before their tool use, by `tool_use_id`, kept until the use arrives. */
-  earlyResults: Schema.optional(
-    Schema.Record(
-      Schema.String,
-      Schema.Struct({ output: Schema.String, failed: Schema.Boolean, timestamp: Schema.String }),
-    ),
-  ),
-});
-type NativeSegmentRecord = typeof NativeSegmentRecord.Type;
-
-/**
- * What the next read of a transcript needs: the run the last read left open, and how many of T3 Code's older turns, by prompt-text digest, earlier segments were matched to.
- */
-export const ClaudeNativeRunState = Schema.Struct({
-  current: Schema.NullOr(NativeSegmentRecord),
-  ownTextsMatched: Schema.Record(Schema.String, Schema.Number),
-});
-export type ClaudeNativeRunState = typeof ClaudeNativeRunState.Type;
-
-export const initialClaudeNativeRunState: ClaudeNativeRunState = {
-  current: null,
-  ownTextsMatched: {},
-};
 
 export interface ClaudeNativeRunTarget {
   readonly sessionId: string;
@@ -97,91 +61,91 @@ export interface ClaudeNativeRunTarget {
 export interface ClaudeOwnTurns {
   readonly promptUuids: ReadonlySet<string>;
   readonly assistantUuids: ReadonlySet<string>;
-  /** Prompt-text digests of T3 Code turns that recorded no prompt uuid (older builds, or no reply), with their counts. */
-  readonly promptTexts: ReadonlyMap<string, number>;
+  /** `hashClaudeTranscriptText` of the prompts of T3 Code turns that recorded no uuid (older builds, or no reply), with their counts. */
+  readonly promptTexts: ReadonlyMap<number, number>;
 }
 
-/** A short FNV-1a digest of a prompt's text, so run state stays small however long the prompt. */
-export function claudePromptTextDigest(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index++) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return `${text.length}:${hash.toString(16)}`;
-}
+/** The id the sync gives the run that holds items whose lines are no longer in any turn it shows. */
+export const REMOVED_TURN_ID = "removed";
 
-export function claudeNativeRunIds(sessionId: string, segmentId: string) {
+export function claudeNativeRunIds(idScope: string, turnId: string) {
   return {
-    runId: RunId.make(`claude-run:${sessionId}:${segmentId}`),
-    attemptId: RunAttemptId.make(`claude-attempt:${sessionId}:${segmentId}`),
-    nodeId: NodeId.make(`claude-node:${sessionId}:${segmentId}`),
-    providerTurnId: ProviderTurnId.make(`${NATIVE_PROVIDER_TURN_PREFIX}${sessionId}:${segmentId}`),
-    // The prompt line's own item id, so all of its blocks become this one message.
-    promptItemId: TurnItemId.make(`x:${sessionId}:${segmentId}`),
-    userMessageId: MessageId.make(`x:${sessionId}:${segmentId}`),
+    runId: RunId.make(`claude-run:${idScope}:${turnId}`),
+    attemptId: RunAttemptId.make(`claude-attempt:${idScope}:${turnId}`),
+    nodeId: NodeId.make(`claude-node:${idScope}:${turnId}`),
+    providerTurnId: ProviderTurnId.make(`${NATIVE_PROVIDER_TURN_PREFIX}${idScope}:${turnId}`),
+    // The opener line's own item id, so all of its blocks become this one message.
+    promptItemId: TurnItemId.make(`x:${idScope}:${turnId}`),
+    userMessageId: MessageId.make(`x:${idScope}:${turnId}`),
   };
 }
 
-function toolResultId(item: ClaudeTranscriptItem): string | undefined {
-  if (item.block.type !== "tool_result") return undefined;
-  const id = field(item.block, "tool_use_id");
-  return typeof id === "string" ? id : undefined;
+/** The transcript line an item id `x:<idScope>:<lineUuid>[:<block>]` names, or undefined for another id. */
+export function claudeNativeItemLineUuid(idScope: string, itemId: string): string | undefined {
+  const prefix = `x:${idScope}:`;
+  if (!itemId.startsWith(prefix)) return undefined;
+  return itemId.slice(prefix.length).split(":")[0];
 }
 
-/** The ids a plan needs looked up before it runs: runs by segment, and items already stored. */
-export function claudeNativeRunLookups(input: {
-  readonly sessionId: string;
-  readonly state: ClaudeNativeRunState;
-  readonly events: ReadonlyArray<ClaudeTranscriptEvent>;
-}) {
-  const segmentIds = new Set<string>();
-  const itemIds = new Set<string>();
-  const pendingToolItemIds = new Set<string>();
-  if (input.state.current !== null) segmentIds.add(input.state.current.segmentId);
-  for (const event of input.events) {
-    if (event._tag === "SegmentStarted") {
-      segmentIds.add(event.segmentId);
-      itemIds.add(claudeNativeRunIds(input.sessionId, event.segmentId).promptItemId);
-    } else if (event._tag === "Item") {
-      // An item can extend an earlier segment, whose run is then looked up too.
-      segmentIds.add(event.segmentId);
-      itemIds.add(event.item.id);
-      const toolUseId = toolResultId(event.item);
-      const pending =
-        toolUseId === undefined ? undefined : input.state.current?.pendingTools[toolUseId];
-      if (pending !== undefined) pendingToolItemIds.add(pending);
-    } else if (event._tag === "QueuedPrompt" || event._tag === "CommandOutput") {
-      segmentIds.add(event.segmentId);
-      itemIds.add(event.id);
-    } else if (event._tag === "SegmentEnded") {
-      segmentIds.add(event.segmentId);
-    } else if (event._tag === "CompactBoundary") {
-      if (event.segmentId !== undefined) segmentIds.add(event.segmentId);
-      itemIds.add(`x:${input.sessionId}:${event.lineUuid}`);
+/**
+ * The turns T3 Code ran itself, which its own runs hold. A turn is T3 Code's when its opener's uuid or prompt id is one T3 Code allocated, when it holds a reply T3 Code saw, or when it is a line a T3 Code fork copied from its parent. A T3 Code turn that recorded neither claims, in turn order, one turn with its prompt text that the sync has not already written as its own run, so a terminal turn once shown is never hidden later.
+ */
+export function claudeOwnTurnIds(input: {
+  readonly structure: ClaudeTranscriptStructure;
+  readonly index: ClaudeTranscriptIndex;
+  readonly own: ClaudeOwnTurns;
+  readonly skipCopied: boolean;
+  readonly writtenTurnIds: ReadonlySet<string>;
+}): ReadonlySet<string> {
+  const { index, own } = input;
+  const owned = new Set<string>();
+  const unclaimed = new Map(own.promptTexts);
+  for (const turn of input.structure.turns) {
+    const entry = index.entryOf(turn.id);
+    const copied =
+      input.skipCopied && entry !== undefined && index.forkSessionId(entry) !== undefined;
+    if (
+      copied ||
+      own.promptUuids.has(turn.id) ||
+      (turn.promptId !== undefined && own.promptUuids.has(turn.promptId)) ||
+      (own.assistantUuids.size > 0 && turn.lineUuids.some((uuid) => own.assistantUuids.has(uuid)))
+    ) {
+      owned.add(turn.id);
     }
   }
-  return { segmentIds, itemIds, pendingToolItemIds };
+  if (unclaimed.size === 0) return owned;
+  for (const turn of input.structure.turns) {
+    if (owned.has(turn.id) || input.writtenTurnIds.has(turn.id)) continue;
+    const entry = index.entryOf(turn.id);
+    if (entry === undefined || index.kind(entry) !== ClaudeTranscriptLineKind.User) continue;
+    const text = index.textHash(entry);
+    const left = unclaimed.get(text) ?? 0;
+    if (left === 0) continue;
+    unclaimed.set(text, left - 1);
+    owned.add(turn.id);
+  }
+  return owned;
 }
 
-export interface ClaudeNativeRunPlanInput {
+/** The prompt text key `claudeOwnTurnIds` matches a T3 Code turn's message by. */
+export const claudePromptTextKey = (text: string) => hashClaudeTranscriptText(text);
+
+/** A stored item as far as deciding whether to write it again needs. */
+export interface StoredNativeItem {
+  readonly runId: string | null;
+  readonly ordinal: number;
+  readonly status: string;
+}
+
+export interface ClaudeNativeTurnPlanInput {
   readonly target: ClaudeNativeRunTarget;
-  readonly state: ClaudeNativeRunState;
-  readonly events: ReadonlyArray<ClaudeTranscriptEvent>;
-  readonly own: ClaudeOwnTurns;
-  /** Runs already written for these segments, by segment id. */
-  readonly storedRuns: ReadonlyMap<string, StoredNativeRun>;
-  /**
-   * Stored items, the run each is in, and whether it has finished. A finished item is written again only to move it to another run, as when its line is filed under a different turn.
-   */
-  readonly storedItems: ReadonlyMap<
-    string,
-    { readonly settled: boolean; readonly runId: string | null }
-  >;
-  /** Tool items a result in this read completes, written by an earlier read. */
-  readonly storedToolItems: ReadonlyMap<string, OrchestrationV2TurnItem>;
-  readonly nextRunOrdinal: number;
-  readonly nextProviderTurnOrdinal: number;
+  readonly content: ClaudeTranscriptTurnContent;
+  /** The run's ordinals: the stored ones when `stored`, else newly allocated. */
+  readonly ordinal: number;
+  readonly providerTurnOrdinal: number;
+  readonly stored: boolean;
+  /** Items already in the projection, by id, wherever they are. */
+  readonly storedItems: ReadonlyMap<string, StoredNativeItem>;
   readonly eventId: () => EventId;
   /** Maps a model id Claude Code recorded to the slug T3 Code selects it by. */
   readonly modelSlug: (reported: string) => string;
@@ -189,21 +153,11 @@ export interface ClaudeNativeRunPlanInput {
   readonly fallbackAt: DateTime.Utc;
 }
 
-export interface ClaudeNativeRunPlan {
-  /** Ordered groups, each a run's lifecycle followed by its items; a write may end between groups. */
-  readonly groups: ReadonlyArray<ReadonlyArray<OrchestrationV2DomainEvent>>;
-  readonly state: ClaudeNativeRunState;
-  /** The lowest and highest run ordinals, and the highest provider turn ordinal, this plan wrote. */
-  readonly firstRunOrdinal: number | undefined;
-  readonly lastRunOrdinal: number | undefined;
-  readonly lastProviderTurnOrdinal: number | undefined;
-  /** The latest of each title kind this read saw; a null custom title clears a rename. */
-  readonly aiTitle: string | undefined;
-  readonly customTitle: string | null | undefined;
-  /** The latest transcript time this read saw, which is when the session last changed. */
-  readonly lastActivityAt: DateTime.Utc | undefined;
-  /** The session this one was forked from, from a copied line or a `derived-from` fork record. */
-  readonly forkedFromSessionId: string | undefined;
+export interface ClaudeNativeTurnPlan {
+  /** The run's lifecycle, then its prompt, then every item that differs from the projection. */
+  readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+  /** When the turn last changed, from the transcript. */
+  readonly lastActivityAt: DateTime.Utc;
 }
 
 const SETTLED_ITEM_STATUSES: ReadonlySet<string> = new Set([
@@ -213,15 +167,13 @@ const SETTLED_ITEM_STATUSES: ReadonlySet<string> = new Set([
   "interrupted",
 ]);
 
-export const isSettledItemStatus = (status: string) => SETTLED_ITEM_STATUSES.has(status);
+const isSettledItemStatus = (status: string) => SETTLED_ITEM_STATUSES.has(status);
 
 type EventEnvelope = "id" | "threadId" | "driver" | "providerInstanceId" | "occurredAt";
 // Distributes over the union so each member keeps its own payload type.
 type EventBody<E = OrchestrationV2DomainEvent> = E extends OrchestrationV2DomainEvent
-  ? Omit<E, EventEnvelope> & { readonly occurredAt: string }
+  ? Omit<E, EventEnvelope> & { readonly occurredAt: DateTime.Utc }
   : never;
-
-type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 function capped(text: string): string {
   if (text.length <= NATIVE_TOOL_TEXT_MAX_CHARS) return text;
@@ -242,38 +194,198 @@ function blockText(content: unknown): string {
 export const parseTranscriptTime = (timestamp: string): DateTime.Utc | undefined =>
   Option.getOrUndefined(Option.map(DateTime.make(timestamp), DateTime.toUtc));
 
-interface OpenSegment {
-  readonly record: Mutable<NativeSegmentRecord>;
-  /** The run as stored before this read, or undefined when this read writes it first. */
-  readonly baseline: StoredNativeRun | undefined;
-  readonly items: Array<OrchestrationV2DomainEvent>;
-  readonly toolItems: Map<string, OrchestrationV2TurnItem>;
-  readonly promptParts: Array<string>;
-  promptText: string | undefined;
-  createdBy: "user" | "system";
-  itemOrdinal: number;
-  /** This read saw the segment end, so its run's final state is written. */
-  endedNow: boolean;
+type EventMaker = (body: EventBody) => OrchestrationV2DomainEvent;
+
+const eventMaker =
+  (target: ClaudeNativeRunTarget, eventId: () => EventId): EventMaker =>
+  (body) => ({
+    id: eventId(),
+    threadId: target.threadId,
+    driver: CLAUDE_PROVIDER,
+    providerInstanceId: target.providerInstanceId,
+    ...body,
+  });
+
+/** A native run's run, attempt, root node and provider turn events. */
+function lifecycleEvents(input: {
+  readonly target: ClaudeNativeRunTarget;
+  readonly turnId: string;
+  readonly event: EventMaker;
+  readonly ordinal: number;
+  readonly providerTurnOrdinal: number;
+  readonly stored: boolean;
+  readonly runStatus: OrchestrationV2Run["status"];
+  /** The attempt's, node's and provider turn's status. */
+  readonly status: "completed" | "interrupted";
+  readonly requestedAt: DateTime.Utc;
+  readonly completedAt: DateTime.Utc;
+  readonly model: string | undefined;
+  readonly lastAssistantUuid: string | undefined;
+  readonly turnOrigin: string | undefined;
+  readonly branchedFrom: string | undefined;
+}): Array<OrchestrationV2DomainEvent> {
+  const { target, event, status, requestedAt, completedAt, model } = input;
+  const ids = claudeNativeRunIds(target.idScope, input.turnId);
+  const scope = { runId: ids.runId, nodeId: ids.nodeId };
+  const run: OrchestrationV2Run = {
+    id: ids.runId,
+    threadId: target.threadId,
+    ordinal: input.ordinal,
+    providerInstanceId: target.providerInstanceId,
+    modelSelection:
+      model === undefined
+        ? target.modelSelection
+        : { instanceId: target.providerInstanceId, model },
+    providerThreadId: target.providerThreadId,
+    userMessageId: ids.userMessageId,
+    rootNodeId: ids.nodeId,
+    activeAttemptId: ids.attemptId,
+    status: input.runStatus,
+    requestedAt,
+    startedAt: requestedAt,
+    completedAt,
+    checkpointId: null,
+    contextHandoffId: null,
+    nativeOrigin: {
+      kind: "claude_transcript",
+      nativeSessionId: target.sessionId,
+      promptUuid: input.turnId,
+      ...(input.turnOrigin === undefined ? {} : { turnOrigin: input.turnOrigin }),
+      ...(input.branchedFrom === undefined ? {} : { branchedFrom: input.branchedFrom }),
+    },
+  };
+  return [
+    event({
+      type: input.stored ? "run.updated" : "run.created",
+      occurredAt: completedAt,
+      ...scope,
+      payload: run,
+    }),
+    event({
+      type: input.stored ? "run-attempt.updated" : "run-attempt.created",
+      occurredAt: completedAt,
+      ...scope,
+      payload: {
+        id: ids.attemptId,
+        runId: ids.runId,
+        attemptOrdinal: 1,
+        rootNodeId: ids.nodeId,
+        providerInstanceId: target.providerInstanceId,
+        providerThreadId: target.providerThreadId,
+        providerTurnId: ids.providerTurnId,
+        reason: "initial",
+        status,
+        startedAt: requestedAt,
+        completedAt,
+      },
+    }),
+    event({
+      type: "node.updated",
+      occurredAt: completedAt,
+      ...scope,
+      payload: {
+        id: ids.nodeId,
+        threadId: target.threadId,
+        runId: ids.runId,
+        parentNodeId: null,
+        rootNodeId: ids.nodeId,
+        kind: "root_turn",
+        status,
+        countsForRun: true,
+        providerThreadId: target.providerThreadId,
+        providerTurnId: ids.providerTurnId,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: requestedAt,
+        completedAt,
+      },
+    }),
+    event({
+      type: "provider-turn.updated",
+      occurredAt: completedAt,
+      nodeId: ids.nodeId,
+      payload: {
+        id: ids.providerTurnId,
+        providerThreadId: target.providerThreadId,
+        nodeId: ids.nodeId,
+        runAttemptId: ids.attemptId,
+        // The last reply's uuid, so forking from this run resumes the session at it.
+        nativeTurnRef:
+          input.lastAssistantUuid === undefined
+            ? null
+            : { driver: CLAUDE_PROVIDER, nativeId: input.lastAssistantUuid, strength: "weak" },
+        ordinal: input.providerTurnOrdinal,
+        status,
+        startedAt: requestedAt,
+        completedAt,
+        ...(model === undefined ? {} : { model }),
+      },
+    }),
+  ];
 }
 
 /**
- * Turns parser events for one session into finished runs on its provider thread. Segments T3 Code ran itself are left to its own runs, and a run or item is written only when it differs from what is stored, so reading the same lines again writes nothing.
+ * Moves items whose lines no longer belong to any turn the sync shows, as after the file was rewritten, into one rolled-back run, which T3 Code hides as it hides a rewound run. `created` is false when that run does not exist yet, so its lifecycle is written first.
  */
-export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNativeRunPlan {
-  const { target } = input;
-  const groups: Array<Array<OrchestrationV2DomainEvent>> = [];
-  let nextRunOrdinal = input.nextRunOrdinal;
-  let nextProviderTurnOrdinal = input.nextProviderTurnOrdinal;
-  let firstRunOrdinal: number | undefined;
-  let lastRunOrdinal: number | undefined;
-  let lastProviderTurnOrdinal: number | undefined;
-  let aiTitle: string | undefined;
-  let customTitle: string | null | undefined;
-  let latestRecord: NativeSegmentRecord | null = input.state.current;
-  let lastActivity: DateTime.Utc | undefined;
-  let forkedFromSessionId: string | undefined;
-  const branches = new Map<string, string>();
-  const ownTextsMatched: Record<string, number> = { ...input.state.ownTextsMatched };
+export function planClaudeRemovedItems(input: {
+  readonly target: ClaudeNativeRunTarget;
+  readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
+  readonly created: boolean;
+  readonly ordinal: number;
+  readonly providerTurnOrdinal: number;
+  readonly at: DateTime.Utc;
+  readonly eventId: () => EventId;
+}): ReadonlyArray<OrchestrationV2DomainEvent> {
+  const event = eventMaker(input.target, input.eventId);
+  const ids = claudeNativeRunIds(input.target.idScope, REMOVED_TURN_ID);
+  const lifecycle = input.created
+    ? []
+    : lifecycleEvents({
+        target: input.target,
+        turnId: REMOVED_TURN_ID,
+        event,
+        ordinal: input.ordinal,
+        providerTurnOrdinal: input.providerTurnOrdinal,
+        stored: false,
+        runStatus: "rolled_back",
+        status: "completed",
+        requestedAt: input.at,
+        completedAt: input.at,
+        model: undefined,
+        lastAssistantUuid: undefined,
+        turnOrigin: undefined,
+        branchedFrom: undefined,
+      });
+  return [
+    ...lifecycle,
+    ...input.items.map((item) =>
+      event({
+        type: "turn-item.updated",
+        occurredAt: input.at,
+        runId: ids.runId,
+        nodeId: ids.nodeId,
+        payload: {
+          ...item,
+          runId: ids.runId,
+          nodeId: ids.nodeId,
+          providerTurnId: ids.providerTurnId,
+        },
+      }),
+    ),
+  ];
+}
+
+type ToolResult = { readonly output: string; readonly failed: boolean; readonly timestamp: string };
+
+/**
+ * One finished run for one complete turn T3 Code did not run: its lifecycle, its prompt and its items. An item already stored in this run at the same position and status is not written again; one stored in another run is moved here, as when its line now belongs to this turn.
+ */
+export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNativeTurnPlan {
+  const { target, content } = input;
+  const { turn } = content;
+  const ids = claudeNativeRunIds(target.idScope, turn.id);
+  const scope = { runId: ids.runId, nodeId: ids.nodeId };
 
   let lastGood = input.fallbackAt;
   const at = (timestamp: string): DateTime.Utc => {
@@ -281,77 +393,45 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     if (parsed !== undefined) lastGood = parsed;
     return parsed ?? lastGood;
   };
-  const iso = (timestamp: string) => DateTime.formatIso(at(timestamp));
-  const millis = (timestamp: string) => DateTime.toEpochMillis(at(timestamp));
-  const noteActivity = (instant: DateTime.Utc) => {
-    if (
-      lastActivity === undefined ||
-      DateTime.toEpochMillis(instant) > DateTime.toEpochMillis(lastActivity)
-    ) {
-      lastActivity = instant;
-    }
+  const requestedAt = at(turn.startedAt);
+  let latest = requestedAt;
+  const note = (instant: DateTime.Utc) => {
+    if (DateTime.toEpochMillis(instant) > DateTime.toEpochMillis(latest)) latest = instant;
   };
-  const sameRun = (left: StoredNativeRun, right: StoredNativeRun) =>
-    millis(left.completedAt) === millis(right.completedAt) &&
-    left.interrupted === right.interrupted &&
-    left.lastAssistantUuid === right.lastAssistantUuid &&
-    left.model === right.model;
 
-  // A segment is T3 Code's when its prompt carries a uuid T3 Code allocated, holds a reply T3 Code
-  // saw, or, for T3 Code turns that recorded neither, has the prompt text of one not yet matched.
-  const ownSegments = new Set<string>();
-  for (const parsed of input.events) {
-    if (parsed._tag === "SegmentStarted") {
-      const promptId = parsed.prompt?.promptId;
-      const copied = input.target.skipCopied && parsed.forkedFrom !== undefined;
-      if (
-        copied ||
-        input.own.promptUuids.has(parsed.segmentId) ||
-        (promptId !== undefined && input.own.promptUuids.has(promptId))
-      ) {
-        ownSegments.add(parsed.segmentId);
-      }
-    } else if (
-      parsed._tag === "Item" &&
-      parsed.item.role === "assistant" &&
-      input.own.assistantUuids.has(parsed.item.lineUuid)
-    ) {
-      ownSegments.add(parsed.segmentId);
-    }
-  }
-  for (const parsed of input.events) {
-    if (parsed._tag !== "SegmentStarted" || ownSegments.has(parsed.segmentId)) continue;
-    if (input.storedRuns.has(parsed.segmentId)) continue;
-    const text = parsed.prompt?.text.trim() ?? "";
-    if (text.length === 0) continue;
-    const digest = claudePromptTextDigest(text);
-    const matched = ownTextsMatched[digest] ?? 0;
-    if (matched < (input.own.promptTexts.get(digest) ?? 0)) {
-      ownTextsMatched[digest] = matched + 1;
-      ownSegments.add(parsed.segmentId);
-    }
+  const event = eventMaker(target, input.eventId);
+
+  const unchanged = (id: string, ordinal: number, status: string) => {
+    const stored = input.storedItems.get(id);
+    return (
+      stored !== undefined &&
+      stored.runId === ids.runId &&
+      stored.ordinal === ordinal &&
+      stored.status === status
+    );
+  };
+
+  const results = new Map<string, ToolResult>();
+  for (const item of content.items) {
+    if (item._tag !== "Block" || item.role !== "user" || item.block.type !== "tool_result")
+      continue;
+    const toolUseId = field(item.block, "tool_use_id");
+    if (typeof toolUseId !== "string") continue;
+    results.set(toolUseId, {
+      output: capped(blockText(field(item.block, "content"))),
+      failed: field(item.block, "is_error") === true,
+      timestamp: item.timestamp,
+    });
   }
 
-  const event = (body: EventBody): OrchestrationV2DomainEvent => ({
-    id: input.eventId(),
-    threadId: target.threadId,
-    driver: CLAUDE_PROVIDER,
-    providerInstanceId: target.providerInstanceId,
-    ...body,
-    occurredAt: at(body.occurredAt),
-  });
-  const modelSelectionOf = (record: NativeSegmentRecord) =>
-    record.model === undefined
-      ? target.modelSelection
-      : { instanceId: target.providerInstanceId, model: record.model };
+  const items: Array<OrchestrationV2DomainEvent> = [];
+  let ordinal = 1;
+  let model: string | undefined;
+  const openerText: Array<string> = [];
 
-  const itemBase = (
-    segment: OpenSegment,
-    id: string,
-    timestamp: string,
-    status: OrchestrationV2TurnItem["status"],
-  ) => {
-    const ids = claudeNativeRunIds(target.idScope, segment.record.segmentId);
+  const base = (id: string, timestamp: string, status: OrchestrationV2TurnItem["status"]) => {
+    const instant = at(timestamp);
+    note(instant);
     return {
       id: TurnItemId.make(id),
       threadId: target.threadId,
@@ -361,596 +441,278 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
       providerTurnId: ids.providerTurnId,
       nativeItemRef: { driver: CLAUDE_PROVIDER, nativeId: id, strength: "strong" as const },
       parentItemId: null,
-      ordinal: segment.itemOrdinal++,
+      ordinal: ordinal++,
       status,
       title: null,
-      startedAt: at(timestamp),
-      completedAt: isSettledItemStatus(status) ? at(timestamp) : null,
-      updatedAt: at(timestamp),
+      startedAt: instant,
+      completedAt: isSettledItemStatus(status) ? instant : null,
+      updatedAt: instant,
     };
   };
 
-  const advance = (segment: OpenSegment, timestamp: string) => {
-    noteActivity(at(timestamp));
-    if (millis(timestamp) > millis(segment.record.completedAt)) {
-      segment.record.completedAt = iso(timestamp);
-    }
-  };
-
-  /** Queues an item unless the stored one is already as complete; returns whether it was queued. */
-  const pushItem = (segment: OpenSegment, item: OrchestrationV2TurnItem, timestamp: string) => {
-    const stored = input.storedItems.get(item.id);
-    if (
-      stored !== undefined &&
-      stored.runId === item.runId &&
-      (stored.settled || !isSettledItemStatus(item.status))
-    ) {
-      return false;
-    }
-    const ids = claudeNativeRunIds(target.idScope, segment.record.segmentId);
-    segment.items.push(
-      event({
-        type: "turn-item.updated",
-        occurredAt: timestamp,
-        runId: ids.runId,
-        nodeId: ids.nodeId,
-        payload: item,
-      }),
+  /** Queues an item unless the projection already holds it as it is; returns whether it did. */
+  const push = (item: OrchestrationV2TurnItem) => {
+    if (unchanged(item.id, item.ordinal, item.status)) return false;
+    items.push(
+      event({ type: "turn-item.updated", occurredAt: item.updatedAt, ...scope, payload: item }),
     );
-    advance(segment, timestamp);
     return true;
   };
 
-  const open = (
-    record: NativeSegmentRecord,
-    baseline: StoredNativeRun | undefined,
-  ): OpenSegment => ({
-    record: { ...record, ...baseline },
-    baseline,
-    items: [],
-    toolItems: new Map(),
-    promptParts: [],
-    promptText: undefined,
-    createdBy: "system",
-    itemOrdinal: 1,
-    endedNow: false,
-  });
-
-  // Segments this read touches, in the order it first touched them; the parser can extend or
-  // end an earlier segment, so several stay open until the read's end.
-  const openSegments = new Map<string, OpenSegment>();
-  let latestId = input.state.current?.segmentId;
-
-  const lifecycle = (current: OpenSegment): Array<OrchestrationV2DomainEvent> => {
-    const { record } = current;
-    const ids = claudeNativeRunIds(target.idScope, record.segmentId);
-    const requestedAt = at(record.requestedAt);
-    const completedAt = at(record.completedAt);
-    const status = record.interrupted ? "interrupted" : "completed";
-    const stored = current.baseline !== undefined;
-    const scope = { runId: ids.runId, nodeId: ids.nodeId };
-    const run: OrchestrationV2Run = {
-      id: ids.runId,
-      threadId: target.threadId,
-      ordinal: record.ordinal,
-      providerInstanceId: target.providerInstanceId,
-      modelSelection: modelSelectionOf(record),
-      providerThreadId: target.providerThreadId,
-      userMessageId: ids.userMessageId,
-      rootNodeId: ids.nodeId,
-      activeAttemptId: ids.attemptId,
-      status,
-      requestedAt,
-      startedAt: requestedAt,
-      completedAt,
-      checkpointId: null,
-      contextHandoffId: null,
-      nativeOrigin: {
-        kind: "claude_transcript",
-        nativeSessionId: target.sessionId,
-        promptUuid: record.segmentId,
-        ...(record.turnOrigin === undefined ? {} : { turnOrigin: record.turnOrigin }),
-        ...(record.branchedFrom === undefined ? {} : { branchedFrom: record.branchedFrom }),
-      },
-    };
-    const events: Array<OrchestrationV2DomainEvent> = [
-      event({
-        type: stored ? "run.updated" : "run.created",
-        occurredAt: record.completedAt,
-        ...scope,
-        payload: run,
-      }),
-      event({
-        type: stored ? "run-attempt.updated" : "run-attempt.created",
-        occurredAt: record.completedAt,
-        ...scope,
-        payload: {
-          id: ids.attemptId,
-          runId: ids.runId,
-          attemptOrdinal: 1,
-          rootNodeId: ids.nodeId,
-          providerInstanceId: target.providerInstanceId,
-          providerThreadId: target.providerThreadId,
-          providerTurnId: ids.providerTurnId,
-          reason: "initial",
-          status,
-          startedAt: requestedAt,
-          completedAt,
-        },
-      }),
-      event({
-        type: "node.updated",
-        occurredAt: record.completedAt,
-        ...scope,
-        payload: {
-          id: ids.nodeId,
-          threadId: target.threadId,
-          runId: ids.runId,
-          parentNodeId: null,
-          rootNodeId: ids.nodeId,
-          kind: "root_turn",
-          status,
-          countsForRun: true,
-          providerThreadId: target.providerThreadId,
-          providerTurnId: ids.providerTurnId,
-          nativeItemRef: null,
-          runtimeRequestId: null,
-          checkpointScopeId: null,
-          startedAt: requestedAt,
-          completedAt,
-        },
-      }),
-      event({
-        type: "provider-turn.updated",
-        occurredAt: record.completedAt,
+  const message = (body: {
+    readonly id: string;
+    readonly role: "user" | "assistant";
+    readonly createdBy: "user" | "system" | "agent";
+    readonly text: string;
+    readonly at: DateTime.Utc;
+  }) =>
+    event({
+      type: "message.updated",
+      occurredAt: body.at,
+      ...scope,
+      payload: {
+        createdBy: body.createdBy,
+        creationSource: "provider",
+        id: MessageId.make(body.id),
+        threadId: target.threadId,
+        runId: ids.runId,
         nodeId: ids.nodeId,
-        payload: {
-          id: ids.providerTurnId,
-          providerThreadId: target.providerThreadId,
-          nodeId: ids.nodeId,
-          runAttemptId: ids.attemptId,
-          // The last reply's uuid, so forking from this run resumes the session at it.
-          nativeTurnRef:
-            record.lastAssistantUuid === undefined
-              ? null
-              : { driver: CLAUDE_PROVIDER, nativeId: record.lastAssistantUuid, strength: "weak" },
-          ordinal: record.providerTurnOrdinal,
-          status,
-          startedAt: requestedAt,
-          completedAt,
-          ...(record.model === undefined ? {} : { model: record.model }),
-        },
-      }),
-    ];
-    if (!stored && !input.storedItems.has(ids.promptItemId)) {
-      const text = current.promptText ?? current.promptParts.join("\n");
-      const authored = { createdBy: current.createdBy, creationSource: "provider" } as const;
-      events.push(
-        event({
-          type: "message.updated",
-          occurredAt: record.requestedAt,
-          ...scope,
-          payload: {
-            ...authored,
-            id: ids.userMessageId,
-            threadId: target.threadId,
-            runId: ids.runId,
-            nodeId: ids.nodeId,
-            role: "user",
-            text,
-            attachments: [],
-            streaming: false,
-            createdAt: requestedAt,
-            updatedAt: requestedAt,
-          },
-        }),
-        event({
-          type: "turn-item.updated",
-          occurredAt: record.requestedAt,
-          ...scope,
-          payload: {
-            ...itemBase(current, ids.promptItemId, record.requestedAt, "completed"),
-            ...authored,
-            ordinal: 0,
-            type: "user_message",
-            messageId: ids.userMessageId,
-            inputIntent: "turn_start",
-            text,
-            attachments: [],
-          },
-        }),
-      );
-    }
-    return events;
-  };
-
-  const finish = (current: OpenSegment) => {
-    if (current.record.segmentId === latestId) latestRecord = { ...current.record };
-    if (current.record.own) return;
-    for (const tool of current.toolItems.values()) {
-      pushItem(current, tool, DateTime.formatIso(tool.updatedAt));
-    }
-    current.toolItems.clear();
-    // An open turn's run is written when it first appears and again when it ends, not on every
-    // line, so following a long live turn adds only its items.
-    const writeRun =
-      current.baseline === undefined ||
-      (current.endedNow && !sameRun(current.baseline, current.record));
-    if (!writeRun) {
-      if (current.items.length > 0) groups.push(current.items);
-      return;
-    }
-    firstRunOrdinal = Math.min(firstRunOrdinal ?? current.record.ordinal, current.record.ordinal);
-    lastRunOrdinal = Math.max(lastRunOrdinal ?? 0, current.record.ordinal);
-    lastProviderTurnOrdinal = Math.max(
-      lastProviderTurnOrdinal ?? 0,
-      current.record.providerTurnOrdinal,
-    );
-    groups.push([...lifecycle(current), ...current.items]);
-  };
-
-  const resume = (segmentId: string | undefined): OpenSegment | undefined => {
-    if (segmentId === undefined) return undefined;
-    const known = openSegments.get(segmentId);
-    if (known !== undefined) return known;
-    const current = input.state.current;
-    const stored = input.storedRuns.get(segmentId);
-    let reopened: OpenSegment | undefined;
-    if (current !== null && current.segmentId === segmentId) {
-      reopened = open({ ...current, own: current.own || ownSegments.has(segmentId) }, stored);
-    } else if (stored !== undefined) {
-      // An earlier segment the sync wrote; one with no stored run is T3 Code's own, left alone.
-      reopened = open(
-        { ...stored, segmentId, own: ownSegments.has(segmentId), pendingTools: {} },
-        stored,
-      );
-    }
-    if (reopened !== undefined) openSegments.set(segmentId, reopened);
-    return reopened;
-  };
-
-  const completeTool = (
-    current: OpenSegment,
-    toolUseId: string,
-    result: { readonly output: string; readonly failed: boolean; readonly timestamp: string },
-  ) => {
-    const pendingId = current.record.pendingTools[toolUseId];
-    const tool =
-      current.toolItems.get(toolUseId) ??
-      (pendingId === undefined ? undefined : input.storedToolItems.get(pendingId));
-    if (tool === undefined) {
-      // Claude Code can write a result before its tool use; it waits, across reads, for the use.
-      current.record.earlyResults = { ...current.record.earlyResults, [toolUseId]: result };
-      return;
-    }
-    current.record.pendingTools = Object.fromEntries(
-      Object.entries(current.record.pendingTools).filter(([id]) => id !== toolUseId),
-    );
-    current.toolItems.delete(toolUseId);
-    const finished: OrchestrationV2TurnItem = {
-      ...tool,
-      status: result.failed ? "failed" : "completed",
-      completedAt: at(result.timestamp),
-      updatedAt: at(result.timestamp),
-    };
-    const { output, failed } = result;
-    pushItem(
-      current,
-      finished.type === "command_execution"
-        ? { ...finished, output, ...(failed ? { outputIndicatesFailure: true } : {}) }
-        : finished.type === "dynamic_tool"
-          ? { ...finished, output }
-          : finished,
-      result.timestamp,
-    );
-  };
-
-  const onToolResult = (current: OpenSegment, item: ClaudeTranscriptItem, toolUseId: string) =>
-    completeTool(current, toolUseId, {
-      output: capped(blockText(field(item.block, "content"))),
-      failed: field(item.block, "is_error") === true,
-      timestamp: item.timestamp,
+        role: body.role,
+        text: body.text,
+        attachments: [],
+        streaming: false,
+        createdAt: body.at,
+        updatedAt: body.at,
+      },
     });
 
-  const onToolUse = (current: OpenSegment, item: ClaudeTranscriptItem) => {
+  // A prompt delivered into the turn, or a command typed in it, joins it as a steer joins T3 Code's own runs.
+  const steer = (id: string, timestamp: string, text: string, hidden: boolean) => {
+    const createdBy = hidden ? "system" : "user";
+    const item: OrchestrationV2TurnItem = {
+      ...base(id, timestamp, "completed"),
+      createdBy,
+      creationSource: "provider",
+      type: "user_message",
+      messageId: MessageId.make(id),
+      inputIntent: "steer",
+      text,
+      attachments: [],
+    };
+    if (push(item)) {
+      items.push(message({ id, role: "user", createdBy, text, at: item.updatedAt }));
+    }
+  };
+
+  const tool = (item: Extract<ClaudeTranscriptItem, { readonly _tag: "Block" }>) => {
     const { block } = item;
     if (block.type !== "tool_use") return;
+    const result = results.get(block.id);
+    const status =
+      result === undefined
+        ? turn.end === undefined
+          ? "running"
+          : "interrupted"
+        : result.failed
+          ? "failed"
+          : "completed";
+    const started = base(item.id, item.timestamp, status);
+    const finishedAt = result === undefined ? started.updatedAt : at(result.timestamp);
+    if (result !== undefined) note(finishedAt);
+    const common = {
+      ...started,
+      title: block.name,
+      completedAt: isSettledItemStatus(status) ? finishedAt : null,
+      updatedAt: finishedAt,
+    };
     const toolInput = claudeNativeToolInputFromUnknown(block.input);
-    const base = { ...itemBase(current, item.id, item.timestamp, "running"), title: block.name };
     const { itemType } = classifyClaudeNativeTool(block.name);
-    const tool: OrchestrationV2TurnItem =
+    const output = result?.output;
+    push(
       itemType === "command_execution"
         ? {
-            ...base,
+            ...common,
             type: "command_execution",
             input: capped(commandInputFromClaudeTool(block.name, toolInput)),
+            ...(output === undefined ? {} : { output }),
+            ...(result?.failed === true ? { outputIndicatesFailure: true } : {}),
           }
         : itemType === "file_change"
           ? {
-              ...base,
+              ...common,
               type: "file_change",
               fileName: fileNameFromClaudeTool(block.name, toolInput),
             }
           : itemType === "web_search"
-            ? { ...base, type: "web_search" }
+            ? { ...common, type: "web_search" }
             : {
-                ...base,
+                ...common,
                 type: "dynamic_tool",
                 toolName: block.name,
                 input: capped(JSON.stringify(block.input) ?? ""),
-              };
-    // Written once, finished, when its result is in the same read; still running only at the read's end.
-    current.toolItems.set(block.id, tool);
-    current.record.pendingTools = { ...current.record.pendingTools, [block.id]: item.id };
-    advance(current, item.timestamp);
-    const early = current.record.earlyResults?.[block.id];
-    if (early !== undefined) {
-      current.record.earlyResults = Object.fromEntries(
-        Object.entries(current.record.earlyResults ?? {}).filter(([id]) => id !== block.id),
-      );
-      completeTool(current, block.id, early);
-    }
+                ...(output === undefined ? {} : { output }),
+              },
+    );
   };
 
-  const onItem = (current: OpenSegment, item: ClaudeTranscriptItem) => {
-    if (current.record.own) return;
-    const { block } = item;
-    if (item.role === "user") {
-      if (item.lineUuid === current.record.segmentId) {
-        if (block.type === "text") current.promptParts.push(block.text);
-        return;
+  for (const item of content.items) {
+    if (item._tag === "Unreadable") continue;
+    if (item.lineUuid === turn.id && turn.opener !== "orphan") {
+      // The opener is the run's prompt, not an item of its own; an orphan line has no prompt.
+      if (item._tag === "Block" && item.block.type === "text") openerText.push(item.block.text);
+      if (item._tag === "QueuedPrompt") {
+        for (const block of item.blocks) if (block.type === "text") openerText.push(block.text);
       }
-      const toolUseId = toolResultId(item);
-      if (toolUseId !== undefined) {
-        onToolResult(current, item, toolUseId);
-      } else if (block.type === "text" && block.text.trim().length > 0) {
-        pushItem(
-          current,
-          {
-            ...itemBase(current, item.id, item.timestamp, "completed"),
-            type: "system_notice",
-            message: capped(block.text),
-          },
-          item.timestamp,
-        );
-      }
-      return;
+      continue;
     }
-    current.record.lastAssistantUuid = item.lineUuid;
-    noteActivity(at(item.timestamp));
-    if (item.model !== undefined && item.model !== "<synthetic>") {
-      current.record.model ??= input.modelSlug(item.model);
-    }
-    if (block.type === "text" && block.text.trim().length > 0) {
-      const messageId = MessageId.make(item.id);
-      const queued = pushItem(
-        current,
-        {
-          ...itemBase(current, item.id, item.timestamp, "completed"),
-          type: "assistant_message",
-          messageId,
-          text: block.text,
-          streaming: false,
-        },
-        item.timestamp,
-      );
-      if (!queued) return;
-      const ids = claudeNativeRunIds(target.idScope, current.record.segmentId);
-      current.items.push(
-        event({
-          type: "message.updated",
-          occurredAt: item.timestamp,
-          runId: ids.runId,
-          nodeId: ids.nodeId,
-          payload: {
-            createdBy: "agent",
-            creationSource: "provider",
-            id: messageId,
-            threadId: target.threadId,
-            runId: ids.runId,
-            nodeId: ids.nodeId,
-            role: "assistant",
+    switch (item._tag) {
+      case "Block": {
+        const { block } = item;
+        if (item.role === "user") {
+          if (block.type === "text" && block.text.trim().length > 0) {
+            push({
+              ...base(item.id, item.timestamp, "completed"),
+              type: "system_notice",
+              message: capped(block.text),
+            });
+          }
+          break;
+        }
+        if (item.model !== undefined && item.model !== CLAUDE_SYNTHETIC_MODEL) {
+          model ??= input.modelSlug(item.model);
+        }
+        if (block.type === "text" && block.text.trim().length > 0) {
+          const reply: OrchestrationV2TurnItem = {
+            ...base(item.id, item.timestamp, "completed"),
+            type: "assistant_message",
+            messageId: MessageId.make(item.id),
             text: block.text,
-            attachments: [],
             streaming: false,
-            createdAt: at(item.timestamp),
-            updatedAt: at(item.timestamp),
-          },
-        }),
-      );
-    } else if (block.type === "thinking" && block.thinking.trim().length > 0) {
-      pushItem(
-        current,
-        {
-          ...itemBase(current, item.id, item.timestamp, "completed"),
-          type: "reasoning",
-          text: block.thinking,
-          streaming: false,
-        },
-        item.timestamp,
-      );
-    } else if (block.type === "tool_use") {
-      onToolUse(current, item);
-    }
-  };
-
-  // A prompt delivered into a running turn joins it, as a steer joins T3 Code's own runs.
-  const onQueuedPrompt = (
-    current: OpenSegment,
-    queued: Extract<ClaudeTranscriptEvent, { readonly _tag: "QueuedPrompt" }>,
-  ) => {
-    const text =
-      queued.prompt.text.length > 0
-        ? queued.prompt.text
-        : queued.blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
-    const messageId = MessageId.make(queued.id);
-    const authored = {
-      createdBy: queued.prompt.hidden ? "system" : "user",
-      creationSource: "provider",
-    } as const;
-    const queuedItem = pushItem(
-      current,
-      {
-        ...itemBase(current, queued.id, queued.timestamp, "completed"),
-        ...authored,
-        type: "user_message",
-        messageId,
-        inputIntent: "steer",
-        text,
-        attachments: [],
-      },
-      queued.timestamp,
-    );
-    if (!queuedItem) return;
-    const ids = claudeNativeRunIds(target.idScope, current.record.segmentId);
-    current.items.push(
-      event({
-        type: "message.updated",
-        occurredAt: queued.timestamp,
-        runId: ids.runId,
-        nodeId: ids.nodeId,
-        payload: {
-          ...authored,
-          id: messageId,
-          threadId: target.threadId,
-          runId: ids.runId,
-          nodeId: ids.nodeId,
-          role: "user",
-          text,
-          attachments: [],
-          streaming: false,
-          createdAt: at(queued.timestamp),
-          updatedAt: at(queued.timestamp),
-        },
-      }),
-    );
-  };
-
-  for (const parsed of input.events) {
-    switch (parsed._tag) {
-      case "Branch":
-        branches.set(parsed.lineUuid, parsed.parentUuid);
-        break;
-      case "SegmentStarted": {
-        const stored = input.storedRuns.get(parsed.segmentId);
-        const own = ownSegments.has(parsed.segmentId);
-        const allocated =
-          stored !== undefined || own
-            ? { ordinal: 0, providerTurnOrdinal: 0 }
-            : { ordinal: nextRunOrdinal++, providerTurnOrdinal: nextProviderTurnOrdinal++ };
-        const branchedFrom = branches.get(parsed.segmentId);
-        const prompt = parsed.prompt;
-        const started = open(
-          {
-            ...allocated,
-            segmentId: parsed.segmentId,
-            own,
-            requestedAt: iso(parsed.timestamp),
-            completedAt: iso(parsed.timestamp),
-            interrupted: false,
-            ...(prompt?.originKind === undefined ? {} : { turnOrigin: prompt.originKind }),
-            ...(branchedFrom === undefined ? {} : { branchedFrom }),
-            pendingTools: {},
-          },
-          stored,
-        );
-        if (prompt !== undefined && prompt.text.length > 0) started.promptText = prompt.text;
-        // Claude Code writes some prompts itself, such as task notifications and command output.
-        if (prompt !== undefined && !prompt.hidden && (prompt.originKind ?? "human") === "human") {
-          started.createdBy = "user";
+          };
+          if (push(reply)) {
+            items.push(
+              message({
+                id: item.id,
+                role: "assistant",
+                createdBy: "agent",
+                text: block.text,
+                at: reply.updatedAt,
+              }),
+            );
+          }
+        } else if (block.type === "thinking" && block.thinking.trim().length > 0) {
+          push({
+            ...base(item.id, item.timestamp, "completed"),
+            type: "reasoning",
+            text: block.thinking,
+            streaming: false,
+          });
+        } else if (block.type === "tool_use") {
+          tool(item);
         }
-        openSegments.set(parsed.segmentId, started);
-        latestId = parsed.segmentId;
-        noteActivity(at(parsed.timestamp));
-        break;
-      }
-      case "Item": {
-        const current = resume(parsed.segmentId);
-        if (current !== undefined) onItem(current, parsed.item);
-        break;
-      }
-      case "SegmentEnded": {
-        const current = resume(parsed.segmentId);
-        if (current === undefined || current.record.own) break;
-        current.record.interrupted = parsed.reason === "interrupted";
-        current.record.completedAt = iso(parsed.timestamp);
-        current.endedNow = true;
-        noteActivity(at(parsed.timestamp));
-        if (parsed.lastAssistantUuid !== undefined) {
-          current.record.lastAssistantUuid = parsed.lastAssistantUuid;
-        }
-        break;
-      }
-      case "CompactBoundary": {
-        const current = resume(parsed.segmentId);
-        if (current === undefined || current.record.own) break;
-        pushItem(
-          current,
-          {
-            ...itemBase(
-              current,
-              `x:${target.idScope}:${parsed.lineUuid}`,
-              parsed.timestamp,
-              "completed",
-            ),
-            type: "compaction",
-            driver: CLAUDE_PROVIDER,
-            beforeTokenCount: parsed.preTokens,
-          },
-          parsed.timestamp,
-        );
-        break;
-      }
-      case "Title":
-        if (parsed.source === "custom") customTitle = parsed.title;
-        else if (parsed.title !== null) aiTitle = parsed.title;
-        break;
-      case "CommandOutput": {
-        const current = resume(parsed.segmentId);
-        if (current === undefined || current.record.own) break;
-        const text = parsed.output.map((part) => part.text).join("\n");
-        if (text.trim().length === 0) break;
-        pushItem(
-          current,
-          {
-            ...itemBase(current, parsed.id, parsed.timestamp, "completed"),
-            type: "system_notice",
-            message: capped(text),
-            ...(parsed.output.some((part) => part.stream === "stderr")
-              ? { level: "warning" as const }
-              : {}),
-          },
-          parsed.timestamp,
-        );
         break;
       }
       case "QueuedPrompt": {
-        const current = resume(parsed.segmentId);
-        if (current === undefined || current.record.own) break;
-        onQueuedPrompt(current, parsed);
+        const text =
+          item.prompt.text.length > 0
+            ? item.prompt.text
+            : item.blocks
+                .flatMap((block) => (block.type === "text" ? [block.text] : []))
+                .join("\n");
+        steer(item.id, item.timestamp, text, item.prompt.hidden);
         break;
       }
-      case "ForkedFrom":
-        forkedFromSessionId ??= parsed.sessionId;
+      case "Command":
+        steer(item.id, item.timestamp, item.text, false);
         break;
-      case "DerivedFrom":
-        forkedFromSessionId ??= parsed.sessions.find(
-          (session) => session.via === "fork",
-        )?.sessionId;
+      case "CommandOutput": {
+        const text = item.output.map((part) => part.text).join("\n");
+        if (text.trim().length === 0) break;
+        push({
+          ...base(item.id, item.timestamp, "completed"),
+          type: "system_notice",
+          message: capped(text),
+          ...(item.output.some((part) => part.stream === "stderr")
+            ? { level: "warning" as const }
+            : {}),
+        });
+        break;
+      }
+      case "Compaction":
+        push({
+          ...base(item.id, item.timestamp, "completed"),
+          type: "compaction",
+          driver: CLAUDE_PROVIDER,
+          beforeTokenCount: item.preTokens,
+        });
         break;
     }
   }
-  for (const current of openSegments.values()) finish(current);
 
-  return {
-    groups,
-    state: { current: latestRecord, ownTextsMatched },
-    firstRunOrdinal,
-    lastRunOrdinal,
-    lastProviderTurnOrdinal,
-    aiTitle,
-    customTitle,
-    lastActivityAt: lastActivity,
-    forkedFromSessionId,
-  };
+  const completedAt = turn.end === undefined ? latest : at(turn.end.at);
+  note(completedAt);
+  const status = turn.end?.reason === "interrupted" ? "interrupted" : "completed";
+  const { prompt } = content;
+  const events = lifecycleEvents({
+    target,
+    turnId: turn.id,
+    event,
+    ordinal: input.ordinal,
+    providerTurnOrdinal: input.providerTurnOrdinal,
+    stored: input.stored,
+    runStatus: status,
+    status,
+    requestedAt,
+    completedAt,
+    model,
+    lastAssistantUuid: turn.lastAssistantUuid,
+    turnOrigin: prompt?.originKind,
+    branchedFrom: turn.branchedFrom,
+  });
+  if (!unchanged(ids.promptItemId, 0, "completed")) {
+    const text =
+      prompt !== undefined && prompt.text.length > 0 ? prompt.text : openerText.join("\n");
+    // Claude Code writes some prompts itself, such as task notifications and command output.
+    const createdBy =
+      prompt !== undefined && !prompt.hidden && (prompt.originKind ?? "human") === "human"
+        ? "user"
+        : "system";
+    events.push(
+      message({ id: ids.userMessageId, role: "user", createdBy, text, at: requestedAt }),
+      event({
+        type: "turn-item.updated",
+        occurredAt: requestedAt,
+        ...scope,
+        payload: {
+          id: ids.promptItemId,
+          threadId: target.threadId,
+          runId: ids.runId,
+          nodeId: ids.nodeId,
+          providerThreadId: target.providerThreadId,
+          providerTurnId: ids.providerTurnId,
+          nativeItemRef: {
+            driver: CLAUDE_PROVIDER,
+            nativeId: ids.promptItemId,
+            strength: "strong",
+          },
+          parentItemId: null,
+          ordinal: 0,
+          status: "completed",
+          title: null,
+          startedAt: requestedAt,
+          completedAt: requestedAt,
+          updatedAt: requestedAt,
+          createdBy,
+          creationSource: "provider",
+          type: "user_message",
+          messageId: ids.userMessageId,
+          inputIntent: "turn_start",
+          text,
+          attachments: [],
+        },
+      }),
+    );
+  }
+  events.push(...items);
+  return { events, lastActivityAt: latest };
 }

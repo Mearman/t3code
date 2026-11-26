@@ -184,6 +184,19 @@ const count = (table: string, threadId?: ThreadId) =>
     return rows[0]?.n;
   });
 
+/** Item events written for a thread, so a test can tell what one read wrote. */
+const itemWrites = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly n: number }>`
+      SELECT COUNT(*) AS n FROM orchestration_v2_events
+      WHERE thread_id = ${threadId} AND event_type = 'turn-item.updated'
+    `;
+    const [row] = rows;
+    if (row === undefined) return yield* Effect.die("COUNT returned no row.");
+    return row.n;
+  });
+
 const nativeRuns = (threadId: ThreadId) =>
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -200,20 +213,16 @@ const sessionRow = (home: string, sessionId: string = SESSION) =>
     return yield* state.get({ storeKey: yield* storeKeyOf(home), sessionId });
   });
 
-/** Loses the read position, as a crash before it is saved would, so the next sweep reads every line again. */
-const forgetPosition = (home: string) =>
+/** Replaces the transcript with a copy of itself, a new file to the index, so the next read starts from the top. */
+const replaceFile = (home: string) =>
   Effect.gen(function* () {
-    const state = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
-    const row = yield* sessionRow(home);
-    expect(row).toBeDefined();
-    if (row === undefined) return;
-    yield* state.upsert({
-      ...row,
-      byteOffset: 0,
-      guardHash: null,
-      parserState: null,
-      hydrationState: "hydrating",
-    });
+    const fileSystem = yield* FileSystem.FileSystem;
+    const file = yield* transcriptPath(home);
+    const copy = `${file}.copy`;
+    yield* fileSystem.writeFileString(copy, yield* fileSystem.readFileString(file));
+    yield* fileSystem.rename(copy, file);
+    const later = DateTime.toDateUtc(DateTime.makeUnsafe("2026-11-27T00:00:00.000Z"));
+    yield* fileSystem.utimes(file, later, later);
   });
 
 const storeKeyOf = Effect.fn(function* (home: string) {
@@ -354,10 +363,10 @@ describe("ClaudeSessionSync", () => {
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
 
-          yield* forgetPosition(home);
+          yield* replaceFile(home);
           const events = yield* count("orchestration_v2_events");
           const items = yield* count("orchestration_v2_projection_turn_items", claudeThreadId);
-          yield* syncAll();
+          yield* syncAll({ full: true });
           expect(yield* count("orchestration_v2_events")).toBe(events);
           expect(yield* count("orchestration_v2_projection_turn_items", claudeThreadId)).toBe(
             items,
@@ -797,9 +806,9 @@ describe("ClaudeSessionSync", () => {
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
           expect(yield* nativeRuns(claudeThreadId)).toHaveLength(3);
-          yield* forgetPosition(home);
+          yield* replaceFile(home);
           const events = yield* count("orchestration_v2_events");
-          yield* syncAll();
+          yield* syncAll({ full: true });
           expect(yield* count("orchestration_v2_events")).toBe(events);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),
@@ -1045,6 +1054,113 @@ describe("ClaudeSessionSync", () => {
           expect(yield* sync.drain).toEqual([]);
           expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
           expect(yield* count("orchestration_v2_events")).toBe(events);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("rolls back the run of a turn the transcript no longer has", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const home = yield* makeHome(root, "home");
+        const file = yield* append(home, [...firstTurn, ...secondTurn]);
+        yield* markLive();
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          yield* syncAll({ full: true });
+          expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
+
+          // Rewritten without its second turn, as a tool that edits a transcript might.
+          yield* fileSystem.writeFileString(file, `${firstTurn.join("\n")}\n`);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([
+            [1, "completed", "p1"],
+            [2, "rolled_back", "p2"],
+          ]);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("moves a line into the turn it belongs to once its parent is written", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        // a2's parent is not written yet, so it opens a turn of its own.
+        yield* append(home, [...firstTurn, reply("a2", "h1", "2026-11-26T10:00:07.000Z")]);
+        yield* markLive();
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* syncAll({ full: true });
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([
+            [1, "completed", "p1"],
+            [2, "completed", "a2"],
+          ]);
+
+          yield* append(home, [
+            line({
+              type: "attachment",
+              uuid: "h1",
+              parentUuid: "a1",
+              timestamp: "2026-11-26T10:00:06.000Z",
+              attachment: { type: "hook_success", content: "" },
+            }),
+          ]);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([
+            [1, "completed", "p1"],
+            [2, "rolled_back", "a2"],
+          ]);
+          const moved = yield* projections.getTurnItem({
+            threadId: claudeThreadId,
+            itemId: TurnItemId.make(`x:${SESSION}:a2:0`),
+          });
+          expect(moved?.runId).toBe(RunId.make(`claude-run:${SESSION}:p1`));
+        }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+      }),
+    ),
+  );
+
+  it.effect("adds a live turn's new items without writing its earlier ones again", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, [
+          prompt("p1", null, "prompt-1", "2026-11-26T10:00:00.000Z"),
+          line({
+            type: "assistant",
+            uuid: "a1",
+            parentUuid: "p1",
+            timestamp: "2026-11-26T10:00:01.000Z",
+            message: {
+              id: "msg-a1",
+              model: "claude-test",
+              role: "assistant",
+              content: [{ type: "thinking", thinking: "Planning", signature: "s" }],
+              stop_reason: null,
+            },
+          }),
+        ]);
+        yield* markLive();
+        yield* Effect.gen(function* () {
+          const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+          yield* syncAll({ full: true });
+          const items = yield* count("orchestration_v2_projection_turn_items", claudeThreadId);
+          const writes = yield* itemWrites(claudeThreadId);
+
+          yield* append(home, [reply("a2", "a1", "2026-11-26T10:00:05.000Z")]);
+          yield* sync.pollLive;
+          expect(yield* sync.drain).toEqual([]);
+          expect(yield* count("orchestration_v2_projection_turn_items", claudeThreadId)).toBe(
+            Number(items) + 1,
+          );
+          // Only the new reply's item is written; the prompt and the thinking stay as they were.
+          expect((yield* itemWrites(claudeThreadId)) - writes).toBe(1);
+          expect(yield* nativeRuns(claudeThreadId)).toEqual([[1, "completed", "p1"]]);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),
     ),

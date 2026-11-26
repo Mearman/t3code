@@ -92,7 +92,8 @@ export function hashClaudeTranscriptLine(bytes: Uint8Array): number {
   return hash >>> 0;
 }
 
-function hashText(text: string): number {
+/** 32-bit FNV-1a over a text's UTF-16 code units, as the index keeps for each prompt's visible text. */
+export function hashClaudeTranscriptText(text: string): number {
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index++) {
     hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
@@ -144,7 +145,7 @@ function entryFields(
         kind: line.type === "user" ? Kind.User : Kind.Assistant,
         flags,
         forkSessionId: line.forkedFrom?.sessionId,
-        textHash: line.type === "user" ? hashText(record.visible.text) : 0,
+        textHash: line.type === "user" ? hashClaudeTranscriptText(record.visible.text) : 0,
       };
     }
     case "queued":
@@ -162,7 +163,7 @@ function entryFields(
             kind: Kind.CommandInput,
             flags: record.input.text.length > 0 ? Flag.Visible : 0,
             forkSessionId: record.line.forkedFrom?.sessionId,
-            textHash: hashText(record.input.text),
+            textHash: hashClaudeTranscriptText(record.input.text),
           };
     case "turnDuration":
       return { ...base, kind: Kind.TurnDuration, durationMs: record.line.durationMs };

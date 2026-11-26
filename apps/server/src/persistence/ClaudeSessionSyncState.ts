@@ -1,6 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off - node:crypto digests a session key so each consumed-uuid row stays short.
-import * as NodeCrypto from "node:crypto";
-
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -37,14 +34,11 @@ const ClaudeSessionSyncKey = Schema.Struct({
 export type ClaudeSessionSyncKey = typeof ClaudeSessionSyncKey.Type;
 
 /**
- * Where reading a session's transcript resumes. `guardHash` covers the bytes before `byteOffset`, so a rewritten file is read again from the start; `lastUuid` is the last line ingested.
+ * One session as the sync holds it. Where reading resumes is not stored: the index of a transcript lives in memory and is rebuilt by reading the file, while each written turn's digest (`turnDigests`) says what need not be written again.
  */
 const ClaudeSessionSyncState = Schema.Struct({
   ...ClaudeSessionSyncKey.fields,
   fileIdentity: Schema.String,
-  byteOffset: NonNegativeInt,
-  guardHash: Schema.NullOr(Schema.String),
-  lastUuid: Schema.NullOr(Schema.String),
   threadId: Schema.NullOr(ThreadId),
   providerThreadId: Schema.NullOr(ProviderThreadId),
   accountUuids: Schema.fromJsonString(Schema.Array(Schema.String)),
@@ -52,8 +46,8 @@ const ClaudeSessionSyncState = Schema.Struct({
   filePath: Schema.String,
   /** The session's working directory, which directory exclusions match. */
   cwd: Schema.NullOr(Schema.String),
-  /** The reader's own state at `byteOffset`, as JSON it encodes and decodes itself. */
-  parserState: Schema.NullOr(Schema.String),
+  /** The title the sync last gave the thread, so a rename in T3 Code is kept. */
+  appliedTitle: Schema.NullOr(Schema.String),
   /** The transcript's size and mtime when last read, so a sweep skips files that have not changed. */
   fileSize: NonNegativeInt,
   fileMtimeMs: NonNegativeInt,
@@ -117,18 +111,20 @@ export class ClaudeSessionSyncStateRepository extends Context.Service<
       ClaudeSessionProviderThread | undefined,
       ClaudeSessionSyncStateRepositoryError
     >;
-    /** Which of these line uuids earlier reads of the session consumed. */
-    readonly knownUuids: (
-      key: ClaudeSessionSyncKey,
-      uuids: ReadonlyArray<string>,
-    ) => Effect.Effect<ReadonlySet<string>, ClaudeSessionSyncStateRepositoryError>;
-    /**
-     * Saves a read: its consumed uuids and the session's state, in one transaction. `fromTop` replaces the consumed set, as a read from the top restarts it.
-     */
-    readonly commitRead: (input: {
-      readonly state: ClaudeSessionSyncState;
-      readonly consumedUuids: ReadonlyArray<string>;
-      readonly fromTop: boolean;
+    /** The digest of every turn written into a thread as a native run, by the turn's opener uuid. */
+    readonly turnDigests: (
+      threadId: string,
+    ) => Effect.Effect<ReadonlyMap<string, string>, ClaudeSessionSyncStateRepositoryError>;
+    /** Records a turn's digest, once every event of its run is written. */
+    readonly setTurnDigest: (input: {
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly digest: string;
+    }) => Effect.Effect<void, ClaudeSessionSyncStateRepositoryError>;
+    /** Forgets turns no longer written as native runs; with no turn ids, every turn of the thread. */
+    readonly deleteTurnDigests: (input: {
+      readonly threadId: string;
+      readonly turnIds?: ReadonlyArray<string>;
     }) => Effect.Effect<void, ClaudeSessionSyncStateRepositoryError>;
     /** The session a thread shows, in any store. */
     readonly findByThreadId: (
@@ -154,16 +150,13 @@ const make = Effect.gen(function* () {
         store_key AS "storeKey",
         session_id AS "sessionId",
         file_identity AS "fileIdentity",
-        byte_offset AS "byteOffset",
-        guard_hash AS "guardHash",
-        last_uuid AS "lastUuid",
         thread_id AS "threadId",
         provider_thread_id AS "providerThreadId",
         account_uuids_json AS "accountUuids",
         hydration_state AS "hydrationState",
         file_path AS "filePath",
         cwd,
-        parser_state_json AS "parserState",
+        applied_title AS "appliedTitle",
         file_size AS "fileSize",
         file_mtime_ms AS "fileMtimeMs",
         updated_at AS "updatedAt"
@@ -213,16 +206,13 @@ const make = Effect.gen(function* () {
         store_key,
         session_id,
         file_identity,
-        byte_offset,
-        guard_hash,
-        last_uuid,
         thread_id,
         provider_thread_id,
         account_uuids_json,
         hydration_state,
         file_path,
         cwd,
-        parser_state_json,
+        applied_title,
         file_size,
         file_mtime_ms,
         updated_at
@@ -231,32 +221,26 @@ const make = Effect.gen(function* () {
         ${state.storeKey},
         ${state.sessionId},
         ${state.fileIdentity},
-        ${state.byteOffset},
-        ${state.guardHash},
-        ${state.lastUuid},
         ${state.threadId},
         ${state.providerThreadId},
         ${state.accountUuids},
         ${state.hydrationState},
         ${state.filePath},
         ${state.cwd},
-        ${state.parserState},
+        ${state.appliedTitle},
         ${state.fileSize},
         ${state.fileMtimeMs},
         ${state.updatedAt}
       )
       ON CONFLICT (store_key, session_id) DO UPDATE SET
         file_identity = excluded.file_identity,
-        byte_offset = excluded.byte_offset,
-        guard_hash = excluded.guard_hash,
-        last_uuid = excluded.last_uuid,
         thread_id = excluded.thread_id,
         provider_thread_id = excluded.provider_thread_id,
         account_uuids_json = excluded.account_uuids_json,
         hydration_state = excluded.hydration_state,
         file_path = excluded.file_path,
         cwd = excluded.cwd,
-        parser_state_json = excluded.parser_state_json,
+        applied_title = excluded.applied_title,
         file_size = excluded.file_size,
         file_mtime_ms = excluded.file_mtime_ms,
         updated_at = excluded.updated_at
@@ -296,52 +280,42 @@ const make = Effect.gen(function* () {
     `,
   });
 
-  const sessionKey = (key: ClaudeSessionSyncKey) =>
-    NodeCrypto.createHash("sha256")
-      .update(`${key.storeKey}\0${key.sessionId}`)
-      .digest("hex")
-      .slice(0, 24);
-
-  // SQLite allows a few hundred bound parameters per statement; these stay well under.
-  const UUID_CHUNK = 400;
-  const chunks = (values: ReadonlyArray<string>) =>
-    Array.from({ length: Math.ceil(values.length / UUID_CHUNK) }, (_, index) =>
-      values.slice(index * UUID_CHUNK, (index + 1) * UUID_CHUNK),
-    );
-
   return ClaudeSessionSyncStateRepository.of({
-    knownUuids: Effect.fn("ClaudeSessionSyncStateRepository.knownUuids")(function* (key, uuids) {
-      const known = new Set<string>();
-      const scope = sessionKey(key);
-      for (const chunk of chunks(uuids)) {
-        const rows = yield* sql<{ readonly uuid: string }>`
-          SELECT uuid FROM fork_claude_session_consumed_uuids
-          WHERE session_key = ${scope} AND uuid IN ${sql.in(chunk)}
-        `.pipe(Effect.mapError(toRepositoryError("readClaudeSessionConsumedUuids")));
-        for (const row of rows) known.add(row.uuid);
-      }
-      return known;
+    turnDigests: Effect.fn("ClaudeSessionSyncStateRepository.turnDigests")(function* (threadId) {
+      const rows = yield* sql<{ readonly turnId: string; readonly digest: string }>`
+        SELECT turn_id AS "turnId", digest FROM fork_claude_session_turns
+        WHERE thread_id = ${threadId}
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.mapError(toRepositoryError("readClaudeSessionTurnDigests")),
+      );
+      return new Map(rows.map((row) => [row.turnId, row.digest]));
     }),
-    commitRead: Effect.fn("ClaudeSessionSyncStateRepository.commitRead")(function* (input) {
-      const scope = sessionKey(input.state);
-      yield* sql
-        .withTransaction(
-          Effect.gen(function* () {
-            if (input.fromTop) {
-              yield* sql`DELETE FROM fork_claude_session_consumed_uuids WHERE session_key = ${scope}`;
-            }
-            for (const uuid of input.consumedUuids) {
-              yield* sql`
-                INSERT INTO fork_claude_session_consumed_uuids (session_key, uuid)
-                VALUES (${scope}, ${uuid})
-                ON CONFLICT DO NOTHING
-              `;
-            }
-            yield* upsertRow(input.state);
-          }),
-        )
-        .pipe(Effect.mapError(toRepositoryError("commitClaudeSessionRead")));
+    setTurnDigest: Effect.fn("ClaudeSessionSyncStateRepository.setTurnDigest")(function (input) {
+      return sql`
+        INSERT INTO fork_claude_session_turns (thread_id, turn_id, digest)
+        VALUES (${input.threadId}, ${input.turnId}, ${input.digest})
+        ON CONFLICT (thread_id, turn_id) DO UPDATE SET digest = excluded.digest
+      `.pipe(Effect.asVoid, Effect.mapError(toRepositoryError("setClaudeSessionTurnDigest")));
     }),
+    deleteTurnDigests: Effect.fn("ClaudeSessionSyncStateRepository.deleteTurnDigests")(
+      function* (input) {
+        const turnIds = input.turnIds;
+        if (turnIds === undefined) {
+          yield* sql`DELETE FROM fork_claude_session_turns WHERE thread_id = ${input.threadId}`;
+          return;
+        }
+        // SQLite allows a few hundred bound parameters per statement; these stay well under.
+        for (let start = 0; start < turnIds.length; start += 400) {
+          yield* sql`
+            DELETE FROM fork_claude_session_turns
+            WHERE thread_id = ${input.threadId}
+              AND turn_id IN ${sql.in(turnIds.slice(start, start + 400))}
+          `;
+        }
+      },
+      Effect.mapError(toRepositoryError("deleteClaudeSessionTurnDigests")),
+    ),
     get: Effect.fn("ClaudeSessionSyncStateRepository.get")(function (key) {
       return getRow(key).pipe(
         NodeSqliteClient.readOnly,
