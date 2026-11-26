@@ -308,6 +308,37 @@ describe("renderCliShim", () => {
   });
 
   it.skipIf(!hasSetsid).each(STOP_SIGNALS)(
+    "leaves no work directory behind when %s reaches the process group during mktemp",
+    async (signal) => {
+      const fake = fakeAppImage();
+      const temporary = NodePath.join(fake.root, "tmp");
+      NodeFS.mkdirSync(temporary);
+      const shims = NodePath.join(fake.root, "shims");
+      const gate = makeGate(fake.root);
+      // Holds `mktemp` between creating the directory and printing its name.
+      writeExecutable(
+        NodePath.join(shims, "mktemp"),
+        `#!/bin/sh\nmade=$(PATH='${process.env.PATH}' mktemp "$@") || exit 1\necho held >&3\n${gate.wait}\necho "$made"\n`,
+      );
+      try {
+        await withLauncher(
+          fake,
+          async ({ child, events, closed }) => {
+            await events.until((line) => line === "held");
+            process.kill(-child.pid!, signal);
+            NodeFS.writeSync(gate.fd, "\n");
+            expect(await closed).toBe(130);
+            expect(NodeFS.readdirSync(temporary)).toEqual([]);
+          },
+          { PATH: `${shims}:${process.env.PATH}`, TMPDIR: temporary },
+        );
+      } finally {
+        NodeFS.closeSync(gate.fd);
+      }
+    },
+  );
+
+  it.skipIf(!hasSetsid).each(STOP_SIGNALS)(
     "exits without extracting after %s while the mount is pending",
     async (signal) => {
       const fake = fakeAppImage("pending");
