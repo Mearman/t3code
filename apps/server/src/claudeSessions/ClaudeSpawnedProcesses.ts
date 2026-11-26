@@ -31,3 +31,21 @@ export function makeClaudeSpawnedProcesses(
     readProcesses,
   });
 }
+
+/**
+ * Counts `child` as T3 Code's own from when its pid is known (at once, or on "spawn" for a child
+ * whose worker reports it later) until it exits.
+ */
+export function trackSpawnedClaudeProcess(
+  spawned: Pick<ClaudeSpawnedProcesses["Service"], "register">,
+  child: {
+    readonly pid?: number | undefined;
+    once(event: "spawn" | "exit", listener: () => void): unknown;
+  },
+): void {
+  const track = () => {
+    if (child.pid !== undefined) child.once("exit", spawned.register(child.pid));
+  };
+  if (child.pid === undefined) child.once("spawn", track);
+  else track();
+}
