@@ -6,6 +6,7 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   ProjectId,
@@ -1221,7 +1222,7 @@ describe("AgentAwarenessRelay", () => {
       yield* relay.drain;
     });
     const now = yield* DateTime.now;
-    const run = (id: string, ordinal: number) => ({
+    const run = (id: string, ordinal: number): OrchestrationV2Run => ({
       id: RunId.make(id),
       threadId: THREAD_ID,
       ordinal,
@@ -1250,7 +1251,7 @@ describe("AgentAwarenessRelay", () => {
     });
     const runEvent = (
       type: "run.created" | "run.updated",
-      payload: ReturnType<typeof run> | ReturnType<typeof transcriptRun>,
+      payload: OrchestrationV2Run,
     ): OrchestrationV2DomainEvent => {
       const base = {
         id: EventId.make(`event:${type}:${payload.id}:${payload.status}`),
