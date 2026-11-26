@@ -44,6 +44,12 @@ T3CODE_HOST=127.0.0.1
 
 > Note: Signing out of T3 Connect does not stop or uninstall the background service.
 
+## Use the desktop app with the service
+
+When the service, or a `t3 serve` you started, already uses the desktop app's T3 home, the desktop app opens on that server instead of starting its own. No pairing is needed. Quitting or updating the desktop app leaves the server and its agents running, and the app reconnects while the service restarts or updates. Change the server's network access where it was started, for example with `t3 up`; Settings > Connections says when the app is using it. Updating everything from the desktop app updates the service too.
+
+The desktop app explains why and quits instead when the server cannot be used from here: it is older or newer than the app (update the older one), it is a development server, it listens only on one network address, or it is an older service from before T3 Code checked who owns a T3 home (`t3 update` or `t3 service uninstall` fixes that).
+
 ## Keep the server responsive under memory pressure (Linux)
 
 On Linux, agents run at lower priority than the server, but heavy memory use can still trigger the OOM killer. Run as your normal user:
