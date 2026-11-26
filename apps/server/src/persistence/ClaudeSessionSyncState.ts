@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - node:crypto digests a session key so each consumed-uuid row stays short.
+import * as NodeCrypto from "node:crypto";
+
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -114,6 +117,19 @@ export class ClaudeSessionSyncStateRepository extends Context.Service<
       ClaudeSessionProviderThread | undefined,
       ClaudeSessionSyncStateRepositoryError
     >;
+    /** Which of these line uuids earlier reads of the session consumed. */
+    readonly knownUuids: (
+      key: ClaudeSessionSyncKey,
+      uuids: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlySet<string>, ClaudeSessionSyncStateRepositoryError>;
+    /**
+     * Saves a read: its consumed uuids and the session's state, in one transaction. `fromTop` replaces the consumed set, as a read from the top restarts it.
+     */
+    readonly commitRead: (input: {
+      readonly state: ClaudeSessionSyncState;
+      readonly consumedUuids: ReadonlyArray<string>;
+      readonly fromTop: boolean;
+    }) => Effect.Effect<void, ClaudeSessionSyncStateRepositoryError>;
     /** The session a thread shows, in any store. */
     readonly findByThreadId: (
       threadId: string,
@@ -280,7 +296,52 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const sessionKey = (key: ClaudeSessionSyncKey) =>
+    NodeCrypto.createHash("sha256")
+      .update(`${key.storeKey}\0${key.sessionId}`)
+      .digest("hex")
+      .slice(0, 24);
+
+  // SQLite allows a few hundred bound parameters per statement; these stay well under.
+  const UUID_CHUNK = 400;
+  const chunks = (values: ReadonlyArray<string>) =>
+    Array.from({ length: Math.ceil(values.length / UUID_CHUNK) }, (_, index) =>
+      values.slice(index * UUID_CHUNK, (index + 1) * UUID_CHUNK),
+    );
+
   return ClaudeSessionSyncStateRepository.of({
+    knownUuids: Effect.fn("ClaudeSessionSyncStateRepository.knownUuids")(function* (key, uuids) {
+      const known = new Set<string>();
+      const scope = sessionKey(key);
+      for (const chunk of chunks(uuids)) {
+        const rows = yield* sql<{ readonly uuid: string }>`
+          SELECT uuid FROM fork_claude_session_consumed_uuids
+          WHERE session_key = ${scope} AND uuid IN ${sql.in(chunk)}
+        `.pipe(Effect.mapError(toRepositoryError("readClaudeSessionConsumedUuids")));
+        for (const row of rows) known.add(row.uuid);
+      }
+      return known;
+    }),
+    commitRead: Effect.fn("ClaudeSessionSyncStateRepository.commitRead")(function* (input) {
+      const scope = sessionKey(input.state);
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (input.fromTop) {
+              yield* sql`DELETE FROM fork_claude_session_consumed_uuids WHERE session_key = ${scope}`;
+            }
+            for (const chunk of chunks(input.consumedUuids)) {
+              yield* sql`
+                INSERT INTO fork_claude_session_consumed_uuids
+                ${sql.insert(chunk.map((uuid) => ({ session_key: scope, uuid })))}
+                ON CONFLICT DO NOTHING
+              `;
+            }
+            yield* upsertRow(input.state);
+          }),
+        )
+        .pipe(Effect.mapError(toRepositoryError("commitClaudeSessionRead")));
+    }),
     get: Effect.fn("ClaudeSessionSyncStateRepository.get")(function (key) {
       return getRow(key).pipe(
         NodeSqliteClient.readOnly,

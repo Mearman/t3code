@@ -137,14 +137,20 @@ export function claudeNativeRunLookups(input: {
       segmentIds.add(event.segmentId);
       itemIds.add(claudeNativeRunIds(input.sessionId, event.segmentId).promptItemId);
     } else if (event._tag === "Item") {
+      // An item can extend an earlier segment, whose run is then looked up too.
+      segmentIds.add(event.segmentId);
       itemIds.add(event.item.id);
       const toolUseId = toolResultId(event.item);
       const pending =
         toolUseId === undefined ? undefined : input.state.current?.pendingTools[toolUseId];
       if (pending !== undefined) pendingToolItemIds.add(pending);
     } else if (event._tag === "QueuedPrompt") {
+      segmentIds.add(event.segmentId);
       itemIds.add(event.id);
+    } else if (event._tag === "SegmentEnded") {
+      segmentIds.add(event.segmentId);
     } else if (event._tag === "CompactBoundary") {
+      if (event.segmentId !== undefined) segmentIds.add(event.segmentId);
       itemIds.add(`x:${input.sessionId}:${event.lineUuid}`);
     }
   }
@@ -392,7 +398,10 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     endedNow: false,
   });
 
-  let segment: OpenSegment | undefined;
+  // Segments this read touches, in the order it first touched them; the parser can extend or
+  // end an earlier segment, so several stay open until the read's end.
+  const openSegments = new Map<string, OpenSegment>();
+  let latestId = input.state.current?.segmentId;
 
   const lifecycle = (current: OpenSegment): Array<OrchestrationV2DomainEvent> => {
     const { record } = current;
@@ -537,11 +546,8 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     return events;
   };
 
-  const finish = () => {
-    const current = segment;
-    segment = undefined;
-    if (current === undefined) return;
-    latestRecord = { ...current.record };
+  const finish = (current: OpenSegment) => {
+    if (current.record.segmentId === latestId) latestRecord = { ...current.record };
     if (current.record.own) return;
     for (const tool of current.toolItems.values()) {
       pushItem(current, tool, DateTime.formatIso(tool.updatedAt));
@@ -566,12 +572,23 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
   };
 
   const resume = (segmentId: string | undefined): OpenSegment | undefined => {
-    if (segment !== undefined) return segment.record.segmentId === segmentId ? segment : undefined;
+    if (segmentId === undefined) return undefined;
+    const known = openSegments.get(segmentId);
+    if (known !== undefined) return known;
     const current = input.state.current;
-    if (current === null || current.segmentId !== segmentId) return undefined;
-    const own = current.own || ownSegments.has(current.segmentId);
-    segment = open({ ...current, own }, input.storedRuns.get(current.segmentId));
-    return segment;
+    const stored = input.storedRuns.get(segmentId);
+    let reopened: OpenSegment | undefined;
+    if (current !== null && current.segmentId === segmentId) {
+      reopened = open({ ...current, own: current.own || ownSegments.has(segmentId) }, stored);
+    } else if (stored !== undefined) {
+      // An earlier segment the sync wrote; one with no stored run is T3 Code's own, left alone.
+      reopened = open(
+        { ...stored, segmentId, own: ownSegments.has(segmentId), pendingTools: {} },
+        stored,
+      );
+    }
+    if (reopened !== undefined) openSegments.set(segmentId, reopened);
+    return reopened;
   };
 
   const onToolResult = (current: OpenSegment, item: ClaudeTranscriptItem, toolUseId: string) => {
@@ -776,7 +793,6 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         branches.set(parsed.lineUuid, parsed.parentUuid);
         break;
       case "SegmentStarted": {
-        finish();
         const stored = input.storedRuns.get(parsed.segmentId);
         const own = ownSegments.has(parsed.segmentId);
         const allocated =
@@ -804,7 +820,8 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         if (prompt !== undefined && !prompt.hidden && (prompt.originKind ?? "human") === "human") {
           started.createdBy = "user";
         }
-        segment = started;
+        openSegments.set(parsed.segmentId, started);
+        latestId = parsed.segmentId;
         noteActivity(at(parsed.timestamp));
         break;
       }
@@ -865,7 +882,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         break;
     }
   }
-  finish();
+  for (const current of openSegments.values()) finish(current);
 
   return {
     groups,

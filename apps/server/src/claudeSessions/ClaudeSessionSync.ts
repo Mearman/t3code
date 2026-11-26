@@ -509,7 +509,7 @@ const make = Effect.gen(function* () {
           }
           offset += start;
           if (start < joined.length) pending = [joined.slice(start)];
-          const parsed = parseClaudeTranscriptLines({ sessionId, state, lines });
+          const parsed = parseClaudeTranscriptLines({ sessionId, state, lines, known: new Set() });
           state = parsed.state;
           for (const event of parsed.events) {
             if (event._tag === "SegmentStarted") {
@@ -1038,11 +1038,13 @@ const make = Effect.gen(function* () {
     // Event ids only need to be unique; one random token per read and a counter make them so.
     const readToken = yield* random.uuidV4();
     let nextEvent = 0;
+    const sessionKey = { storeKey: row.storeKey, sessionId: row.sessionId };
     const read = yield* readClaudeTranscript({
       filePath: row.filePath,
       sessionId: target.idScope,
       cursor,
       maxBytes: READ_BUDGET_BYTES,
+      knownUuids: (uuids) => syncState.knownUuids(sessionKey, uuids),
     }).pipe(withHost);
     if (read.malformed.length > 0) {
       yield* Effect.logWarning("Skipped Claude transcript lines that could not be read", {
@@ -1112,6 +1114,12 @@ const make = Effect.gen(function* () {
       hydrationState: "hydrating",
       updatedAt: yield* DateTime.now,
     };
+    // The consumed uuids and the position they belong to are saved together.
+    yield* syncState.commitRead({
+      state: next,
+      consumedUuids: read.consumedUuids,
+      fromTop: read.rewritten || cursor.offset === 0,
+    });
     return { _tag: "Read", row: next, atEnd: read.atEnd } satisfies IngestStep;
   });
 
@@ -1288,10 +1296,7 @@ const make = Effect.gen(function* () {
         yield* syncState.upsert(linked);
         return "deferred" satisfies StepOutcome;
       }
-      if (!read.atEnd) {
-        yield* syncState.upsert(read.row);
-        return "more" satisfies StepOutcome;
-      }
+      if (!read.atEnd) return "more" satisfies StepOutcome;
       yield* syncState.upsert({ ...read.row, ...caughtUp, hydrationState: "full" });
       if (notice) {
         yield* historyNotice(thread, target, {
