@@ -9337,111 +9337,136 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect(
-    "keeps runs read back from a transcript out of shells, settlement and limit recovery",
-    () =>
-      Effect.gen(function* () {
-        const store = yield* ProjectionStore.ProjectionStoreV2;
-        const threadId = yield* addRolledBackRecoveryCandidate("transcript-limit");
-        const original = (yield* store.getThreadProjection(threadId)).runs[0]!;
-        const now = yield* DateTime.now;
-        const limitFailure = {
-          class: "usage_limit" as const,
-          message: "Plan limit reached.",
-          resetAt: "2099-01-01T00:00:00.000Z",
-          code: "usageLimitExceeded",
-          retryable: null,
-        };
-        const failRun = (run: OrchestrationV2Run, suffix: string) =>
-          Effect.gen(function* () {
-            yield* store.apply({
-              id: EventId.make(`event:transcript-limit:error:${suffix}`),
-              type: "turn-item.updated",
+  it.effect("shows a transcript run as the latest, marked, and never offers to recover it", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("transcript-limit");
+      const original = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      const limitFailure = {
+        class: "usage_limit" as const,
+        message: "Plan limit reached.",
+        resetAt: "2099-01-01T00:00:00.000Z",
+        code: "usageLimitExceeded",
+        retryable: null,
+      };
+      const failRun = (run: OrchestrationV2Run, suffix: string) =>
+        Effect.gen(function* () {
+          yield* store.apply({
+            id: EventId.make(`event:transcript-limit:error:${suffix}`),
+            type: "turn-item.updated",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make(`transcript-limit:error:${suffix}`),
               threadId,
-              occurredAt: now,
-              payload: {
-                id: TurnItemId.make(`transcript-limit:error:${suffix}`),
-                threadId,
-                runId: run.id,
-                nodeId: run.rootNodeId,
-                providerThreadId: null,
-                providerTurnId: null,
-                nativeItemRef: null,
-                parentItemId: null,
-                ordinal: 2,
-                status: "failed" as const,
-                title: "Usage limit reached",
-                startedAt: now,
-                completedAt: now,
-                updatedAt: now,
-                type: "error" as const,
-                failure: limitFailure,
-              },
-            });
-            yield* store.apply({
-              id: EventId.make(`event:transcript-limit:run:${suffix}`),
-              type: "run.updated",
-              threadId,
-              occurredAt: now,
-              payload: { ...run, status: "failed" },
-            });
+              runId: run.id,
+              nodeId: run.rootNodeId,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "failed" as const,
+              title: "Usage limit reached",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "error" as const,
+              failure: limitFailure,
+            },
           });
-        const candidateRunIds = Effect.gen(function* () {
-          const candidates = yield* store.getLimitRecoveryCandidates({
-            now,
-            autoResume: true,
-            snooze: false,
+          yield* store.apply({
+            id: EventId.make(`event:transcript-limit:run:${suffix}`),
+            type: "run.updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...run, status: "failed" },
           });
-          return candidates.filter((row) => row.id === threadId).map((row) => row.latestRunId);
         });
-        // Both shell builders and settlement present the same run.
-        const presentedRunIds = Effect.gen(function* () {
-          const memory = ProjectionStore.threadShellFromProjection(
-            yield* store.getThreadProjection(threadId),
-          );
-          const sqlShell = (yield* store.getShellSnapshot()).threads.find(
-            (row) => row.id === threadId,
-          )!;
-          const settlement = (yield* store.getSettlementCandidates(threadId)).find(
-            (row) => row.id === threadId,
-          );
-          return [memory.latestRunId, sqlShell.latestRunId, settlement?.latestRunId ?? null];
+      const candidateRunIds = Effect.gen(function* () {
+        const candidates = yield* store.getLimitRecoveryCandidates({
+          now,
+          autoResume: true,
+          snooze: false,
         });
-        yield* failRun(original, "t3");
-        assert.deepEqual(yield* candidateRunIds, [original.id]);
-
-        // The session hit the limit again outside T3; T3 has nothing of its own to resume.
-        const transcriptRun: OrchestrationV2Run = {
-          ...original,
-          id: RunId.make("run:transcript-limit:native"),
-          ordinal: original.ordinal + 1,
-          rootNodeId: NodeId.make("node:transcript-limit:native"),
-          userMessageId: MessageId.make("message:transcript-limit:native"),
-          startedAt: DateTime.add(now, { minutes: 1 }),
-          completedAt: DateTime.add(now, { minutes: 2 }),
-          nativeOrigin: {
-            kind: "claude_transcript",
-            nativeSessionId: "session-1",
-            promptUuid: "prompt-1",
-          },
+        return candidates.filter((row) => row.id === threadId).map((row) => row.latestRunId);
+      });
+      // Both shell builders and settlement present the same run, and agree on what it offers.
+      const presented = Effect.gen(function* () {
+        const memory = ProjectionStore.threadShellFromProjection(
+          yield* store.getThreadProjection(threadId),
+        );
+        const sqlShell = (yield* store.getShellSnapshot()).threads.find(
+          (row) => row.id === threadId,
+        )!;
+        const settlement = (yield* store.getSettlementCandidates(threadId)).find(
+          (row) => row.id === threadId,
+        );
+        return {
+          runIds: [memory.latestRunId, sqlShell.latestRunId, settlement?.latestRunId ?? null],
+          shells: [memory, sqlShell].map((shell) => ({
+            native: shell.latestRunNativeOrigin ?? false,
+            status: shell.status,
+            lastErrorClass: shell.lastErrorClass,
+            usageLimitResetAt: shell.usageLimitResetAt,
+          })),
         };
-        yield* store.apply({
-          id: EventId.make("event:transcript-limit:native-created"),
-          type: "run.created",
-          threadId,
-          runId: transcriptRun.id,
-          nodeId: transcriptRun.rootNodeId!,
-          driver,
-          providerInstanceId,
-          occurredAt: now,
-          payload: { ...transcriptRun, status: "running" },
-        });
-        yield* failRun(transcriptRun, "native");
+      });
+      yield* failRun(original, "t3");
+      assert.deepEqual(yield* candidateRunIds, [original.id]);
+      const limited = {
+        native: false,
+        status: "failed",
+        lastErrorClass: "usage_limit",
+        usageLimitResetAt: limitFailure.resetAt,
+      };
+      assert.deepEqual(yield* presented, {
+        runIds: [original.id, original.id, original.id],
+        shells: [limited, limited],
+      });
 
-        assert.deepEqual(yield* candidateRunIds, []);
-        const presented = yield* presentedRunIds;
-        assert.deepEqual(presented, [original.id, original.id, original.id]);
-      }),
+      // The session hit the limit again outside T3; T3 has nothing of its own to resume.
+      const transcriptRun: OrchestrationV2Run = {
+        ...original,
+        id: RunId.make("run:transcript-limit:native"),
+        ordinal: original.ordinal + 1,
+        rootNodeId: NodeId.make("node:transcript-limit:native"),
+        userMessageId: MessageId.make("message:transcript-limit:native"),
+        startedAt: DateTime.add(now, { minutes: 1 }),
+        completedAt: DateTime.add(now, { minutes: 2 }),
+        nativeOrigin: {
+          kind: "claude_transcript",
+          nativeSessionId: "session-1",
+          promptUuid: "prompt-1",
+        },
+      };
+      yield* store.apply({
+        id: EventId.make("event:transcript-limit:native-created"),
+        type: "run.created",
+        threadId,
+        runId: transcriptRun.id,
+        nodeId: transcriptRun.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { ...transcriptRun, status: "running" },
+      });
+      yield* failRun(transcriptRun, "native");
+
+      // Its failure is shown, but not as a limit T3 could resume from.
+      assert.deepEqual(yield* candidateRunIds, []);
+      const external = {
+        native: true,
+        status: "failed",
+        lastErrorClass: null,
+        usageLimitResetAt: null,
+      };
+      assert.deepEqual(yield* presented, {
+        runIds: [transcriptRun.id, transcriptRun.id, transcriptRun.id],
+        shells: [external, external],
+      });
+    }),
   );
 
   it.effect("does not freshly arm limit recovery for a subagent of a put-away parent", () =>

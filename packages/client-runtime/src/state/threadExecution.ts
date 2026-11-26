@@ -1,5 +1,5 @@
 import {
-  latestExecutedRun,
+  latestT3ExecutedRun,
   latestRootProviderFailure,
   latestRootProviderFailureItem,
   latestUnheldRun,
@@ -429,7 +429,7 @@ export function deriveResumableRunId(
   >,
   runtime: Pick<ThreadStructureRuntime, "lastErrorClass"> | null,
 ): RunId | null {
-  const run = latestExecutedRun(projection.runs);
+  const run = latestT3ExecutedRun(projection.runs);
   const resumable =
     run?.status === "interrupted" ||
     (run?.status === "failed" &&
@@ -510,7 +510,11 @@ export function deriveThreadStructureRuntime(
   if (latestRun === null && !backgroundWorkHoldsRun) return null;
   const activeRunId =
     latestMatchingRun(projection, (run) => INTERRUPTIBLE_RUN_STATUSES.has(run.status))?.id ?? null;
-  const failureItem = latestRootProviderFailureItem(latestRunProjection, projection.turnItems);
+  // As the server's shells: a transcript run's failure is shown, but is not one T3 recovers from.
+  const failureItem =
+    latestRunProjection?.nativeOrigin === undefined
+      ? latestRootProviderFailureItem(latestRunProjection, projection.turnItems)
+      : null;
   const sessionError = providerSession?.lastError ?? null;
   return {
     status: usageLimitedRun

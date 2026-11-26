@@ -183,6 +183,16 @@ describe("thread execution presentation", () => {
       lastErrorClass: "usage_limit",
       lastErrorSource: "limit-error@2026-07-28T10:00:00.000Z",
     });
+    // The same failure read back from a transcript is shown, but is not a limit T3 recovers from.
+    const external = {
+      ...failed,
+      nativeOrigin: { kind: "claude_transcript" as const, nativeSessionId: "s", promptUuid: "p" },
+    };
+    expect(deriveThreadRuntime({ ...projection, runs: [external] })).toMatchObject({
+      status: "failed",
+      lastError: null,
+      lastErrorClass: null,
+    });
     // A retried run fails again through the same item, so only its failure time tells it apart.
     const later = DateTime.makeUnsafe("2026-07-28T10:05:00.000Z");
     const source = (input: Partial<Parameters<typeof deriveThreadRuntime>[0]>) =>
@@ -270,6 +280,18 @@ describe("thread execution presentation", () => {
       ],
     } as unknown as typeof v2Projection;
     expect(deriveResumableRunId(projection, null)).toBe(resumes ? stopped.id : null);
+  });
+
+  it("never offers to resume a run read back from a provider transcript", () => {
+    const stopped = {
+      ...run("transcript-stopped", 1, "interrupted"),
+      nativeOrigin: {
+        kind: "claude_transcript" as const,
+        nativeSessionId: "session-1",
+        promptUuid: "prompt-1",
+      },
+    };
+    expect(deriveResumableRunId({ ...v2Projection, runs: [stopped] }, null)).toBeNull();
   });
 
   // regression: #15029 working timers no longer reset on every background wake
