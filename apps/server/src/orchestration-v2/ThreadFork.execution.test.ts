@@ -28,9 +28,11 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
+import { readInheritedHandoffItems } from "./ContextHandoffService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -60,7 +62,7 @@ const forkCases = (
     { runEffectWorker: false },
   );
 
-  return { driver, status, instanceId, modelSelection, layer };
+  return { driver, status, instanceId, modelSelection, adapter, layer };
 });
 
 it.effect("a persisted fork leaves PR watching with its parent until explicitly opted in", () =>
@@ -1617,6 +1619,182 @@ it.effect("a side chat opened during the parent's first turn starts from a diges
       threadId: parentId,
     });
     assert.isNotNull((yield* orchestrator.getThreadProjection(sideChatId)).thread.deletedAt);
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+/** Leaves a run as a revert (`rolled_back`) or a refused send (`failed`) does. */
+const endRun = (threadId: ThreadId, runId: RunId, status: "failed" | "rolled_back") =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const now = yield* DateTime.now;
+    const run = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+      (candidate) => candidate.id === runId,
+    )!;
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make(`${runId}:${status}`),
+          type: "run.updated",
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: { ...run, status, completedAt: now },
+        },
+      ],
+    });
+  });
+
+/** Forks `sourceThreadId` from its refused last run and returns the history the fork is sent. */
+const forkRefusedRun = (sourceThreadId: ThreadId, targetThreadId: ThreadId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const run = (yield* orchestrator.getThreadProjection(sourceThreadId)).runs.at(-1)!;
+    yield* endRun(sourceThreadId, run.id, "failed");
+    yield* orchestrator.dispatch({
+      type: "thread.fork",
+      commandId: CommandId.make(`${targetThreadId}:fork`),
+      sourceThreadId,
+      targetThreadId,
+      sourcePoint: { type: "run", runId: run.id },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* askSideChat(targetThreadId, `${targetThreadId}:message`);
+    const { contextHandoffs } = yield* orchestrator.getThreadProjection(targetThreadId);
+    return contextHandoffs.find((handoff) => handoff.strategy === "full_thread_summary")!
+      .summaryText;
+  });
+
+const MAIN_MARKERS = ["MAIN_ONE", "MAIN_TWO", "MAIN_THREE"];
+
+/** A main thread of three stable runs, one per marker. */
+const createMainThread = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    yield* createParent(threadId);
+    for (const [index, text] of MAIN_MARKERS.entries()) {
+      yield* writeParentRun({
+        threadId,
+        runId: RunId.make(`${threadId}:run-${index + 1}`),
+        ordinal: index + 1,
+        status: "completed",
+        text,
+        stable: true,
+      });
+    }
+  });
+
+it.effect("forks below a side chat keep the main history it was opened with", () => {
+  let projectionStore: ProjectionStore.ProjectionStoreV2Shape;
+  return Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const mainId = ThreadId.make("nested-main");
+    const sideChatId = ThreadId.make("nested-side-chat");
+    const forkId = ThreadId.make("nested-fork");
+    yield* createMainThread(mainId);
+    yield* forkSideChat("nested-open", mainId, sideChatId);
+    // Only the side chat's digest records what the main thread did after it was opened.
+    yield* writeParentRun({
+      threadId: mainId,
+      runId: RunId.make("nested-main:run-4"),
+      ordinal: 4,
+      status: "running",
+      text: "MAIN_AFTER_OPENING",
+    });
+    yield* askSideChat(sideChatId, "nested-question");
+    yield* TestClock.adjust("1 second");
+    // Reverting the main thread afterwards takes nothing from the side chat's session.
+    for (const ordinal of [2, 3, 4]) {
+      yield* endRun(mainId, RunId.make(`nested-main:run-${ordinal}`), "rolled_back");
+    }
+    const expected = [
+      ...MAIN_MARKERS,
+      "- User: MAIN_AFTER_OPENING",
+      "What is the main thread doing?",
+    ];
+    const assertCarries = (history: string) => {
+      const found = expected.map((text) => history.indexOf(text));
+      assert.notInclude(found, -1, history);
+      assert.deepEqual(
+        found,
+        found.toSorted((a, b) => a - b),
+      );
+      assert.notInclude(history, "You are in a side chat");
+    };
+
+    assertCarries(yield* forkRefusedRun(sideChatId, forkId));
+    assertCarries(yield* forkRefusedRun(forkId, ThreadId.make("nested-fork-of-fork")));
+
+    const texts = (thread: ThreadId) =>
+      orchestrator.getThreadProjection(thread).pipe(
+        Effect.flatMap((projection) =>
+          readInheritedHandoffItems(projectionStore, projection.thread),
+        ),
+        Effect.map((items) =>
+          items.flatMap((item) => (item.type === "user_message" ? [item.text] : [])),
+        ),
+      );
+    // A fresh session for the fork gets the same; the side chat itself inherits no rows.
+    assert.includeMembers(yield* texts(forkId), MAIN_MARKERS);
+    assert.deepEqual(yield* texts(sideChatId), []);
+  }).pipe(
+    Effect.provide(
+      ProviderReplayHarness.layerWithRegistry(
+        { name: "fork-below-side-chat" },
+        ProviderAdapterRegistry.layerFromAdapters([forkCases[0]!.adapter]),
+        {
+          runEffectWorker: false,
+          wrapProjectionStore: (store) => (projectionStore = store),
+        },
+      ),
+    ),
+  );
+});
+
+it.effect("a fork of a side chat leaves out runs reverted before it first ran", () =>
+  Effect.gen(function* () {
+    const mainId = ThreadId.make("reverted-main");
+    const sideChatId = ThreadId.make("reverted-side-chat");
+    yield* createMainThread(mainId);
+    yield* forkSideChat("reverted-open", mainId, sideChatId);
+    yield* TestClock.adjust("1 second");
+    for (const ordinal of [2, 3]) {
+      yield* endRun(mainId, RunId.make(`reverted-main:run-${ordinal}`), "rolled_back");
+    }
+    yield* TestClock.adjust("1 second");
+    yield* askSideChat(sideChatId, "reverted-question");
+
+    const history = yield* forkRefusedRun(sideChatId, ThreadId.make("reverted-fork"));
+
+    assert.include(history, "MAIN_ONE");
+    assert.notInclude(history, "MAIN_TWO");
+    assert.notInclude(history, "MAIN_THREE");
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+it.effect("a fork of a side chat opened without a source run keeps the main digest", () =>
+  Effect.gen(function* () {
+    const mainId = ThreadId.make("unsourced-main");
+    const sideChatId = ThreadId.make("unsourced-side-chat");
+    const forkId = ThreadId.make("unsourced-fork");
+    yield* createParent(mainId);
+    yield* writeParentRun({
+      threadId: mainId,
+      runId: RunId.make("unsourced-main:run-1"),
+      ordinal: 1,
+      status: "running",
+      text: "MAIN_FIRST_TURN",
+    });
+    yield* forkSideChat("unsourced-open", mainId, sideChatId);
+    yield* askSideChat(sideChatId, "unsourced-question");
+
+    for (const history of [
+      yield* forkRefusedRun(sideChatId, forkId),
+      yield* forkRefusedRun(forkId, ThreadId.make("unsourced-fork-of-fork")),
+    ]) {
+      assert.include(history, "- User: MAIN_FIRST_TURN");
+      assert.notInclude(history, "You are in a side chat");
+    }
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 

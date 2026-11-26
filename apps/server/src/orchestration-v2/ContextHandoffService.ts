@@ -1,4 +1,5 @@
 import {
+  MessageId,
   type OrchestrationV2AppThread,
   OrchestrationV2ContextHandoff,
   type OrchestrationV2TurnItem,
@@ -8,6 +9,7 @@ import {
   ProviderThreadId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -149,17 +151,17 @@ export function visibleConversationItems(
 
 type ForkHistorySource = Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "attempts">;
 
-/** Visible rows of `source`'s own runs through `throughRun` since its latest `/clear` boundary. */
+/**
+ * Visible rows of `source`'s own runs through `throughRun` since its latest `/clear` boundary:
+ * those in `inheritedRunIds`, even if reverted since, or with `null` those not reverted.
+ */
 const readOwnHistoryItems = Effect.fn("orchestrationV2.contextHandoff.readOwnHistoryItems")(
   function* (
-    projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords" | "getForkSourceRunIds">,
+    projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords">,
     source: ForkHistorySource,
     throughRun: Pick<OrchestrationV2Run, "ordinal">,
-    fork: OrchestrationV2AppThread,
+    inheritedRunIds: ReadonlySet<RunId> | null,
   ) {
-    const inheritedRunIds = fork.lineage.sideChat
-      ? null
-      : new Set(yield* projectionStore.getForkSourceRunIds(fork.id));
     // A fork inherits the conversation, transcript turns included.
     const throughRuns = runsByOrigin(source.runs, "any")
       .filter((run) => run.ordinal <= throughRun.ordinal && (inheritedRunIds?.has(run.id) ?? true))
@@ -189,8 +191,79 @@ const readOwnHistoryItems = Effect.fn("orchestrationV2.contextHandoff.readOwnHis
 );
 
 /**
- * History `thread` shows from its fork ancestors, oldest first. Side chats show no inherited rows;
- * with `throughSideChat`, a side chat `thread` still carries its parent's, as a fork of it must.
+ * The runs of `forkRunSource` that `sideChat`'s session was opened with: those recorded when it
+ * was opened, less any reverted before it first ran.
+ */
+const readSideChatSourceRunIds = Effect.fn(
+  "orchestrationV2.contextHandoff.readSideChatSourceRunIds",
+)(function* (
+  projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords" | "getForkSourceRunIds">,
+  sideChat: OrchestrationV2AppThread,
+  forkRunSource: Pick<OrchestrationV2ThreadProjection, "runs">,
+) {
+  const opened = new Set(yield* projectionStore.getForkSourceRunIds(sideChat.id));
+  const { runs } = yield* projectionStore.getThreadRecords(sideChat.id, ["runs"]);
+  for (const { id, status, completedAt } of forkRunSource.runs) {
+    // A revert stamps `completedAt` with its own time.
+    if (status !== "rolled_back" || completedAt === null) continue;
+    if (runs.every((run) => DateTime.isLessThan(completedAt, run.requestedAt))) opened.delete(id);
+  }
+  return opened;
+});
+
+const SIDE_CHAT_DIGEST_HEADER = "Main thread activity since this side chat's starting point:";
+
+/** The parent activity a side chat context block lists, without its framing and footer. */
+const sideChatDigest = (context: string) =>
+  // Blank lines separate the block's parts, and each digest line is collapsed onto one line.
+  context.split("\n\n").find((part) => part.startsWith(SIDE_CHAT_DIGEST_HEADER));
+
+/** The parent activity `sideChat` was sent beside its inherited rows, which no turn item holds. */
+const readSideChatDigestItems = Effect.fn("orchestrationV2.contextHandoff.readSideChatDigestItems")(
+  function* (
+    projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords">,
+    sideChat: OrchestrationV2AppThread,
+  ) {
+    const { contextHandoffs } = yield* projectionStore.getThreadRecords(sideChat.id, [
+      "contextHandoffs",
+    ]);
+    const recorded = contextHandoffs.filter(isSideChatContextHandoff);
+    // A first send repeated before it was accepted records another; the delivered one was read.
+    const handoff = recorded.find((candidate) => candidate.delivery !== undefined) ?? recorded[0];
+    const digest = handoff === undefined ? undefined : sideChatDigest(handoff.summaryText);
+    if (handoff === undefined || digest === undefined) return [];
+    const id = `side-chat-digest:${handoff.id}`;
+    const item: OrchestrationV2TurnItem = {
+      id: TurnItemId.make(id),
+      threadId: sideChat.id,
+      runId: handoff.targetRunId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 0,
+      status: "completed",
+      title: null,
+      startedAt: handoff.createdAt,
+      completedAt: handoff.createdAt,
+      updatedAt: handoff.createdAt,
+      type: "user_message",
+      createdBy: "system",
+      creationSource: "server",
+      messageId: MessageId.make(id),
+      inputIntent: "turn_start",
+      text: digest,
+      attachments: [],
+    };
+    return [item];
+  },
+);
+
+/**
+ * History `thread` carries from its fork ancestors, oldest first, passing through any side chat
+ * among them. A side chat `thread` shows no inherited rows, so it carries none unless
+ * `throughSideChat`, as a fork of it must.
  */
 export const readInheritedHandoffItems = Effect.fn(
   "orchestrationV2.contextHandoff.readInheritedHandoffItems",
@@ -202,12 +275,14 @@ export const readInheritedHandoffItems = Effect.fn(
   const segments: Array<ReadonlyArray<OrchestrationV2TurnItem>> = [];
   const seen = new Set([thread.id]);
   let current = thread;
-  while (
-    current.forkedFrom?.type === "run" &&
-    (current.lineage.sideChat !== true ||
-      (options.throughSideChat === true && current.id === thread.id)) &&
-    !seen.has(current.forkedFrom.threadId)
-  ) {
+  for (;;) {
+    const sideChat = current.lineage.sideChat === true;
+    if (sideChat) {
+      if (current.id === thread.id && options.throughSideChat !== true) break;
+      segments.unshift(yield* readSideChatDigestItems(projectionStore, current));
+    }
+    // A side chat opened before its parent had a stable run has only that digest.
+    if (current.forkedFrom?.type !== "run" || seen.has(current.forkedFrom.threadId)) break;
     const { threadId, runId } = current.forkedFrom;
     seen.add(threadId);
     const source = yield* projectionStore
@@ -215,7 +290,14 @@ export const readInheritedHandoffItems = Effect.fn(
       .pipe(Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }));
     const forkRun = source?.runs.find((run) => run.id === runId);
     if (source === null || forkRun === undefined) break;
-    const own = yield* readOwnHistoryItems(projectionStore, source, forkRun, current);
+    const own = yield* readOwnHistoryItems(
+      projectionStore,
+      source,
+      forkRun,
+      sideChat
+        ? yield* readSideChatSourceRunIds(projectionStore, current, source)
+        : new Set(yield* projectionStore.getForkSourceRunIds(current.id)),
+    );
     segments.unshift(own.items);
     if (own.cleared) break;
     current = source.thread;
@@ -232,7 +314,13 @@ export const readForkHistoryItems = Effect.fn(
   throughRun: Pick<OrchestrationV2Run, "ordinal">,
   fork: OrchestrationV2AppThread,
 ) {
-  const own = yield* readOwnHistoryItems(projectionStore, source, throughRun, fork);
+  // A side chat starting now gets the parent as it stands.
+  const own = yield* readOwnHistoryItems(
+    projectionStore,
+    source,
+    throughRun,
+    fork.lineage.sideChat ? null : new Set(yield* projectionStore.getForkSourceRunIds(fork.id)),
+  );
   if (own.cleared) return own.items;
   return [
     ...(yield* readInheritedHandoffItems(projectionStore, source.thread, {
@@ -291,14 +379,14 @@ export function makeSideChatContext(input: {
 }): string {
   const framing =
     "You are in a side chat beside the main thread. The main thread may still be running in the same worktree. Answer the user's questions; do not continue or redo the main thread's task.";
-  const header = "Main thread activity since this side chat's starting point:";
   const truncated = "- Earlier items truncated.";
   const footer = `Use t3_thread_read on thread ${input.parentThreadId} to see the main thread's live state.`;
   const kept: Array<string> = [];
   let omitted = false;
   // The cap covers the whole block, so the fixed lines are reserved before any digest line.
   let remaining =
-    SIDE_CHAT_CONTEXT_MAX_CHARS - [framing, "", header, truncated, "", footer].join("\n").length;
+    SIDE_CHAT_CONTEXT_MAX_CHARS -
+    [framing, "", SIDE_CHAT_DIGEST_HEADER, truncated, "", footer].join("\n").length;
   for (let index = input.digest.length - 1; index >= 0; index--) {
     const item = input.digest[index]!;
     const line = typeof item === "string" ? item : summarizeDeltaItem(item);
@@ -312,7 +400,9 @@ export function makeSideChatContext(input: {
   }
   return [
     framing,
-    ...(kept.length === 0 ? [] : ["", header, ...(omitted ? [truncated] : []), ...kept]),
+    ...(kept.length === 0
+      ? []
+      : ["", SIDE_CHAT_DIGEST_HEADER, ...(omitted ? [truncated] : []), ...kept]),
     "",
     footer,
   ].join("\n");
