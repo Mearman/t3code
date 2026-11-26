@@ -29,6 +29,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as UrlParams from "effect/http/UrlParams";
+import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
@@ -36,6 +37,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderMaintenance from "@t3tools/provider-core/server/maintenanceResolver";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import { OpenCodeDriver, isLocalOpenCodeServerUrl, openCodeUpdateFor } from "./driver.ts";
 import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
@@ -320,6 +322,12 @@ it.live("discovers models through a home-relative OpenCode wrapper", () =>
     );
     if (!windows) yield* fs.chmod(wrapperPath, 0o755);
 
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const spawned: Array<string> = [];
+    const recordingSpawner = ChildProcessSpawner.make((command) => {
+      if (ChildProcess.isStandardCommand(command)) spawned.push(command.command);
+      return spawner.spawn(command);
+    });
     const instance = yield* OpenCodeDriver.create({
       instanceId: ProviderInstanceId.make("opencode-home"),
       displayName: undefined,
@@ -329,11 +337,27 @@ it.live("discovers models through a home-relative OpenCode wrapper", () =>
         ...OpenCodeDriver.defaultConfig(),
         binaryPath: windows ? "~/opencode.cmd" : "~/opencode",
       },
-    }).pipe(Effect.provideService(HostProcess.HomeDirectory, home));
+    }).pipe(
+      Effect.provideService(HostProcess.HomeDirectory, home),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, recordingSpawner),
+    );
     const snapshot = yield* instance.snapshot.refresh;
     assert.strictEqual(snapshot.status, "ready");
     assert.strictEqual(snapshot.version, "1.18.32");
     assert.isTrue(snapshot.models.some((model) => model.slug === "opencode/big-pickle"));
+
+    // A refresh leaves the version advisory to a background fiber, so await the same call here.
+    const settings = yield* (yield* ProviderHost.ProviderHost).settings.get;
+    const maintenance = yield* instance.snapshot.resolveMaintenance();
+    yield* ProviderMaintenance.enrichProviderSnapshotWithVersionAdvisory(
+      snapshot,
+      maintenance,
+      settings,
+    );
+    assert.notInclude(
+      spawned.map((command) => NodePath.basename(command)),
+      "npm",
+    );
   }).pipe(
     Effect.scoped,
     Effect.provide(
