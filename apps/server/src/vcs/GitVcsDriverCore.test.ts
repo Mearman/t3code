@@ -12,6 +12,7 @@ import { afterAll, vi } from "vite-plus/test";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -41,6 +42,7 @@ import {
   VcsListRefsResult,
   type ReviewDiffFileContentsInput,
   type ReviewDiffPreviewResult,
+  type VcsError,
   type WorktreeSubmodules,
 } from "@t3tools/contracts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
@@ -7846,8 +7848,10 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const processes = yield* VcsProcess;
+          const clock = yield* Clock.Clock;
           const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "swapped");
-          const worktreeIndex = path.join("worktrees", "swapped", "index");
+          const worktreesDir = path.join(cwd, ".git", "worktrees");
+          const sleeping = yield* Deferred.make<void>();
           const locked = yield* Deferred.make<void>();
           const release = yield* Deferred.make<void>();
           // Stamped in the clock's second, the index is racy; its swap then holds index.lock.
@@ -7858,8 +7862,8 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
                 .stat(file)
                 .pipe(
                   Effect.map((info) =>
-                    file.endsWith(worktreeIndex)
-                      ? { ...info, mtime: Option.some(new Date(0)) }
+                    file.startsWith(worktreesDir) && path.basename(file) === "index"
+                      ? { ...info, mtime: Option.some(DateTime.toDateUtc(DateTime.makeUnsafe(0))) }
                       : info,
                   ),
                 ),
@@ -7874,12 +7878,23 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           const driver = yield* makeGitVcsDriverCore().pipe(
             Effect.provideService(FileSystem.FileSystem, swappingFs),
           );
-          yield* driver.createWorktree({
-            cwd,
-            path: worktreePath,
-            refName: initialBranch,
-            newRefName: "feature/swapped",
-          });
+          // Git's own timeouts sleep for longer than the second the swap waits out.
+          const swapClock: Clock.Clock = {
+            ...clock,
+            sleep: (duration) =>
+              Duration.isLessThan(duration, Duration.seconds(2))
+                ? Deferred.succeed(sleeping, undefined).pipe(Effect.andThen(clock.sleep(duration)))
+                : clock.sleep(duration),
+          };
+          yield* driver
+            .createWorktree({
+              cwd,
+              path: worktreePath,
+              refName: initialBranch,
+              newRefName: "feature/swapped",
+            })
+            .pipe(Effect.provideService(Clock.Clock, swapClock));
+          yield* Deferred.await(sleeping);
           yield* TestClock.adjust("2 seconds");
           yield* Deferred.await(locked);
 
@@ -7894,15 +7909,19 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
             },
           });
           const operation = "GitVcsDriver.test.afterIndexSwap";
-          const stage: Effect.Effect<unknown, unknown> =
+          const stage: Effect.Effect<void, GitCommandError | VcsError> =
             runner === "GitVcsDriver"
-              ? driver.execute({ operation, cwd: worktreePath, args: ["add", "staged.txt"] })
-              : processes.run({
-                  operation,
-                  command: "git",
-                  args: ["-C", worktreePath, "add", "staged.txt"],
-                  cwd: worktreePath,
-                });
+              ? driver
+                  .execute({ operation, cwd: worktreePath, args: ["add", "staged.txt"] })
+                  .pipe(Effect.asVoid)
+              : processes
+                  .run({
+                    operation,
+                    command: "git",
+                    args: ["-C", worktreePath, "add", "staged.txt"],
+                    cwd: worktreePath,
+                  })
+                  .pipe(Effect.asVoid);
           const staged = yield* stage.pipe(Effect.withTracer(tracer), Effect.forkChild);
           // Release once the command has failed on the lock or is waiting for the swap.
           yield* Effect.raceFirst(Fiber.await(staged).pipe(Effect.asVoid), Deferred.await(waiting));
