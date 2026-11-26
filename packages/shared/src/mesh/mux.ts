@@ -18,7 +18,8 @@ const MAX_STREAM_ID = 0xffff_ffff;
 const MAX_FRAME_BYTES = NOISE_MAX_PLAINTEXT_BYTES;
 export const MESH_MAX_DATA_BYTES = MAX_FRAME_BYTES - HEADER_BYTES;
 const MESH_MAX_OPEN_HEAD_BYTES = MAX_FRAME_BYTES - HEADER_BYTES - 1;
-export const MESH_INITIAL_WINDOW_BYTES = 256 * 1024;
+/** Every stream's credit in each direction when it opens: a protocol constant both sides share. */
+export const MESH_STREAM_WINDOW_BYTES = 256 * 1024;
 // The largest credit a stream may hold, as in HTTP/2, so a sum of grants cannot overflow.
 const MAX_WINDOW_BYTES = 2 ** 31 - 1;
 const MESH_DEFAULT_MAX_STREAMS = 128;
@@ -105,7 +106,9 @@ export type MeshMuxEvent =
   | { readonly type: "credit"; readonly streamId: number; readonly credit: number };
 
 /**
- * Streams over one channel. Not one byte is buffered: `send` refuses data beyond the stream's credit, and the caller waits for a `credit` event. `receive` throws a `MeshProtocolError` on any peer violation, after which the channel must be closed.
+ * Streams over one channel, buffering nothing: `send` refuses data beyond the stream's credit
+ * and the caller waits for a `credit` event. A stream is a byte stream, so DATA boundaries are
+ * not message boundaries. Errors from `receive` are channel-fatal; all other calls only refuse.
  */
 export interface MeshMux {
   open(kind: MeshStreamKind, head: Uint8Array): number;
@@ -116,7 +119,7 @@ export interface MeshMux {
   reset(streamId: number, code: MeshResetCode): void;
   /** Reports bytes the application has taken from a stream, which earns the peer new credit. */
   consume(streamId: number, bytes: number): void;
-  /** Bytes `send` may still write to the stream; 0 once it is closed. */
+  /** Bytes `send` may still write to the stream; 0 once it is closed or ended locally. */
   credit(streamId: number): number;
   receive(frame: Uint8Array): MeshMuxEvent | undefined;
 }
@@ -137,10 +140,14 @@ export function createMeshMux(options: {
   readonly write: (frame: Uint8Array) => void;
   /** Concurrent streams each side may open; more from the peer are refused. */
   readonly maxStreams?: number;
-  readonly initialWindowBytes?: number;
 }): MeshMux {
   const maxStreams = options.maxStreams ?? MESH_DEFAULT_MAX_STREAMS;
-  const initialWindow = options.initialWindowBytes ?? MESH_INITIAL_WINDOW_BYTES;
+  if (!Number.isSafeInteger(maxStreams) || maxStreams < 1) {
+    throw new MeshProtocolError({
+      reason: "invalid_input",
+      detail: "maxStreams must be a whole number of at least 1.",
+    });
+  }
   const streams = new Map<number, Stream>();
   const parity = options.role === "initiator" ? 1 : 0;
   let nextLocalId = options.role === "initiator" ? 1 : 2;
@@ -153,8 +160,8 @@ export function createMeshMux(options: {
   const add = (streamId: number, local: boolean) => {
     streams.set(streamId, {
       local,
-      sendCredit: initialWindow,
-      receiveCredit: initialWindow,
+      sendCredit: MESH_STREAM_WINDOW_BYTES,
+      receiveCredit: MESH_STREAM_WINDOW_BYTES,
       unconsumed: 0,
       ungranted: 0,
       localEnded: false,
@@ -175,7 +182,7 @@ export function createMeshMux(options: {
     const stream = streams.get(streamId);
     if (stream === undefined || stream.localEnded) {
       throw new MeshProtocolError({
-        reason: "stream_state",
+        reason: "stream_closed",
         detail: `Stream ${streamId} is not open for writing.`,
       });
     }
@@ -188,7 +195,7 @@ export function createMeshMux(options: {
     open(kind, head) {
       if (head.length > MESH_MAX_OPEN_HEAD_BYTES) {
         throw new MeshProtocolError({
-          reason: "message_too_large",
+          reason: "payload_too_large",
           detail: "The stream head exceeds one frame.",
         });
       }
@@ -214,7 +221,7 @@ export function createMeshMux(options: {
       const stream = writable(streamId);
       if (data.length > stream.sendCredit) {
         throw new MeshProtocolError({
-          reason: "flow_control",
+          reason: "credit_exceeded",
           detail: "The data exceeds the stream's credit.",
         });
       }
@@ -239,19 +246,23 @@ export function createMeshMux(options: {
       const stream = streams.get(streamId);
       if (stream === undefined) return;
       if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > stream.unconsumed) {
-        throw new RangeError("consume() reports more bytes than the stream delivered.");
+        throw new MeshProtocolError({
+          reason: "invalid_input",
+          detail: "consume() reports more bytes than the stream delivered.",
+        });
       }
       stream.unconsumed -= bytes;
       stream.ungranted += bytes;
       // Batch grants so a stream read in small pieces does not send one WINDOW per read.
-      if (stream.remoteEnded || stream.ungranted < initialWindow / 2) return;
+      if (stream.remoteEnded || stream.ungranted < MESH_STREAM_WINDOW_BYTES / 2) return;
       const increment = stream.ungranted;
       stream.ungranted = 0;
       stream.receiveCredit += increment;
       send({ type: "window", streamId, increment });
     },
     credit(streamId) {
-      return streams.get(streamId)?.sendCredit ?? 0;
+      const stream = streams.get(streamId);
+      return stream === undefined || stream.localEnded ? 0 : stream.sendCredit;
     },
     receive(bytes) {
       const frame = decodeMeshFrame(bytes);
