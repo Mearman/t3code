@@ -292,33 +292,70 @@ export class ClaudeTranscriptTurnRules {
   }
 
   /**
-   * The turn a root filed by time joins: of `candidates` (openers in turn order, each a turn the root may join), the latest started at or before it that carries the summary's prompt id when one is named and such a turn exists, else the latest started at or before it.
+   * The turn a root filed by time joins: the latest eligible turn started at or before it that carries the summary's prompt id, when one is named and such a turn exists, else the latest eligible turn started at or before it. `byPromptKey` lists the turns carrying each prompt key and `candidates` every turn, both in turn order; `visit` counts each turn looked at.
    */
-  hostFor(
-    root: number,
-    summaryKey: number,
-    candidates: ReadonlyArray<number>,
-    promptEntry: (turn: number) => number,
-    eligible: (turn: number) => boolean = () => true,
+  hostFor(input: {
+    readonly root: number;
+    readonly summaryKey: number;
+    readonly candidates: ReadonlyArray<number>;
+    readonly byPromptKey: ReadonlyMap<number, ReadonlyArray<number>>;
+    readonly eligible: (turn: number) => boolean;
+    readonly visit: () => void;
+  }): number {
+    const named = input.summaryKey === 0 ? undefined : input.byPromptKey.get(input.summaryKey);
+    const host = named === undefined ? NONE : this.#latestEligible(input, named);
+    return host === NONE ? this.#latestEligible(input, input.candidates) : host;
+  }
+
+  #latestEligible(
+    input: {
+      readonly root: number;
+      readonly eligible: (turn: number) => boolean;
+      readonly visit: () => void;
+    },
+    turns: ReadonlyArray<number>,
   ): number {
-    const time = this.index.timestamp(root);
+    const time = this.index.timestamp(input.root);
     let low = 0;
-    let high = candidates.length;
+    let high = turns.length;
     while (low < high) {
       const middle = (low + high) >>> 1;
-      if (compareTimes(this.index.timestamp(at(candidates, middle)), time) <= 0) low = middle + 1;
+      if (compareTimes(this.index.timestamp(at(turns, middle)), time) <= 0) low = middle + 1;
       else high = middle;
     }
-    let latest = NONE;
     for (let position = low - 1; position >= 0; position--) {
-      const turn = at(candidates, position);
-      if (!eligible(turn)) continue;
-      if (latest === NONE) latest = turn;
-      if (summaryKey === 0) return latest;
-      const prompt = promptEntry(turn);
-      if (prompt !== NONE && this.index.promptKey(prompt) === summaryKey) return turn;
+      const turn = at(turns, position);
+      input.visit();
+      if (input.eligible(turn)) return turn;
     }
-    return latest;
+    return NONE;
+  }
+
+  /** Inserts `entry` into `list`, kept in turn order. */
+  insertInTurnOrder(list: Array<number>, entry: number): number {
+    let low = 0;
+    let high = list.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (this.compareTurns(at(list, middle), entry) < 0) low = middle + 1;
+      else high = middle;
+    }
+    list.splice(low, 0, entry);
+    return low;
+  }
+
+  /** Removes `entry` from `list`, kept in turn order; it must be there. */
+  removeInTurnOrder(list: Array<number>, entry: number): number {
+    let low = 0;
+    let high = list.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (this.compareTurns(at(list, middle), entry) < 0) low = middle + 1;
+      else high = middle;
+    }
+    if (list[low] !== entry) throw new RangeError(`Entry ${entry} is not in its list.`);
+    list.splice(low, 1);
+    return low;
   }
 
   /** Item order within a turn: the opener first, then by time, depth and uuid. */
@@ -573,6 +610,7 @@ export function claudeTranscriptStructure(index: ClaudeTranscriptIndex): ClaudeT
     return kind;
   };
   const openers: Array<number> = [];
+  const byPromptKey = new Map<number, Array<number>>();
   const decideAt = (position: number, host: number) => {
     const entry = at(order, position);
     const up = at(parent, entry);
@@ -594,14 +632,13 @@ export function claudeTranscriptStructure(index: ClaudeTranscriptIndex): ClaudeT
     if (decision.opens !== undefined) {
       openerKind.set(entry, decision.opens);
       promptEntry.set(entry, decision.promptEntry);
-      let low = 0;
-      let high = openers.length;
-      while (low < high) {
-        const middle = (low + high) >>> 1;
-        if (rules.compareTurns(at(openers, middle), entry) < 0) low = middle + 1;
-        else high = middle;
+      rules.insertInTurnOrder(openers, entry);
+      const key = decision.promptEntry === NONE ? 0 : index.promptKey(decision.promptEntry);
+      if (key !== 0) {
+        const list = byPromptKey.get(key) ?? [];
+        rules.insertInTurnOrder(list, entry);
+        byPromptKey.set(key, list);
       }
-      openers.splice(low, 0, entry);
     }
   };
   for (let position = 0; position < rootedCount; position++) decideAt(position, NONE);
@@ -609,7 +646,14 @@ export function claudeTranscriptStructure(index: ClaudeTranscriptIndex): ClaudeT
   for (let position = rootedCount; position < count; position++) {
     const entry = at(order, position);
     if (at(parent, entry) === NONE) {
-      host = rules.hostFor(entry, rules.summaryKey(entry, eachChild), openers, inputs.promptEntry);
+      host = rules.hostFor({
+        root: entry,
+        summaryKey: rules.summaryKey(entry, eachChild),
+        candidates: openers,
+        byPromptKey,
+        eligible: () => true,
+        visit: () => {},
+      });
     }
     decideAt(position, host);
   }

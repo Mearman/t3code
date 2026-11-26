@@ -116,6 +116,14 @@ export interface ClaudeTranscriptTurnUpdate {
   /** Work done: entry decisions made and turn digests computed. */
   readonly decided: number;
   readonly digested: number;
+  /** Roots filed by time looked at, and turns looked at to file them. */
+  readonly hostVisits: number;
+}
+
+/** A turn that opened, closed, or changed prompt id or tree, with the prompt keys involved. */
+interface HostCheck {
+  readonly opener: number;
+  readonly keys: ReadonlyArray<number>;
 }
 
 /**
@@ -135,10 +143,15 @@ export class ClaudeTranscriptTurnTracker {
   #dirty = new Set<number>();
   #changedEntries: Array<number> = [];
   // Times from which roots filed by time are checked again, and roots to check by name.
-  #hostChecks: Array<number> = [];
+  #hostChecks: Array<HostCheck> = [];
   #rootChecks = new Set<number>();
+  #byPromptKey = new Map<number, Array<number>>();
+  #hostedBy = new Map<number, Set<number>>();
+  #summaryKeys = new Map<number, number>();
+  #summaryRoots = new Map<number, Set<number>>();
   #decided = 0;
   #digested = 0;
+  #hostVisits = 0;
   readonly #inputs: ClaudeTranscriptDecisionInputs;
 
   constructor() {
@@ -204,6 +217,7 @@ export class ClaudeTranscriptTurnTracker {
   update(): ClaudeTranscriptTurnUpdate {
     this.#decided = 0;
     this.#digested = 0;
+    this.#hostVisits = 0;
     const changes = this.index.takeChanges();
     const applied =
       changes.generation !== this.#generation || changes.replaced
@@ -218,6 +232,7 @@ export class ClaudeTranscriptTurnTracker {
       malformedOffsets: changes.malformedOffsets,
       decided: this.#decided,
       digested: this.#digested,
+      hostVisits: this.#hostVisits,
     };
   }
 
@@ -231,6 +246,10 @@ export class ClaudeTranscriptTurnTracker {
     this.#provisional = new Set();
     this.#hostChecks = [];
     this.#rootChecks = new Set();
+    this.#byPromptKey = new Map();
+    this.#hostedBy = new Map();
+    this.#summaryKeys = new Map();
+    this.#summaryRoots = new Map();
     this.#latestPromptTime = Number.NEGATIVE_INFINITY;
     this.#forkTurns = 0;
     const all = Array.from({ length: this.index.entryCount }, (_, entry) => entry);
@@ -355,18 +374,52 @@ export class ClaudeTranscriptTurnTracker {
     this.#refreshFlagsUp(start, [], new Set());
   }
 
+  #keyOf(promptEntry: number): number {
+    return promptEntry === NONE ? 0 : this.index.promptKey(promptEntry);
+  }
+  #summaryKeyOf(root: number): number {
+    return this.#rules.summaryKey(root, (entry, visit) => this.#eachChild(entry, visit));
+  }
+
   // A root filed by time may join any turn of a true root's tree or an earlier root's tree.
   #hostFor(root: number): number {
-    return this.#rules.hostFor(
+    return this.#rules.hostFor({
       root,
-      this.#rules.summaryKey(root, (entry, visit) => this.#eachChild(entry, visit)),
-      this.#order,
-      (turn) => this.#s.promptEntry.get(turn),
-      (turn) => {
+      summaryKey: this.#summaryKeyOf(root),
+      candidates: this.#order,
+      byPromptKey: this.#byPromptKey,
+      eligible: (turn) => {
         const other = this.#s.rootOf.get(turn);
         return other === NONE || this.#rules.compareTurns(other, root) < 0;
       },
-    );
+      visit: () => {
+        this.#hostVisits += 1;
+      },
+    });
+  }
+
+  // Which roots name each prompt key in their summary, so a turn carrying it finds them.
+  #refreshSummaryKey(root: number): void {
+    const before = this.#summaryKeys.get(root) ?? 0;
+    const after = this.#bit(root, DETACHED) ? this.#summaryKeyOf(root) : 0;
+    if (before === after) return;
+    this.#summaryRoots.get(before)?.delete(root);
+    if (after === 0) {
+      this.#summaryKeys.delete(root);
+      return;
+    }
+    this.#summaryKeys.set(root, after);
+    const roots = this.#summaryRoots.get(after) ?? new Set<number>();
+    roots.add(root);
+    this.#summaryRoots.set(after, roots);
+  }
+
+  #inList(map: Map<number, Array<number>>, key: number, entry: number, present: boolean): void {
+    const list = map.get(key) ?? [];
+    if (present) this.#rules.insertInTurnOrder(list, entry);
+    else this.#rules.removeInTurnOrder(list, entry);
+    if (list.length === 0) map.delete(key);
+    else map.set(key, list);
   }
 
   #place(entry: number): Placement | undefined {
@@ -427,10 +480,7 @@ export class ClaudeTranscriptTurnTracker {
           enqueue(member);
           this.#eachChild(member, enqueue);
         }
-        for (const root of this.#detachedRoots) {
-          if (this.#s.host.get(root) === entry) enqueue(root);
-        }
-        this.#hostChecks.push(this.index.timestamp(entry));
+        for (const root of this.#hostedBy.get(entry) ?? []) enqueue(root);
       }
       const anchor = this.#s.anchor.get(entry);
       if (
@@ -492,9 +542,7 @@ export class ClaudeTranscriptTurnTracker {
     s.branchParentTurn.set(entry, branchParentTurn);
 
     if (opens !== 0 && (old === undefined || old.opens === 0)) this.#openTurn(entry);
-    else if (opens !== 0 && old !== undefined && old.rootOf !== placed.rootOf) {
-      this.#hostChecks.push(this.index.timestamp(entry));
-    }
+    this.#refileIndexes(entry, old, opens !== 0, decision.promptEntry, placed);
     if (moved) this.#addMember(decision.turn, entry);
     if (
       opens !== 0 &&
@@ -512,6 +560,7 @@ export class ClaudeTranscriptTurnTracker {
       if (placed.detached) this.#insertSorted(this.#detachedRoots, entry);
       else this.#removeSorted(this.#detachedRoots, entry);
     }
+    if (placed.detached || old?.detached === true) this.#refreshSummaryKey(entry);
     const changed =
       old === undefined ||
       moved ||
@@ -568,20 +617,62 @@ export class ClaudeTranscriptTurnTracker {
     if (last !== undefined && position === this.#order.length) this.#dirty.add(last);
   }
 
+  // Keeps the lists filing by time reads, and records what a change there can move.
+  #refileIndexes(
+    entry: number,
+    old:
+      | {
+          readonly opens: number;
+          readonly promptEntry: number;
+          readonly rootOf: number;
+          readonly host: number;
+          readonly detached: boolean;
+        }
+      | undefined,
+    isOpener: boolean,
+    promptEntry: number,
+    placed: Placement,
+  ): void {
+    const wasOpener = old !== undefined && old.opens !== 0;
+    const oldKey = wasOpener ? this.#keyOf(old.promptEntry) : 0;
+    const newKey = isOpener ? this.#keyOf(promptEntry) : 0;
+    if (wasOpener && oldKey !== 0 && (!isOpener || oldKey !== newKey)) {
+      this.#inList(this.#byPromptKey, oldKey, entry, false);
+    }
+    if (isOpener && newKey !== 0 && (!wasOpener || oldKey !== newKey)) {
+      this.#inList(this.#byPromptKey, newKey, entry, true);
+    }
+    if (
+      wasOpener !== isOpener ||
+      oldKey !== newKey ||
+      (isOpener && old !== undefined && old.rootOf !== placed.rootOf)
+    ) {
+      this.#hostChecks.push({ opener: entry, keys: [oldKey, newKey] });
+    }
+    const oldHost = old?.detached === true ? old.host : NONE;
+    const newHost = placed.detached ? placed.host : NONE;
+    if (oldHost !== newHost) {
+      this.#hostedBy.get(oldHost)?.delete(entry);
+      if (newHost !== NONE) {
+        const hosted = this.#hostedBy.get(newHost) ?? new Set<number>();
+        hosted.add(entry);
+        this.#hostedBy.set(newHost, hosted);
+      }
+    }
+  }
+
   #openTurn(entry: number): void {
     const state = this.#turns.get(entry) ?? new TurnState(entry, this.index.uuid(entry));
     state.open = true;
     this.#turns.set(entry, state);
     this.#markInserted(this.#insertSorted(this.#order, entry));
     this.#dirty.add(entry);
-    this.#hostChecks.push(this.index.timestamp(entry));
     if (this.index.forkSessionId(entry) !== undefined) this.#forkTurns += 1;
   }
   #closeTurn(entry: number): void {
     this.#turnState(entry).open = false;
     this.#markRemoved(this.#removeSorted(this.#order, entry));
     this.#dirty.add(entry);
-    this.#hostChecks.push(this.index.timestamp(entry));
     if (this.index.forkSessionId(entry) !== undefined) this.#forkTurns -= 1;
   }
 
@@ -647,34 +738,91 @@ export class ClaudeTranscriptTurnTracker {
     if (state.lastAssistant === entry) state.staleLastAssistant = true;
   }
 
-  // Roots filed by time move when a turn starts, stops or changes prompt id at or before them,
-  // or their summary arrives; a move can open or close turns that move later roots in turn.
+  // Roots filed by time move when a turn starts, stops, or changes prompt id or tree at or before
+  // them, up to the next turn every root may join, or when the summary they name arrives; a move
+  // can open or close turns that move later roots in turn. Roots with no readable time sort after
+  // every turn, so any change may move them.
   #refileByTime(forcedAnchors: ReadonlySet<number>): void {
     while (this.#hostChecks.length > 0 || this.#rootChecks.size > 0) {
-      const candidates = new Set(this.#rootChecks);
+      const candidates = new Set<number>();
+      for (const root of this.#rootChecks) {
+        this.#refreshSummaryKey(root);
+        candidates.add(root);
+      }
       this.#rootChecks = new Set();
       const checks = this.#hostChecks;
       this.#hostChecks = [];
-      // NaN sorts after every time, so it checks only roots with no readable time.
-      const from = checks.reduce(
-        (earliest, time) => (compareTimes(time, earliest) < 0 ? time : earliest),
-        Number.NaN,
-      );
-      for (
-        let position =
-          checks.length === 0
-            ? this.#detachedRoots.length
-            : this.#firstAfter(this.#detachedRoots, from, true);
-        position < this.#detachedRoots.length;
-        position++
-      ) {
-        const root = this.#detachedRoots[position];
-        if (root !== undefined) candidates.add(root);
+      for (const check of checks) this.#rootsAfter(check.opener, candidates);
+      for (const check of checks) {
+        for (let position = this.#detachedRoots.length - 1; position >= 0; position--) {
+          const root = this.#detachedRoots[position];
+          if (root === undefined || !Number.isNaN(this.index.timestamp(root))) break;
+          this.#hostVisits += 1;
+          candidates.add(root);
+        }
+        const time = this.index.timestamp(check.opener);
+        for (const key of check.keys) {
+          for (const root of this.#summaryRoots.get(key) ?? []) {
+            if (compareTimes(this.index.timestamp(root), time) < 0) continue;
+            this.#hostVisits += 1;
+            candidates.add(root);
+          }
+        }
       }
       const roots = [...candidates].filter(
         (root) => this.#bit(root, DETACHED) && this.#hostFor(root) !== this.#s.host.get(root),
       );
       this.#propagate(roots, forcedAnchors);
+    }
+  }
+
+  // The roots whose latest eligible turn by time can be `opener`: those at or after it, up to the
+  // first that a later turn it may join already sits before. A turn under a root is eligible for
+  // every later root, so once one is passed every later root stops too.
+  #rootsAfter(opener: number, candidates: Set<number>): void {
+    const roots = this.#detachedRoots;
+    let low = 0;
+    let high = this.#order.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      const other = this.#order[middle];
+      if (other === undefined) throw new RangeError(`No slot ${middle}.`);
+      if (this.#rules.compareTurns(other, opener) <= 0) low = middle + 1;
+      else high = middle;
+    }
+    let cursor = low;
+    // The earliest-ranked tree among the turns passed; NONE once a true root's turn is passed.
+    let least: number | undefined;
+    const passed = (root: number) =>
+      least !== undefined && (least === NONE || this.#rules.compareTurns(least, root) < 0);
+    for (
+      let position = this.#firstAfter(roots, this.index.timestamp(opener), true);
+      position < roots.length;
+      position++
+    ) {
+      const root = roots[position];
+      if (root === undefined) break;
+      const time = this.index.timestamp(root);
+      for (
+        let turn = this.#order[cursor];
+        turn !== undefined && !passed(root);
+        turn = this.#order[cursor]
+      ) {
+        if (compareTimes(this.index.timestamp(turn), time) > 0) break;
+        this.#hostVisits += 1;
+        const under = this.#s.rootOf.get(turn);
+        if (
+          under === NONE ||
+          least === undefined ||
+          (least !== NONE && this.#rules.compareTurns(under, least) < 0)
+        ) {
+          least = under;
+        }
+        cursor += 1;
+      }
+      if (passed(root)) break;
+      this.#hostVisits += 1;
+      candidates.add(root);
     }
   }
 
@@ -884,9 +1032,10 @@ export interface ClaudeTranscriptSyncResult {
   readonly removedTurnIds: ReadonlyArray<string>;
   readonly factsChanged: boolean;
   readonly malformedOffsets: ReadonlyArray<number>;
-  /** Work done across the sync's updates: entry decisions made and turn digests computed. */
+  /** Work done across the sync's updates: see `ClaudeTranscriptTurnUpdate`. */
   readonly decided: number;
   readonly digested: number;
+  readonly hostVisits: number;
 }
 
 /**
@@ -904,6 +1053,7 @@ export const syncClaudeTranscript = Effect.fn("syncClaudeTranscript")(function* 
   let rebuilt = false;
   let decided = 0;
   let digested = 0;
+  let hostVisits = 0;
   const collect = () => {
     const update = tracker.update();
     for (const id of update.changedTurnIds) changed.add(id);
@@ -913,6 +1063,7 @@ export const syncClaudeTranscript = Effect.fn("syncClaudeTranscript")(function* 
     rebuilt ||= update.rebuilt;
     decided += update.decided;
     digested += update.digested;
+    hostVisits += update.hostVisits;
   };
   const read = yield* syncClaudeTranscriptIndex({
     filePath: input.filePath,
@@ -934,6 +1085,7 @@ export const syncClaudeTranscript = Effect.fn("syncClaudeTranscript")(function* 
     malformedOffsets,
     decided,
     digested,
+    hostVisits,
   };
   return result;
 });

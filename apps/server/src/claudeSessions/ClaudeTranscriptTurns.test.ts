@@ -361,6 +361,25 @@ describe("claudeTranscriptStructure", () => {
     expect(turnOf(structure, "a2")).toBe("p1");
   });
 
+  // Rewrite inspection 3 finding 5: of two summaries, the earliest names the prompt id.
+  it("files a compaction by its earliest summary's prompt id", () => {
+    const f = claudeTranscriptFixture();
+    const t = (seconds: number) => ({ timestamp: f.iso(seconds) });
+    const structure = structureOf([
+      f.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+      f.text("a1", "p1", "Done", null, t(2)),
+      f.prompt("p2", "a1", "Next", { ...t(3), promptId: "B" }),
+      f.text("a2", "p2", "Done", null, t(4)),
+      f.boundary("cb", "gone", t(5)),
+      f.summary("s2", "cb", { ...t(7), promptId: "B" }),
+      f.summary("s1", "cb", { ...t(6), promptId: "A" }),
+      f.text("a3", "s1", "More", "end_turn", t(8)),
+    ]);
+
+    expect(turnOf(structure, "cb")).toBe("p1");
+    expect(turnOf(structure, "a3")).toBe("p1");
+  });
+
   // Rewrite inspection 2 finding 1: a queued turn's prompt id changes when a meta line above opens late.
   it("follows a queued turn's prompt id to the lines below it at any depth", () => {
     const f = claudeTranscriptFixture();

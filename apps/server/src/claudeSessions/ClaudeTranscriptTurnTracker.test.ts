@@ -164,6 +164,21 @@ function forwardTranscript(seed: number, length: number, mode: number): Array<Li
       const replayed = lines[next(lines.length)];
       if (replayed !== undefined) lines.push(replayed);
     }
+    // A compaction with two summaries naming different prompts: the earliest decides.
+    if (shape === 16 && next(3) === 0) {
+      lines.push(
+        f.summary(`${uuid}-s1`, uuid, {
+          timestamp: f.iso(next(length)),
+          promptId: `pid-${next(4)}`,
+        }),
+      );
+      lines.push(
+        f.summary(`${uuid}-s0`, uuid, {
+          timestamp: f.iso(next(length)),
+          promptId: `pid-${next(4)}`,
+        }),
+      );
+    }
   }
   return lines;
 }
@@ -311,6 +326,94 @@ describe("ClaudeTranscriptTurnTracker", () => {
     expect(Math.max(...work.map((update) => update.decided))).toBeLessThanOrEqual(3);
     expect(Math.max(...work.map((update) => update.digested))).toBeLessThanOrEqual(2);
     expect(Math.max(...lateWork.map((update) => update.decided))).toBeLessThanOrEqual(4);
+    expect(tracker.structure()).toEqual(claudeTranscriptStructure(tracker.index));
+  });
+
+  // Rewrite inspection 3 finding 4: filing by time costs what an append changes, and is counted.
+  it("refiles only the roots an early-stamped append can move", () => {
+    const f = claudeTranscriptFixture();
+    let clock = 0;
+    const x = () => ({ timestamp: f.iso(++clock * 10) });
+    const lines: Array<Line> = [];
+    let previous: string | null = null;
+    for (let index = 0; index < 1000; index++) {
+      if (index % 40 === 1) {
+        lines.push(f.boundary(`b${index}`, `gone${index}`, x()));
+        lines.push(f.summary(`s${index}`, `b${index}`, { ...x(), promptId: "shared" }));
+        previous = `s${index}`;
+      }
+      lines.push(f.prompt(`p${index}`, previous, "Go", { ...x(), promptId: `P${index}` }));
+      lines.push(f.text(`a${index}`, `p${index}`, "Ok", "end_turn", x()));
+      previous = `a${index}`;
+    }
+    const tracker = new ClaudeTranscriptTurnTracker();
+    const encoder = new TextEncoder();
+    let offset = 0;
+    const append = (line: unknown) => {
+      const bytes = encoder.encode(JSON.stringify(line));
+      tracker.index.addLine(bytes, offset);
+      offset += bytes.length + 1;
+      return tracker.update();
+    };
+    for (const line of lines.slice(0, -1)) {
+      const bytes = encoder.encode(JSON.stringify(line));
+      tracker.index.addLine(bytes, offset);
+      offset += bytes.length + 1;
+    }
+    tracker.update();
+    const updates = [
+      append(lines.at(-1)),
+      append(f.prompt("late", "a0", "Go", { timestamp: f.iso(15) })),
+      append(f.boundary("bb", "goneZ", x())),
+      append(f.summary("ss", "bb", { ...x(), promptId: "compact-new" })),
+      append(f.prompt("again", "a999", "Go", { ...x(), promptId: "shared" })),
+    ];
+
+    expect(Math.max(...updates.map((update) => update.hostVisits))).toBeLessThanOrEqual(8);
+    expect(tracker.structure()).toEqual(claudeTranscriptStructure(tracker.index));
+  });
+
+  it("refiles only the roots a prompt id change can move", () => {
+    const f = claudeTranscriptFixture();
+    const t = (seconds: number) => ({ timestamp: f.iso(seconds) });
+    const lines: Array<Line> = [
+      f.prompt("p1", null, "Go", { ...t(1), promptId: "A" }),
+      f.meta("m", "p1", "B", "<task-notification>y</task-notification>", t(2)),
+      f.result("r", "m", "t1", t(3)),
+      f.text("a1", "r", "Done", "end_turn", t(4)),
+    ];
+    let previous = "a1";
+    let clock = 5;
+    for (let index = 0; index < 200; index++) {
+      lines.push(
+        f.queued(`q${index}`, previous, "Next", t(clock++)),
+        f.text(`z${index}`, `q${index}`, "Done", "end_turn", t(clock++)),
+      );
+      previous = `z${index}`;
+    }
+    for (let index = 0; index < 100; index++) {
+      lines.push(
+        f.boundary(`b${index}`, `gone${index}`, t(clock++)),
+        f.summary(`s${index}`, `b${index}`, { ...t(clock++), promptId: `u${index}` }),
+      );
+    }
+    const tracker = new ClaudeTranscriptTurnTracker();
+    const encoder = new TextEncoder();
+    let offset = 0;
+    for (const line of lines) {
+      const bytes = encoder.encode(JSON.stringify(line));
+      tracker.index.addLine(bytes, offset);
+      offset += bytes.length + 1;
+    }
+    tracker.update();
+    const bytes = encoder.encode(
+      JSON.stringify(f.text("a4", "m", "Reply", "end_turn", t(clock + 5))),
+    );
+    tracker.index.addLine(bytes, offset);
+    const update = tracker.update();
+
+    // The cascade re-decides the queued chain; the roots after it are each looked at a few times.
+    expect(update.hostVisits).toBeLessThanOrEqual(4 * 100 + 200);
     expect(tracker.structure()).toEqual(claudeTranscriptStructure(tracker.index));
   });
 
