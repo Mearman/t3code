@@ -28,6 +28,7 @@ import {
   ProjectId,
   EnvironmentId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -497,6 +498,8 @@ function makeLocalCommandHarness(input: {
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
   readonly resumeFailure?: ProviderAdapter.ProviderAdapterV2Error;
+  /** Another process holds the previous native thread, as the Claude send gate reports it. */
+  readonly previousNativeThreadHeld?: boolean;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -1168,6 +1171,20 @@ function makeLocalCommandHarness(input: {
           }),
       ),
     ensureThread: fallbackEnsureThread,
+    ...(input.previousNativeThreadHeld === true
+      ? {
+          checkNativeThreadFree: (held: OrchestrationV2ProviderThread) =>
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterThreadInUseError({
+                driver: held.driver,
+                providerThreadId: held.id,
+                detail: "Another Claude Code process (pid 200) has this session open.",
+                cause: "held",
+                holderObserved: true,
+              }),
+            ),
+        }
+      : {}),
   };
   const startTurn = vi.fn((_turn: ProviderAdapter.ProviderAdapterV2TurnInput) => Effect.void);
   const sideChatThread = {
@@ -3446,6 +3463,32 @@ effectIt.effect("fails the run instead of replacing a native thread another clie
         type: "error",
         title: "Provider turn failed to start",
         failure: { class: "provider_error", message: detail },
+      },
+    ]);
+  }),
+);
+
+effectIt.effect("checks the previous native thread before recovering in a fresh one", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      resumeFailure: new ProviderAdapter.ProviderAdapterEventStreamError({
+        driver: ProviderDriverKind.make("codex"),
+        providerSessionId: ProviderSessionId.make("new-provider-session"),
+        cause: "native thread is gone",
+      }),
+      previousNativeThreadHeld: true,
+    });
+
+    yield* harness.start;
+
+    expect(harness.fallbackEnsureThread).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        failure: { message: "Another Claude Code process (pid 200) has this session open." },
       },
     ]);
   }),

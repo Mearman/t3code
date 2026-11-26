@@ -232,6 +232,7 @@ function makeTestAdapter(input: {
                               providerThreadId: providerThread.id,
                               detail: "Another process has this session open.",
                               cause: "held",
+                              holderObserved: true,
                             }),
                           )
                         : Effect.void,
