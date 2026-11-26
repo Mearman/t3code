@@ -36,9 +36,7 @@ export class ClaudeSessionRegistryEntryError extends Schema.TaggedError<ClaudeSe
 // Claude Code keeps key files and temporary files beside the entries.
 const ENTRY_FILE_NAME = /^\d+\.json$/;
 
-const decodeEntry = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(ClaudeSessionRegistryEntry),
-);
+const decodeEntry = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaudeSessionRegistryEntry));
 
 /** Reads every entry of one registry. An entry that cannot be understood is returned, not dropped. */
 export const readClaudeSessionRegistry = Effect.fn("readClaudeSessionRegistry")(function* (

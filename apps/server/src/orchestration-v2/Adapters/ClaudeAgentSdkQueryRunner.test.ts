@@ -82,7 +82,9 @@ it.effect("reads a subagent stored under the instance's own CLAUDE_CONFIG_DIR", 
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const configDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-subagent-" });
+      const configDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-claude-subagent-",
+      });
       const projectDir = yield* writeClaudeSession(configDir);
       const agentId = "a0123456789abcdef";
       const subagents = path.join(projectDir, FORK_SESSION_ID, "subagents");
@@ -102,7 +104,11 @@ it.effect("reads a subagent stored under the instance's own CLAUDE_CONFIG_DIR", 
           subagentEntry(
             "bbbbbbbb-0000-4000-8000-000000000002",
             "bbbbbbbb-0000-4000-8000-000000000001",
-            { role: "assistant", model: "claude-test-model", content: [{ type: "text", text: "ok" }] },
+            {
+              role: "assistant",
+              model: "claude-test-model",
+              content: [{ type: "text", text: "ok" }],
+            },
           ),
         ]
           .map((line) => JSON.stringify(line))
