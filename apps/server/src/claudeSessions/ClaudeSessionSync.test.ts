@@ -428,9 +428,10 @@ describe("ClaudeSessionSync", () => {
         yield* Effect.gen(function* () {
           yield* syncAll({ full: true });
           yield* openThread(claudeThreadId);
+          // A turn whose start is not a time orders after every timed turn.
           expect(yield* nativeRuns(claudeThreadId)).toEqual([
-            [1, "completed", "p1"],
-            [2, "completed", "p2"],
+            [1, "completed", "p2"],
+            [2, "completed", "p1"],
           ]);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),

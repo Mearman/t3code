@@ -109,10 +109,7 @@ const itemsOf = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
 /** What the projection holds of these items, as the next plan reads it. */
 const storedFrom = (items: ReadonlyArray<OrchestrationV2TurnItem>) =>
   new Map<string, StoredNativeItem>(
-    items.map((item) => [
-      item.id,
-      { runId: item.runId, ordinal: item.ordinal, status: item.status },
-    ]),
+    items.map((item) => [item.id, { runId: item.runId, status: item.status }]),
   );
 
 const run = <A, E>(body: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Scope.Scope>) =>
@@ -210,9 +207,7 @@ describe("planClaudeNativeTurn", () => {
         const elsewhere = claudeNativeRunIds(SESSION, "p0").runId;
         const plan = planOf(content, {
           stored: true,
-          storedItems: new Map([
-            [`x:${SESSION}:a1:0`, { runId: elsewhere, ordinal: 1, status: "completed" }],
-          ]),
+          storedItems: new Map([[`x:${SESSION}:a1:0`, { runId: elsewhere, status: "completed" }]]),
         });
         expect(itemsOf(plan.events).map((item) => [item.id, item.runId])).toContainEqual([
           `x:${SESSION}:a1:0`,
@@ -317,7 +312,10 @@ describe("planClaudeNativeTurn", () => {
           (item) => item.id === `x:${SESSION}:a1:0`,
         );
         const output = tool?.type === "command_execution" ? tool.output : undefined;
-        expect(typeof output === "string" && output.endsWith("[10 more characters in the Claude transcript]")).toBe(true);
+        expect(
+          typeof output === "string" &&
+            output.endsWith("[10 more characters in the Claude transcript]"),
+        ).toBe(true);
       }),
     ),
   );

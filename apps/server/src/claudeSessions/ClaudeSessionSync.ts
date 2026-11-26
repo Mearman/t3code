@@ -779,10 +779,9 @@ const make = Effect.gen(function* () {
       (chunk) => sql<{
         readonly id: string;
         readonly runId: string | null;
-        readonly ordinal: number;
         readonly status: string;
       }>`
-        SELECT turn_item_id AS "id", run_id AS "runId", ordinal, status
+        SELECT turn_item_id AS "id", run_id AS "runId", status
         FROM orchestration_v2_projection_turn_items
         WHERE turn_item_id IN ${sql.in(chunk)}
       `,
@@ -1139,7 +1138,7 @@ const make = Effect.gen(function* () {
       }).pipe(
         withHost,
         Effect.asSome,
-        Effect.catchTag("ClaudeTranscriptChangedError", () => Effect.succeedNone),
+        Effect.catchTags({ ClaudeTranscriptChangedError: () => Effect.succeedNone }),
       );
       if (Option.isNone(content)) {
         index.reset();

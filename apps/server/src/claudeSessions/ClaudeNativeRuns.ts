@@ -130,10 +130,9 @@ export function claudeOwnTurnIds(input: {
 /** The prompt text key `claudeOwnTurnIds` matches a T3 Code turn's message by. */
 export const claudePromptTextKey = (text: string) => hashClaudeTranscriptText(text);
 
-/** A stored item as far as deciding whether to write it again needs. */
+/** A stored item as far as deciding whether to write it again needs; its position is the position store's, set when it was first written to its run. */
 export interface StoredNativeItem {
   readonly runId: string | null;
-  readonly ordinal: number;
   readonly status: string;
 }
 
@@ -401,14 +400,9 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
 
   const event = eventMaker(target, input.eventId);
 
-  const unchanged = (id: string, ordinal: number, status: string) => {
+  const unchanged = (id: string, status: string) => {
     const stored = input.storedItems.get(id);
-    return (
-      stored !== undefined &&
-      stored.runId === ids.runId &&
-      stored.ordinal === ordinal &&
-      stored.status === status
-    );
+    return stored !== undefined && stored.runId === ids.runId && stored.status === status;
   };
 
   const results = new Map<string, ToolResult>();
@@ -452,7 +446,7 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
 
   /** Queues an item unless the projection already holds it as it is; returns whether it did. */
   const push = (item: OrchestrationV2TurnItem) => {
-    if (unchanged(item.id, item.ordinal, item.status)) return false;
+    if (unchanged(item.id, item.status)) return false;
     items.push(
       event({ type: "turn-item.updated", occurredAt: item.updatedAt, ...scope, payload: item }),
     );
@@ -669,7 +663,7 @@ export function planClaudeNativeTurn(input: ClaudeNativeTurnPlanInput): ClaudeNa
     turnOrigin: prompt?.originKind,
     branchedFrom: turn.branchedFrom,
   });
-  if (!unchanged(ids.promptItemId, 0, "completed")) {
+  if (!unchanged(ids.promptItemId, "completed")) {
     const text =
       prompt !== undefined && prompt.text.length > 0 ? prompt.text : openerText.join("\n");
     // Claude Code writes some prompts itself, such as task notifications and command output.
