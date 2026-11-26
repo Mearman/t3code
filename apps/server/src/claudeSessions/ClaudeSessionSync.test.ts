@@ -30,6 +30,7 @@ import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
+import * as ThreadSettlementService from "../orchestration-v2/ThreadSettlementService.ts";
 import * as ClaudeSessionSyncState from "../persistence/ClaudeSessionSyncState.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -734,10 +735,22 @@ describe("ClaudeSessionSync", () => {
         yield* append(extra, firstTurn);
         yield* Effect.gen(function* () {
           const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const settings = yield* ServerSettingsModule.ServerSettingsService;
           yield* syncAll({ full: true });
-          expect(yield* projections.findThread(claudeThreadId)).toMatchObject({
-            providerInstanceId: INSTANCE,
-          });
+          // A send resumes in the instance's home, so the extra home gets an instance of its own.
+          const thread = yield* projections.findThread(claudeThreadId);
+          expect(thread?.providerInstanceId).not.toBe(INSTANCE);
+          const instances = (yield* settings.getSettings).providerInstances;
+          const own = thread === null ? undefined : instances[thread.providerInstanceId];
+          expect(own).toMatchObject({ driver: CLAUDE, config: { homePath: extra } });
+          const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+          const runtime = yield* runtimes.getByThreadId({ threadId: claudeThreadId });
+          expect(runtime._tag === "Some" && runtime.value.providerInstanceId).toBe(
+            thread?.providerInstanceId,
+          );
+          // Registering it again changes nothing.
+          yield* syncAll({ full: true });
+          expect(Object.keys((yield* settings.getSettings).providerInstances)).toHaveLength(2);
         }).pipe(Effect.provide(syncLayer(settingsFor([empty], { additionalHomes: [extra] }))));
         yield* Effect.gen(function* () {
           const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -816,6 +829,32 @@ describe("ClaudeSessionSync", () => {
           expect(notice?.type === "system_notice" ? notice.message : "").toContain("5.0 GB free");
           expect((yield* sessionRow(home))?.hydrationState).toBe("entry");
         }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), nearlyFull)));
+      }),
+    ),
+  );
+
+  it.effect("brings no old session in as a thread auto-settle would act on", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const home = yield* makeHome(root, "home");
+        yield* markLive(home);
+        const file = yield* append(home, firstTurn);
+        const old = DateTime.toDateUtc(DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"));
+        yield* fileSystem.utimes(file, old, old);
+        yield* Effect.gen(function* () {
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* syncAll({ full: true });
+          yield* openThread(claudeThreadId);
+          expect(yield* nativeRuns(claudeThreadId)).toHaveLength(1);
+          const now = DateTime.toEpochMillis(yield* DateTime.now);
+          const candidates = (yield* projections.getSettlementCandidates()).filter((thread) =>
+            ThreadSettlementService.isAutoSettlementCandidate(thread, now),
+          );
+          expect(candidates.map((thread) => thread.id)).toEqual([]);
+        }).pipe(
+          Effect.provide(syncLayer({ ...settingsFor([home]), sidebarAutoSettleAfterDays: 7 })),
+        );
       }),
     ),
   );

@@ -285,17 +285,30 @@ const make = Effect.gen(function* () {
           instanceId: id,
         });
       }
-      // Extra homes belong to the default instance, or the first enabled one.
-      const owner =
-        homes.find(({ instanceId }) => instanceId === ProviderInstanceId.make(CLAUDE_PROVIDER))
-          ?.instanceId ?? homes[0]?.instanceId;
-      if (owner !== undefined) {
-        for (const home of settings.claudeSessionSync.additionalHomes) {
-          homes.push({
-            home: path.resolve(expandHomePath(home, homeDirectory)),
-            instanceId: owner,
-          });
-        }
+      // A send resumes in its instance's home with that home's login, so an extra home no
+      // instance reaches gets an instance of its own, with an id derived from its path.
+      for (const extra of settings.claudeSessionSync.additionalHomes) {
+        const home = path.resolve(expandHomePath(extra, homeDirectory));
+        const reached = (yield* resolveClaudeSessionStores([
+          ...homes.map((known) => known.home),
+          home,
+        ]))
+          .find((store) => store.homes.includes(home))
+          ?.homes.some((other) => other !== home);
+        if (reached === true) continue;
+        const instanceId = ProviderInstanceId.make(`claude-home-${storeDigest(home)}`);
+        yield* settingsService
+          .updateProviderInstance({
+            operation: "upsert",
+            instanceId,
+            instance: {
+              driver: CLAUDE_PROVIDER,
+              displayName: `Claude (${path.basename(home) || home})`,
+              config: { homePath: home },
+            },
+          })
+          .pipe(Effect.mapError(fail("register an instance for an additional Claude home")));
+        homes.push({ home, instanceId });
       }
       const stores = yield* resolveClaudeSessionStores(homes.map(({ home }) => home));
       return stores.flatMap((store): Array<SyncStore> => {
@@ -554,6 +567,16 @@ const make = Effect.gen(function* () {
     });
     const updatedAt = DateTime.makeUnsafe(transcript.mtimeMs);
     const createdAt = head.startedAt ?? updatedAt;
+    // An entry auto-settle would settle at once is created settled, so bringing old sessions in
+    // sends no settle commands.
+    const { sidebarAutoSettleAfterDays } = yield* settingsService.getSettings.pipe(
+      Effect.mapError(fail("read settings")),
+    );
+    const settled =
+      input.settled ||
+      (sidebarAutoSettleAfterDays !== null &&
+        transcript.mtimeMs <
+          DateTime.toEpochMillis(yield* DateTime.now) - sidebarAutoSettleAfterDays * DAY_MS);
     const model = head.model ?? defaultModel;
     const thread: OrchestrationV2AppThread = {
       createdBy: "system",
@@ -576,8 +599,8 @@ const make = Effect.gen(function* () {
       createdAt,
       updatedAt,
       archivedAt: null,
-      settledOverride: input.settled ? "settled" : null,
-      settledAt: input.settled ? updatedAt : null,
+      settledOverride: settled ? "settled" : null,
+      settledAt: settled ? updatedAt : null,
       unsettledAt: null,
       snoozedUntil: null,
       snoozedAt: null,
