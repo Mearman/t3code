@@ -9,8 +9,10 @@ import * as Schema from "effect/Schema";
 
 import {
   ClaudeTranscriptParserState,
+  claudeTranscriptLineUuids,
+  decodeClaudeTranscriptLines,
+  foldClaudeTranscriptLines,
   initialClaudeTranscriptParserState,
-  parseClaudeTranscriptLines,
   type ClaudeTranscriptEvent,
   type ClaudeTranscriptLine,
   type ClaudeTranscriptLineError,
@@ -73,6 +75,8 @@ export interface ClaudeTranscriptRead {
   /** Lines stepped past because they could not be understood, with their byte offsets. */
   readonly malformed: ReadonlyArray<ClaudeTranscriptLineError>;
   readonly cursor: ClaudeTranscriptCursor;
+  /** The uuids this read consumed; store them with the cursor, replacing the set after a read from the top. */
+  readonly consumedUuids: ReadonlyArray<string>;
   /** The read restarted from the top; earlier events come again with the same ids. */
   readonly rewritten: boolean;
   /** Every complete line has been read; an unterminated last line waits for its newline. */
@@ -84,12 +88,16 @@ export interface ClaudeTranscriptRead {
  * least `maxBytes` have been consumed; a last line without its newline is left for the next read.
  * The new cursor's digests are of the bytes parsed, so a rewrite during the read that reaches
  * either window shows at the next read. A read that fails leaves the caller's cursor where it was.
+ *
+ * `knownUuids` answers which of the given uuids earlier reads consumed. It is not asked for a read
+ * from the top, which treats the file as new, as after a rewrite.
  */
-export const readClaudeTranscript = Effect.fn("readClaudeTranscript")(function* (input: {
+export const readClaudeTranscript = Effect.fn("readClaudeTranscript")(function* <E, R>(input: {
   readonly filePath: string;
   readonly sessionId: string;
   readonly cursor: ClaudeTranscriptCursor;
   readonly maxBytes: number;
+  readonly knownUuids: (uuids: ReadonlyArray<string>) => Effect.Effect<ReadonlySet<string>, E, R>;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const handle = yield* fileSystem.open(input.filePath, { flag: "r" });
@@ -174,15 +182,22 @@ export const readClaudeTranscript = Effect.fn("readClaudeTranscript")(function* 
     }
   }
 
-  const parsed = parseClaudeTranscriptLines({
+  const decodedLines = decodeClaudeTranscriptLines(lines);
+  const known =
+    start.offset > 0
+      ? yield* input.knownUuids(claudeTranscriptLineUuids(decodedLines))
+      : new Set<string>();
+  const parsed = foldClaudeTranscriptLines({
     sessionId: input.sessionId,
     state: start.state,
-    lines,
+    lines: decodedLines,
+    known,
   });
   const tailBytes = concatenate(tailPieces, tailLength);
   const read: ClaudeTranscriptRead = {
     events: parsed.events,
     malformed: parsed.malformed,
+    consumedUuids: parsed.consumedUuids,
     cursor: {
       offset,
       headHash: digest(concatenate(headPieces, headLength)),
