@@ -50,66 +50,96 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
   const probeWith = (
     files: Record<string, string>,
     sessionId: string,
-    readProcesses: Effect.Effect<
-      ReadonlyArray<ClaudeProcessRow>,
-      ClaudeProcessTableError
-    > = Effect.succeed(processes),
+    // Runs between the two registry reads, as Claude can write an entry during `ps`.
+    duringPs: Record<string, string> | ClaudeProcessTableError = {},
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const sessionsDir = yield* fileSystem.makeTempDirectoryScoped();
-      for (const [name, text] of Object.entries(files)) {
-        yield* fileSystem.writeFileString(path.join(sessionsDir, name), text);
-      }
+      const write = (written: Record<string, string>) =>
+        Effect.forEach(Object.entries(written), ([name, text]) =>
+          fileSystem.writeFileString(path.join(sessionsDir, name), text),
+        ).pipe(Effect.orDie);
+      yield* write(files);
       return yield* probeClaudeSessionHold({
         sessionsDir,
         sessionId,
         ownRootPids: [100],
-        readProcesses,
+        readProcesses:
+          duringPs instanceof ClaudeProcessTableError
+            ? Effect.fail(duringPs)
+            : write(duringPs).pipe(Effect.as(processes)),
       });
     });
-  const entry = (pid: number, sessionId: string, procStart = START) =>
-    encodeEntry({ pid, sessionId, cwd: "/work", procStart });
+  const entry = (
+    pid: number,
+    sessionId: string,
+    fields: Partial<ClaudeSessionRegistryEntry> = {},
+  ) => encodeEntry({ pid, sessionId, cwd: "/work", procStart: START, ...fields });
 
   it.effect("finds a terminal's process and leaves out the server's own tree", () =>
     Effect.gen(function* () {
       const files = { "200.json": entry(200, "terminal"), "102.json": entry(102, "launched") };
-      expect(yield* probeWith(files, "terminal")).toEqual({ _tag: "held", pid: 200 });
+      expect(yield* probeWith(files, "terminal")).toEqual({ _tag: "held", pid: 200, sdk: false });
       expect(yield* probeWith(files, "launched")).toBeUndefined();
+    }),
+  );
+
+  it.effect("marks an Agent SDK holder, which may be T3 Code's own from before a restart", () =>
+    Effect.gen(function* () {
+      const files = { "200.json": entry(200, "orphan", { entrypoint: "sdk-ts" }) };
+      expect(yield* probeWith(files, "orphan")).toEqual({ _tag: "held", pid: 200, sdk: true });
     }),
   );
 
   it.effect("lets a session go once its holder has exited or its pid was reused", () =>
     Effect.gen(function* () {
       expect(yield* probeWith({ "300.json": entry(300, "exited") }, "exited")).toBeUndefined();
-      const reused = { "200.json": entry(200, "reused", "Fri Jan  2 00:00:00 2026") };
+      const reused = {
+        "200.json": entry(200, "reused", { procStart: "Fri Jan  2 00:00:00 2026" }),
+      };
       expect(yield* probeWith(reused, "reused")).toBeUndefined();
     }),
   );
 
-  it.effect("blocks on an unreadable entry of a live process outside the server's tree", () =>
+  it.effect(
+    "blocks on an entry of a live process outside the server's tree that stays unreadable",
+    () =>
+      Effect.gen(function* () {
+        expect(yield* probeWith({ "200.json": '{"pid":200' }, "any")).toEqual({
+          _tag: "unreadable",
+          pid: 200,
+        });
+        expect(yield* probeWith({ "102.json": '{"pid":102' }, "any")).toBeUndefined();
+        expect(yield* probeWith({ "300.json": '{"pid":300' }, "any")).toBeUndefined();
+        // An entry that names its session despite an unknown shape blocks only that session.
+        const named = { "200.json": '{"pid":200,"sessionId":"named"}' };
+        expect(yield* probeWith(named, "other")).toBeUndefined();
+        expect(yield* probeWith(named, "named")).toEqual({ _tag: "unreadable", pid: 200 });
+      }),
+  );
+
+  it.effect("reads a half-written entry again before letting it block", () =>
     Effect.gen(function* () {
-      expect(yield* probeWith({ "200.json": '{"pid":200' }, "any")).toEqual({
-        _tag: "unreadable",
+      const finished = { "200.json": entry(200, "elsewhere") };
+      expect(yield* probeWith({ "200.json": '{"pid":20' }, "mine", finished)).toBeUndefined();
+      const holding = { "200.json": entry(200, "mine") };
+      expect(yield* probeWith({ "200.json": '{"pid":20' }, "mine", holding)).toEqual({
+        _tag: "held",
         pid: 200,
+        sdk: false,
       });
-      expect(yield* probeWith({ "102.json": '{"pid":102' }, "any")).toBeUndefined();
-      expect(yield* probeWith({ "300.json": '{"pid":300' }, "any")).toBeUndefined();
-      // An entry that names its session despite an unknown shape blocks only that session.
-      const named = { "200.json": '{"pid":200,"sessionId":"named"}' };
-      expect(yield* probeWith(named, "other")).toBeUndefined();
-      expect(yield* probeWith(named, "named")).toEqual({ _tag: "unreadable", pid: 200 });
     }),
   );
 
   it.effect("reads the process table only for an entry that may name the session", () =>
     Effect.gen(function* () {
-      const unreadable = Effect.fail(new ClaudeProcessTableError({ cause: "ps failed" }));
+      const unreadable = new ClaudeProcessTableError({ reason: "ps exited with 1" });
       const files = { "200.json": entry(200, "terminal") };
       expect(yield* probeWith(files, "other", unreadable)).toBeUndefined();
       const failure = yield* Effect.flip(probeWith(files, "terminal", unreadable));
-      expect(failure._tag).toBe("ClaudeProcessTableError");
+      expect(failure.message).toBe("Could not read the process table: ps exited with 1.");
     }),
   );
 });
@@ -194,90 +224,155 @@ const turnInput = (
 type FakeRuntime = Required<
   Pick<
     ProviderAdapter.ProviderAdapterV2SessionRuntime,
-    "resumeThread" | "startTurn" | "resumeTurn" | "compactThread" | "steerTurn" | "forkThread"
+    | "driver"
+    | "resumeThread"
+    | "startTurn"
+    | "resumeTurn"
+    | "compactThread"
+    | "steerTurn"
+    | "applyThreadTitle"
+    | "stopTask"
+    | "mcpApps"
+    | "mcpSignIn"
+    | "forkThread"
+    | "liveNativeThreadId"
   >
 >;
 
 describe("gateHeldClaudeSessionRuntime", () => {
   // Every native operation records when it is called, so a gate that refuses late still fails.
-  const makeGate = (
-    initial: ClaudeSessionHold | undefined,
-    probeFailure?: ClaudeProcessTableError,
-  ) => {
+  const makeGate = (input: {
+    readonly hold?: ClaudeSessionHold;
+    readonly probeFailure?: ClaudeProcessTableError;
+    readonly liveNativeThreadId?: string;
+  }) => {
     const calls: Array<string> = [];
     const probes: Array<string> = [];
-    const state = { hold: initial };
+    const state = { hold: input.hold };
     const recorded = (name: string) => {
       calls.push(name);
       return Effect.void;
     };
     const fake: FakeRuntime = {
-      resumeThread: (input) => {
+      driver,
+      resumeThread: (resume) => {
         calls.push("resumeThread");
-        return Effect.succeed(input.providerThread);
+        return Effect.succeed(resume.providerThread);
       },
       startTurn: () => recorded("startTurn"),
       resumeTurn: () => recorded("resumeTurn"),
       compactThread: () => recorded("compactThread"),
       steerTurn: () => recorded("steerTurn"),
-      forkThread: (input) => {
-        calls.push("forkThread");
-        return Effect.succeed(input.sourceProviderThread);
+      applyThreadTitle: () => recorded("applyThreadTitle"),
+      stopTask: () => recorded("stopTask"),
+      mcpApps: {
+        listTools: () => Effect.succeed([]),
+        callTool: () => recorded("callTool").pipe(Effect.as({ content: [] })),
+        readResource: () => Effect.succeed({ contents: [] }),
       },
+      mcpSignIn: {
+        start: () => recorded("mcpSignIn.start").pipe(Effect.as({ authorizationUrl: null })),
+        complete: () => recorded("mcpSignIn.complete"),
+      },
+      forkThread: (fork) => {
+        calls.push("forkThread");
+        return Effect.succeed(fork.sourceProviderThread);
+      },
+      liveNativeThreadId: Effect.succeed(input.liveNativeThreadId),
     };
-    const runtime = gateHeldClaudeSessionRuntime(fake, driver, (sessionId) => {
+    const runtime = gateHeldClaudeSessionRuntime(fake, (sessionId) => {
       probes.push(sessionId);
-      return probeFailure === undefined ? Effect.succeed(state.hold) : Effect.fail(probeFailure);
+      return input.probeFailure === undefined
+        ? Effect.succeed(state.hold)
+        : Effect.fail(input.probeFailure);
     });
     return { runtime, calls, probes, state };
   };
+  // Each operation that would start, drive or write to the native session.
+  const writes = (
+    runtime: ReturnType<typeof makeGate>["runtime"],
+    thread: OrchestrationV2ProviderThread,
+    now: DateTime.Utc,
+  ) => {
+    const turn = turnInput(thread, now);
+    const { message: _message, resume: _resume, ...resumeInput } = turn;
+    const mcp = { providerThread: thread, server: "server" };
+    return {
+      resumeThread: runtime.resumeThread({ providerThread: thread }),
+      startTurn: runtime.startTurn(turn),
+      resumeTurn: runtime.resumeTurn({ ...resumeInput, messageId: turn.message.messageId }),
+      compactThread: runtime.compactThread(turn),
+      steerTurn: runtime.steerTurn({
+        threadId,
+        runId: turn.runId,
+        providerThread: thread,
+        providerTurnId: ProviderTurnId.make("provider-turn-held"),
+        message: turn.message,
+      }),
+      applyThreadTitle: runtime.applyThreadTitle({ providerThread: thread, title: "Renamed" }),
+      stopTask: runtime.stopTask({ providerThread: thread, taskId: "task" }),
+      callTool: runtime.mcpApps.callTool({ ...mcp, tool: "tool", arguments: {} }),
+      mcpSignInStart: runtime.mcpSignIn.start(mcp),
+      mcpSignInComplete: runtime.mcpSignIn.complete({ ...mcp, callbackUrl: "http://localhost/" }),
+      checkNativeThreadFree: runtime.checkNativeThreadFree(thread),
+    } satisfies Record<string, Effect.Effect<unknown, unknown>>;
+  };
+  const TURN_STARTS = new Set(["startTurn", "resumeTurn", "compactThread"]);
+  const refusals = (operations: ReturnType<typeof writes>) =>
+    Effect.forEach(Object.entries(operations), ([name, operation]) =>
+      Effect.flip(operation).pipe(Effect.map((refusal) => [name, refusal] as const)),
+    );
+  const expectInUse = (name: string, refusal: unknown) => {
+    // The tag is what stops the turn start service from opening a fresh native session.
+    expect(refusal).toMatchObject(
+      TURN_STARTS.has(name)
+        ? {
+            _tag: "ProviderAdapterTurnStartError",
+            refusedBeforePrompt: true,
+            cause: { _tag: "ProviderAdapterThreadInUseError" },
+          }
+        : { _tag: "ProviderAdapterThreadInUseError" },
+    );
+  };
 
-  it.effect("sends nothing to a held session and names the fork option", () =>
+  it.effect("writes nothing to a held session and names the fork it offers", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const thread = providerThread(now);
-      const turn = turnInput(thread, now);
-      const { runtime, calls, probes } = makeGate({ _tag: "held", pid: 200 });
+      const { runtime, calls, probes } = makeGate({ hold: { _tag: "held", pid: 200, sdk: false } });
+      const operations = writes(runtime, providerThread(now), now);
 
-      const resumed = yield* Effect.flip(runtime.resumeThread({ providerThread: thread }));
-      const started = yield* Effect.flip(runtime.startTurn(turn));
-      const { message: _message, resume: _resume, ...resumeInput } = turn;
-      const resumedTurn = yield* Effect.flip(
-        runtime.resumeTurn({ ...resumeInput, messageId: turn.message.messageId }),
-      );
-      const compacted = yield* Effect.flip(runtime.compactThread(turn));
-      const steered = yield* Effect.flip(
-        runtime.steerTurn({
-          threadId,
-          runId: turn.runId,
-          providerThread: thread,
-          providerTurnId: ProviderTurnId.make("provider-turn-held"),
-          message: turn.message,
-        }),
-      );
+      const refused = yield* refusals(operations);
 
       expect(calls).toEqual([]);
-      expect(probes).toEqual(Array.from({ length: 5 }, () => "held-session"));
-      // The tag is what stops the turn start service from opening a fresh native session.
-      for (const refusal of [resumed, steered]) {
-        expect(refusal._tag).toBe("ProviderAdapterThreadInUseError");
-      }
-      for (const refusal of [started, resumedTurn, compacted]) {
-        expect(refusal).toMatchObject({
-          _tag: "ProviderAdapterTurnStartError",
-          refusedBeforePrompt: true,
-          cause: { _tag: "ProviderAdapterThreadInUseError" },
-        });
-      }
-      expect(resumed.message).toContain("pid 200");
-      expect(resumed.message).toContain('"Fork from this response"');
+      expect(probes).toEqual(Object.keys(operations).map(() => "held-session"));
+      for (const [name, refusal] of refused) expectInUse(name, refusal);
+      const { message } = yield* Effect.flip(
+        runtime.resumeThread({ providerThread: providerThread(now) }),
+      );
+      expect(message).toContain("pid 200");
+      expect(message).toContain('"Fork into a new session"');
+      expect(message).toContain("left out");
+    }),
+  );
+
+  it.effect("names an Agent SDK holder as possibly T3 Code's own from before a restart", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const { runtime } = makeGate({ hold: { _tag: "held", pid: 200, sdk: true } });
+
+      const refusal = yield* Effect.flip(
+        runtime.resumeThread({ providerThread: providerThread(now) }),
+      );
+
+      expect(refusal.message).toContain("Agent SDK (pid 200)");
+      expect(refusal.message).toContain("before it restarted");
     }),
   );
 
   it.effect("still forks a held session", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls } = makeGate({ _tag: "held", pid: 200 });
+      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, sdk: false } });
 
       yield* runtime.forkThread({
         sourceProviderThread: providerThread(now),
@@ -292,7 +387,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const thread = providerThread(now);
-      const { runtime, calls, probes, state } = makeGate({ _tag: "held", pid: 200 });
+      const { runtime, calls, probes, state } = makeGate({
+        hold: { _tag: "held", pid: 200, sdk: false },
+      });
 
       yield* Effect.flip(runtime.startTurn(turnInput(thread, now)));
       state.hold = undefined;
@@ -304,21 +401,35 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 
-  it.effect("refuses when the probe cannot read the registry or process table", () =>
+  it.effect("refuses every write, saying why, when the probe cannot read the process table", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls } = makeGate(
-        undefined,
-        new ClaudeProcessTableError({ cause: "ps failed" }),
-      );
+      const { runtime, calls } = makeGate({
+        probeFailure: new ClaudeProcessTableError({ reason: "ps exited with 1" }),
+      });
 
-      const refusal = yield* Effect.flip(
-        runtime.resumeThread({ providerThread: providerThread(now) }),
-      );
+      const refused = yield* refusals(writes(runtime, providerThread(now), now));
 
       expect(calls).toEqual([]);
-      expect(refusal._tag).toBe("ProviderAdapterThreadInUseError");
-      expect(refusal.message).toContain("could not check");
+      for (const [name, refusal] of refused) expectInUse(name, refusal);
+      const { message } = yield* Effect.flip(
+        runtime.resumeThread({ providerThread: providerThread(now) }),
+      );
+      expect(message).toContain("Could not read the process table: ps exited with 1.");
+    }),
+  );
+
+  it.effect("lets the session's own live process write when the process table is unreadable", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const { runtime, calls } = makeGate({
+        probeFailure: new ClaudeProcessTableError({ reason: "ps exited with 1" }),
+        liveNativeThreadId: "held-session",
+      });
+
+      yield* runtime.startTurn(turnInput(providerThread(now), now));
+
+      expect(calls).toEqual(["startTurn"]);
     }),
   );
 });

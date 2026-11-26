@@ -14,7 +14,10 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
-import { readClaudeProcessTable } from "../../claudeSessions/ClaudeProcessTable.ts";
+import {
+  ClaudeProcessTableError,
+  makeClaudeProcessTableReader,
+} from "../../claudeSessions/ClaudeProcessTable.ts";
 import {
   gateHeldClaudeSessions,
   probeClaudeSessionHold,
@@ -212,24 +215,27 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           }),
       ),
     );
-    const readProcesses = readClaudeProcessTable().pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    );
-    // A registry entry's `procStart` can only be matched against `ps`, which Windows lacks.
-    const sendGatedAdapter =
+    // A registry entry's `procStart` can only be matched against `ps`, which Windows lacks; there a
+    // session any entry names is refused rather than let through unchecked.
+    const readProcesses =
       (yield* HostProcess.Platform) === "win32"
-        ? orchestrationAdapter
-        : gateHeldClaudeSessions(orchestrationAdapter, (sessionId) =>
-            probeClaudeSessionHold({
-              sessionsDir: path.join(configDir, "sessions"),
-              sessionId,
-              ownRootPids: [process.pid],
-              readProcesses,
-            }).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
-            ),
+        ? Effect.fail(
+            new ClaudeProcessTableError({ reason: "Windows has no ps to match it against" }),
+          )
+        : yield* makeClaudeProcessTableReader.pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           );
+    const sendGatedAdapter = gateHeldClaudeSessions(orchestrationAdapter, (sessionId) =>
+      probeClaudeSessionHold({
+        sessionsDir: path.join(configDir, "sessions"),
+        sessionId,
+        ownRootPids: [process.pid],
+        readProcesses,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      ),
+    );
     const textGeneration = yield* makeClaudeTextGeneration(
       effectiveConfig,
       processEnv,
