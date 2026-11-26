@@ -74,6 +74,10 @@ export const initialClaudeNativeRunState: ClaudeNativeRunState = {
 
 export interface ClaudeNativeRunTarget {
   readonly sessionId: string;
+  /**
+   * What run and item ids are scoped by: the session id for the session's own thread, a longer scope for another thread that shows the same session (a restore, a copy in another store), since those ids are unique across threads.
+   */
+  readonly idScope: string;
   readonly threadId: ThreadId;
   readonly providerThreadId: ProviderThreadId;
   readonly providerInstanceId: ProviderInstanceId;
@@ -329,7 +333,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
     timestamp: string,
     status: OrchestrationV2TurnItem["status"],
   ) => {
-    const ids = claudeNativeRunIds(target.sessionId, segment.record.segmentId);
+    const ids = claudeNativeRunIds(target.idScope, segment.record.segmentId);
     return {
       id: TurnItemId.make(id),
       threadId: target.threadId,
@@ -359,7 +363,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
   const pushItem = (segment: OpenSegment, item: OrchestrationV2TurnItem, timestamp: string) => {
     const stored = input.storedItems.get(item.id);
     if (stored !== undefined && (stored.settled || !isSettledItemStatus(item.status))) return false;
-    const ids = claudeNativeRunIds(target.sessionId, segment.record.segmentId);
+    const ids = claudeNativeRunIds(target.idScope, segment.record.segmentId);
     segment.items.push(
       event({
         type: "turn-item.updated",
@@ -392,7 +396,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
 
   const lifecycle = (current: OpenSegment): Array<OrchestrationV2DomainEvent> => {
     const { record } = current;
-    const ids = claudeNativeRunIds(target.sessionId, record.segmentId);
+    const ids = claudeNativeRunIds(target.idScope, record.segmentId);
     const requestedAt = at(record.requestedAt);
     const completedAt = at(record.completedAt);
     const status = record.interrupted ? "interrupted" : "completed";
@@ -670,7 +674,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
         item.timestamp,
       );
       if (!queued) return;
-      const ids = claudeNativeRunIds(target.sessionId, current.record.segmentId);
+      const ids = claudeNativeRunIds(target.idScope, current.record.segmentId);
       current.items.push(
         event({
           type: "message.updated",
@@ -737,7 +741,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
       queued.timestamp,
     );
     if (!queuedItem) return;
-    const ids = claudeNativeRunIds(target.sessionId, current.record.segmentId);
+    const ids = claudeNativeRunIds(target.idScope, current.record.segmentId);
     current.items.push(
       event({
         type: "message.updated",
@@ -824,7 +828,7 @@ export function planClaudeNativeRuns(input: ClaudeNativeRunPlanInput): ClaudeNat
           {
             ...itemBase(
               current,
-              `x:${target.sessionId}:${parsed.lineUuid}`,
+              `x:${target.idScope}:${parsed.lineUuid}`,
               parsed.timestamp,
               "completed",
             ),
