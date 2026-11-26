@@ -55,7 +55,7 @@ import {
 import { autoPullProjects } from "../serverRuntimeStartup.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
-import { gitConfigEnv } from "./VcsProcess.ts";
+import { gitConfigEnv, layer as layerVcsProcess, VcsProcess } from "./VcsProcess.ts";
 
 const encodeGitCommandError = Schema.encodeEffect(Schema.fromJsonString(GitCommandError));
 const decodeVcsRef = Schema.decodeUnknownSync(VcsRef);
@@ -7836,6 +7836,81 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         }
         assert.isFalse(yield* fs.exists(`${indexPath}.lock`));
       }),
+    );
+    it.effect.each(["GitVcsDriver", "VcsProcess"] as const)(
+      "a %s command in a new worktree waits for its index swap instead of failing on the lock",
+      (runner) =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const processes = yield* VcsProcess;
+          const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "swapped");
+          const worktreeIndex = path.join("worktrees", "swapped", "index");
+          const locked = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          // Stamped in the clock's second, the index is racy; its swap then holds index.lock.
+          const swappingFs = FileSystem.FileSystem.of({
+            ...fs,
+            stat: (file) =>
+              fs
+                .stat(file)
+                .pipe(
+                  Effect.map((info) =>
+                    file.endsWith(worktreeIndex)
+                      ? { ...info, mtime: Option.some(new Date(0)) }
+                      : info,
+                  ),
+                ),
+            link: (from, to) =>
+              fs
+                .link(from, to)
+                .pipe(
+                  Effect.andThen(Deferred.succeed(locked, undefined)),
+                  Effect.andThen(Deferred.await(release)),
+                ),
+          });
+          const driver = yield* makeGitVcsDriverCore().pipe(
+            Effect.provideService(FileSystem.FileSystem, swappingFs),
+          );
+          yield* driver.createWorktree({
+            cwd,
+            path: worktreePath,
+            refName: initialBranch,
+            newRefName: "feature/swapped",
+          });
+          yield* TestClock.adjust("2 seconds");
+          yield* Deferred.await(locked);
+
+          yield* writeTextFile(worktreePath, "staged.txt", "staged\n");
+          const waiting = yield* Deferred.make<void>();
+          const tracer = Tracer.make({
+            span(options) {
+              if (options.name === "GitVcsDriver.afterIndexSwap") {
+                Deferred.doneUnsafe(waiting, Effect.void);
+              }
+              return new Tracer.NativeSpan(options);
+            },
+          });
+          const operation = "GitVcsDriver.test.afterIndexSwap";
+          const stage: Effect.Effect<unknown, unknown> =
+            runner === "GitVcsDriver"
+              ? driver.execute({ operation, cwd: worktreePath, args: ["add", "staged.txt"] })
+              : processes.run({
+                  operation,
+                  command: "git",
+                  args: ["-C", worktreePath, "add", "staged.txt"],
+                  cwd: worktreePath,
+                });
+          const staged = yield* stage.pipe(Effect.withTracer(tracer), Effect.forkChild);
+          // Release once the command has failed on the lock or is waiting for the swap.
+          yield* Effect.raceFirst(Fiber.await(staged).pipe(Effect.asVoid), Deferred.await(waiting));
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(staged);
+
+          assert.equal(yield* git(worktreePath, ["diff", "--cached", "--name-only"]), "staged.txt");
+        }).pipe(Effect.provide(layerVcsProcess)),
     );
     it.effect("returns the worktree when its index refresh fails", () =>
       Effect.gen(function* () {
