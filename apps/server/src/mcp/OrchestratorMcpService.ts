@@ -102,9 +102,12 @@ import {
   DispatchModeLimit,
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
-import type {
-  ProjectionRecordField,
-  ProjectionRecordFilter,
+import {
+  PRESENTED_RUN_RECORD_FIELDS,
+  PRESENTED_RUN_RECORD_FILTER,
+  presentedShellRun,
+  type ProjectionRecordField,
+  type ProjectionRecordFilter,
 } from "../orchestration-v2/ProjectionStore.ts";
 import {
   delegatedTaskAwaitsWork,
@@ -1577,11 +1580,12 @@ const make = Effect.gen(function* () {
       ) {
         return undefined;
       }
-      const { runs } = yield* loadThreadRecords(threadId, ["runs"], {
-        runStatuses: [],
-        includePresentedRun: "t3",
-      });
-      return runs[0];
+      const records = yield* loadThreadRecords(
+        threadId,
+        PRESENTED_RUN_RECORD_FIELDS,
+        PRESENTED_RUN_RECORD_FILTER,
+      );
+      return presentedShellRun(records, "t3") ?? undefined;
     },
   );
 

@@ -574,6 +574,18 @@ const cancelBackgroundOnlyTask = (
               },
             };
             const at = yield* DateTime.now;
+            // A held follow-up never ran, so it is not the run the subagent belongs to either.
+            const heldFollowUp = {
+              ...t3Run,
+              id: RunId.make("run:child-held-follow-up"),
+              ordinal: t3Run.ordinal + 2,
+              userMessageId: MessageId.make("message:child-held-follow-up"),
+              activeAttemptId: null,
+              status: "queued" as const,
+              queueHeld: true,
+              startedAt: null,
+              completedAt: null,
+            };
             yield* eventSink.write({
               events: [
                 {
@@ -583,6 +595,14 @@ const cancelBackgroundOnlyTask = (
                   runId: transcriptRun.id,
                   occurredAt: at,
                   payload: { ...transcriptRun, requestedAt: at, startedAt: at, completedAt: at },
+                },
+                {
+                  id: EventId.make("event:child-held-follow-up"),
+                  type: "run.created",
+                  threadId: task.childThreadId!,
+                  runId: heldFollowUp.id,
+                  occurredAt: at,
+                  payload: { ...heldFollowUp, requestedAt: at },
                 },
               ],
             });

@@ -54,6 +54,20 @@ describe("t3code/explicit-run-origin", () => {
      load({ runIds: [shell.latestRunId] });`,
   );
 
+  serverRule.invalid(
+    "reports loading a run through the nullable-id idiom",
+    `declare const shell: { latestRunId: string | null };
+     declare const load: (filter: { runIds: ReadonlyArray<string> }) => void;
+     load({ runIds: shell.latestRunId === null ? [] : [shell.latestRunId] });`,
+  );
+
+  serverRule.invalid(
+    "reports passing a shell's latestRunId as a run id through ??",
+    `declare const shell: { latestRunId: string | null };
+     declare const dispatch: (command: { runId: string | undefined }) => void;
+     dispatch({ runId: shell.latestRunId ?? undefined });`,
+  );
+
   serverRule.valid(
     "allows passing a shell's latestRunId on as presentation",
     `declare const shell: { latestRunId: string | null };
