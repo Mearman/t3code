@@ -25,6 +25,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -121,16 +122,19 @@ const syncLayer = (
   settings: DeepPartial<ServerSettings>,
   capacity: Layer.Layer<ClaudeSyncCapacity.ClaudeSyncCapacity> = capacityFree,
   sink?: Layer.Layer<EventSink.EventSinkV2, never, EventSink.EventSinkV2>,
-) =>
-  (sink === undefined
-    ? ClaudeSessionSync.layer
-    : ClaudeSessionSync.layer.pipe(Layer.provide(sink))
-  ).pipe(
+  fileSystem?: Layer.Layer<FileSystem.FileSystem, never, FileSystem.FileSystem>,
+) => {
+  const sunk =
+    sink === undefined
+      ? ClaudeSessionSync.layer
+      : ClaudeSessionSync.layer.pipe(Layer.provide(sink));
+  return (fileSystem === undefined ? sunk : sunk.pipe(Layer.provide(fileSystem))).pipe(
     Layer.provideMerge(persistence),
     Layer.provideMerge(capacity),
     Layer.provideMerge(liveSessionsFake),
     Layer.provideMerge(ServerSettingsModule.layerTest(settings)),
   );
+};
 
 /** Every Claude instance names its home, so no test resolves the default `~/.claude`. */
 const settingsFor = (
@@ -379,6 +383,88 @@ const providerThreadOf = (threadId: ThreadId) =>
     const { providerThreads } = yield* projections.getThreadRecords(threadId, ["providerThreads"]);
     return providerThreads[0];
   });
+
+/** The file system, counting how often a store's `projects` directory is listed. */
+const countingProjectListings = (counter: { count: number }) =>
+  Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const real = yield* FileSystem.FileSystem;
+      const readDirectory: FileSystem.FileSystem["readDirectory"] = (path, options) => {
+        if (path.endsWith("/projects")) counter.count++;
+        return real.readDirectory(path, options);
+      };
+      return { ...real, readDirectory };
+    }),
+  );
+
+/** Writes a registry entry for a session, as a running `claude` does, and marks it live in the fake. */
+const register = Effect.fn(function* (home: string, sessionId: string, pid: number) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const file = path.join(home, "sessions", `${pid}.json`);
+  yield* fileSystem.writeFileString(file, JSON.stringify({ pid, sessionId, cwd: "/work/project" }));
+  liveNow.add(sessionId);
+  return Effect.gen(function* () {
+    yield* fileSystem.remove(file);
+    liveNow.delete(sessionId);
+  });
+});
+
+/** Everything a person sees of a synced thread: its shown native runs, in order, and their items. */
+const visibleHistory = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const { runs, turnItems } = yield* projections.getThreadRecords(threadId, [
+      "runs",
+      "turnItems",
+    ]);
+    const shown = runs
+      .filter((run) => run.nativeOrigin !== undefined && run.status !== "rolled_back")
+      .toSorted((left, right) => left.ordinal - right.ordinal);
+    const models = new Map(
+      (yield* sql<{ readonly id: string; readonly model: string | null }>`
+        SELECT provider_turn_id AS "id", json_extract(payload_json, '$.model') AS "model"
+        FROM orchestration_v2_projection_provider_turns
+      `).map((row) => [row.id, row.model]),
+    );
+    const shownIds = new Set(shown.map((run) => run.id));
+    return {
+      runs: shown.map((run) => ({
+        turn: run.nativeOrigin?.promptUuid,
+        ordinal: run.ordinal,
+        status: run.status,
+        completedAt: run.completedAt === null ? null : DateTime.formatIso(run.completedAt),
+        model: models.get(`claude-turn:${SESSION}:${run.nativeOrigin?.promptUuid ?? ""}`) ?? null,
+      })),
+      items: turnItems
+        .filter((item) => item.runId !== null && shownIds.has(item.runId))
+        .map((item) => ({
+          id: item.id,
+          runId: item.runId,
+          type: item.type,
+          status: item.status,
+          text:
+            "text" in item
+              ? item.text
+              : "output" in item
+                ? item.output
+                : "message" in item
+                  ? item.message
+                  : null,
+        }))
+        .toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)),
+    };
+  });
+
+/** The sync's services over a database and settings, without the sync itself, so a test can stop and start it as a server restart does. */
+const worldOf = (settings: DeepPartial<ServerSettings>) =>
+  persistence.pipe(
+    Layer.provideMerge(capacityFree),
+    Layer.provideMerge(liveSessionsFake),
+    Layer.provideMerge(ServerSettingsModule.layerTest(settings)),
+  );
 
 const withTempRoot = <A, E, R>(body: (root: string) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -1412,6 +1498,333 @@ describe("ClaudeSessionSync", () => {
         }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), nearlyFull)));
       }),
     ),
+  );
+
+  it.effect(
+    "steps a session that went live after its entry once below the disk floor, not every poll",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const home = yield* makeHome(root, "home");
+          yield* append(home, firstTurn);
+          yield* append(home, firstTurn, "-work-project", OTHER);
+          const checks = { count: 0 };
+          const nearlyFull = capacityOf({
+            freeDiskBytes: Effect.sync(() => {
+              checks.count++;
+              return 1024 ** 3;
+            }),
+          });
+          yield* Effect.gen(function* () {
+            const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+            yield* syncAll({ full: true });
+            // Live only after their entries were made, as a terminal resuming them is.
+            yield* markLive();
+            yield* markLive(OTHER);
+            for (let poll = 0; poll < 12; poll++) {
+              yield* sync.pollLive;
+              expect(yield* sync.drain).toEqual([]);
+            }
+            // One paused step each, however many polls follow.
+            expect(checks.count).toBe(2);
+          }).pipe(
+            Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), nearlyFull)),
+          );
+        }),
+      ),
+  );
+
+  it.effect(
+    "follows a loaded session a terminal resumes for one poll, between registry reads",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const home = yield* makeHome(root, "home");
+          yield* append(home, firstTurn);
+          yield* Effect.gen(function* () {
+            const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+            yield* syncAll({ full: true });
+            yield* openThread(claudeThreadId);
+            // The registry is read on this first poll; the next is not a fifth.
+            yield* sync.pollLive;
+            const exit = yield* register(home, SESSION, 4242);
+            yield* append(home, secondTurn);
+            yield* sync.pollLive;
+            yield* exit;
+            expect(yield* sync.drain).toEqual([]);
+            expect(yield* nativeRuns(claudeThreadId)).toHaveLength(2);
+          }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+        }),
+      ),
+  );
+
+  it.effect(
+    "looks for a registered session's missing transcript less often the longer it is missing",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const home = yield* makeHome(root, "home");
+          const listings = { count: 0 };
+          yield* Effect.gen(function* () {
+            const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+            expect(yield* sync.sweep({ full: true })).toEqual([]);
+            // The session never exits in this test, so its entry stays.
+            yield* Effect.asVoid(register(home, SESSION, 4242));
+            listings.count = 0;
+            for (let poll = 0; poll < 60; poll++) yield* sync.pollLive;
+            // Every poll for a minute would be 60; the registry alone is read at most every fifth.
+            expect(listings.count).toBeLessThanOrEqual(5);
+            // Once written, the transcript is still found within the longest wait.
+            yield* append(home, firstTurn);
+            for (let poll = 0; poll < 65; poll++) yield* sync.pollLive;
+            expect(yield* sync.drain).toEqual([]);
+            expect(yield* nativeRuns(claudeThreadId)).toEqual([[1, "completed", "p1"]]);
+          }).pipe(
+            Effect.provide(
+              syncLayer(
+                settingsFor([home]),
+                capacityFree,
+                undefined,
+                countingProjectListings(listings),
+              ),
+            ),
+          );
+        }),
+      ),
+  );
+
+  it.effect(
+    "gives an entry to a session that holds only a title, and titles one without a prompt title by its reply",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const home = yield* makeHome(root, "home");
+          yield* append(home, [line({ type: "custom-title", customTitle: "Named, empty" })]);
+          // An image prompt gives no title; the reply does.
+          yield* append(
+            home,
+            [
+              line({
+                type: "user",
+                uuid: "u1",
+                parentUuid: null,
+                timestamp: "2026-11-26T10:00:00.000Z",
+                message: {
+                  role: "user",
+                  content: [
+                    {
+                      type: "image",
+                      source: { type: "base64", media_type: "image/png", data: "AA==" },
+                    },
+                  ],
+                },
+              }),
+              reply("a1", "u1", "2026-11-26T10:00:05.000Z", "A cat on a mat."),
+            ],
+            "-work-project",
+            OTHER,
+          );
+          yield* Effect.gen(function* () {
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            yield* syncAll({ full: true });
+            expect((yield* sessionRow(home))?.hydrationState).toBe("entry");
+            expect((yield* projections.getThread(claudeThreadId)).title).toBe("Named, empty");
+            expect((yield* projections.getThread(threadOf(OTHER))).title).toBe("A cat on a mat.");
+          }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
+        }),
+      ),
+  );
+
+  it.effect(
+    "writes nothing when turns whose digests were lost are read again, synthetic replies and an open turn included",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const home = yield* makeHome(root, "home");
+          yield* append(home, [
+            ...firstTurn,
+            prompt("p2", "a1", "prompt-2", "2026-11-26T10:01:00.000Z"),
+            // Claude Code's own reply, as after an interrupt, names no real model.
+            line({
+              type: "assistant",
+              uuid: "a2",
+              parentUuid: "p2",
+              timestamp: "2026-11-26T10:01:05.000Z",
+              message: {
+                id: "msg-a2",
+                model: "<synthetic>",
+                role: "assistant",
+                content: [{ type: "text", text: "No response requested." }],
+                stop_reason: "end_turn",
+              },
+            }),
+            prompt("p3", "a2", "prompt-3", "2026-11-26T10:02:00.000Z"),
+            // The last turn is still open: its tool has no result yet.
+            line({
+              type: "assistant",
+              uuid: "a3",
+              parentUuid: "p3",
+              timestamp: "2026-11-26T10:02:05.000Z",
+              message: {
+                id: "msg-a3",
+                model: "claude-test",
+                role: "assistant",
+                content: [
+                  { type: "tool_use", id: "tool-3", name: "Bash", input: { command: "ls" } },
+                ],
+                stop_reason: null,
+              },
+            }),
+          ]);
+          // Each life is a server start: the sync holds nothing in memory from the one before.
+          const life = <A, E, R>(body: Effect.Effect<A, E, R>) =>
+            body.pipe(Effect.provide(ClaudeSessionSync.layer));
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* life(
+              Effect.gen(function* () {
+                yield* syncAll({ full: true });
+                yield* openThread(claudeThreadId);
+              }),
+            );
+            expect(yield* nativeRuns(claudeThreadId)).toHaveLength(3);
+            const events = yield* count("orchestration_events");
+            yield* sql`DELETE FROM fork_claude_session_turns`;
+            // A new file with the same bytes, so the next start reads every turn again.
+            yield* replaceFile(home);
+            yield* life(
+              Effect.gen(function* () {
+                yield* syncAll({ full: true });
+                yield* openThread(claudeThreadId);
+              }),
+            );
+            expect(yield* count("orchestration_events")).toBe(events);
+          }).pipe(Effect.provide(worldOf(settingsFor([home]))));
+        }),
+      ),
+  );
+
+  it.effect(
+    "shows the same history followed live through restarts, a partial line, a late result and a rewind as loaded once",
+    () =>
+      withTempRoot((root) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const home = yield* makeHome(root, "home");
+          const settings = settingsFor([home]);
+          const t = (second: number) =>
+            DateTime.formatIso(
+              DateTime.add(DateTime.makeUnsafe("2026-11-26T10:00:00.000Z"), { seconds: second }),
+            );
+          const toolUse = (uuid: string, parent: string, id: string, second: number) =>
+            line({
+              type: "assistant",
+              uuid,
+              parentUuid: parent,
+              timestamp: t(second),
+              message: {
+                id: `msg-${uuid}`,
+                model: "claude-test",
+                role: "assistant",
+                content: [{ type: "tool_use", id, name: "Bash", input: { command: "ls" } }],
+                stop_reason: null,
+              },
+            });
+          const result = (uuid: string, parent: string, id: string, second: number) =>
+            line({
+              type: "user",
+              uuid,
+              parentUuid: parent,
+              timestamp: t(second),
+              message: {
+                role: "user",
+                content: [{ type: "tool_result", tool_use_id: id, content: "a b" }],
+              },
+            });
+          const synthetic = (uuid: string, parent: string, second: number, stop: string | null) =>
+            line({
+              type: "assistant",
+              uuid,
+              parentUuid: parent,
+              timestamp: t(second),
+              message: {
+                id: `msg-${uuid}`,
+                model: "<synthetic>",
+                role: "assistant",
+                content: [{ type: "text", text: `Synthetic ${uuid}` }],
+                stop_reason: stop,
+              },
+            });
+          const writeRaw = (text: string) =>
+            Effect.gen(function* () {
+              const file = yield* transcriptPath(home);
+              const existing = yield* fileSystem
+                .readFileString(file)
+                .pipe(Effect.orElseSucceed(() => ""));
+              yield* fileSystem.writeFileString(file, existing + text);
+            });
+          // One server life: a sweep as at its start, then a poll and a drain per change.
+          const life = (
+            changes: ReadonlyArray<Effect.Effect<void, PlatformError.PlatformError, Path.Path>>,
+          ) =>
+            Effect.gen(function* () {
+              const sync = yield* ClaudeSessionSync.ClaudeSessionSync;
+              expect(yield* sync.sweep()).toEqual([]);
+              expect(yield* sync.drain).toEqual([]);
+              for (const change of changes) {
+                yield* change;
+                yield* sync.pollLive;
+                expect(yield* sync.drain).toEqual([]);
+              }
+            }).pipe(Effect.provide(ClaudeSessionSync.layer));
+
+          const lateResult = result("r1", "a1", "tool-1", 3);
+          const followed = yield* Effect.gen(function* () {
+            yield* append(home, [
+              prompt("p1", null, "prompt-1", t(0)),
+              toolUse("a1", "p1", "tool-1", 1),
+            ]);
+            yield* markLive();
+            yield* life([
+              // Half of the tool's result, as Claude Code is writing it.
+              writeRaw(lateResult.slice(0, 40)),
+              writeRaw(`${lateResult.slice(40)}\n`),
+              writeRaw(`${reply("a1b", "r1", t(4))}\n`),
+            ]);
+            // A restart, then the session goes on, and a rewind branches from the first turn.
+            yield* life([
+              writeRaw(
+                `${[prompt("p2", "a1b", "prompt-2", t(10)), reply("a2", "p2", t(11))].join("\n")}\n`,
+              ),
+              writeRaw(
+                `${[prompt("p3", "a1b", "prompt-3", t(20)), toolUse("a3", "p3", "tool-3", 21)].join("\n")}\n`,
+              ),
+            ]);
+            // Another restart; the open turn's result arrives late and it ends, and a turn opens
+            // whose only reply is Claude Code's own, with no real model.
+            yield* life([
+              writeRaw(`${result("r3", "a3", "tool-3", 25)}\n`),
+              writeRaw(`${reply("a3b", "r3", t(26))}\n`),
+              writeRaw(
+                `${[prompt("p4", "a3b", "prompt-4", t(30)), synthetic("a4", "p4", 31, null)].join("\n")}\n`,
+              ),
+            ]);
+            // A last restart while that turn is open; it then ends, still with no real model.
+            yield* life([writeRaw(`${synthetic("a4b", "a4", 33, "end_turn")}\n`)]);
+            return yield* visibleHistory(claudeThreadId);
+          }).pipe(Effect.provide(worldOf(settings)));
+
+          const fresh = yield* Effect.gen(function* () {
+            yield* syncAll({ full: true });
+            yield* openThread(claudeThreadId);
+            return yield* visibleHistory(claudeThreadId);
+          }).pipe(Effect.provide(syncLayer(settings)));
+
+          expect(fresh.runs.map((run) => run.turn)).toEqual(["p1", "p2", "p3", "p4"]);
+          expect(fresh.runs.at(-1)?.model).toBeNull();
+          expect(followed).toEqual(fresh);
+        }),
+      ),
   );
 
   it.effect("loads the newest turns first and orders every run by when its turn started", () =>
