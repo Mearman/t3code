@@ -50,10 +50,15 @@ describe("externalClaudeSessionHolders", () => {
     });
 
   it("excludes only the spawned CLI's tree, so a claude in the server's terminal holds", () => {
-    expect([...holders([entry(101), entry(102), entry(103), entry(200)]).keys()]).toEqual([
+    // 101 is a launcher here, so the claude it runs (102) writes the entry.
+    expect([...holders([entry(102), entry(103), entry(200)]).keys()]).toEqual([
       "session-103",
       "session-200",
     ]);
+  });
+
+  it("counts a claude below the spawned CLI's own entry as another writer", () => {
+    expect([...holders([entry(101), entry(102)]).keys()]).toEqual(["session-102"]);
   });
 
   it("ignores an entry whose process has exited or whose pid was reused", () => {
