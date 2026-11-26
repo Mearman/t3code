@@ -407,8 +407,10 @@ export function delegatedTaskProgress(projection: {
   const terminal = (status: string) =>
     ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(status);
   const monitorRuns = monitorUpdateRunIds(projection.messages);
+  // A run read back from the child's transcript happened outside T3; it is not the task's result.
   const workRuns = projection.runs.filter(
-    (run) => !monitorRuns.has(run.id) && run.status !== "rolled_back",
+    (run) =>
+      !monitorRuns.has(run.id) && run.status !== "rolled_back" && run.nativeOrigin === undefined,
   );
   const held = (run: OrchestrationV2Run) => run.status === "queued" && run.queueHeld === true;
   const active = workRuns.some((run) => !terminal(run.status) && !held(run));

@@ -7,13 +7,13 @@ import type {
   ProjectId,
 } from "@t3tools/contracts";
 import {
-  latestExecutedRun,
   latestRootProviderFailure,
+  latestT3ExecutedRun,
   orchestrationV2WorktreePending,
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { isNativeOriginRun, threadIssueKeysEqual } from "@t3tools/contracts";
+import { hasTranscriptRunAfter, isNativeOriginRun, threadIssueKeysEqual } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -1104,6 +1104,27 @@ function queueTailModelSelection(
  * With `now` (automatic starts), a run on another provider since does not lift
  * a reported reset still in the future; an unknown reset is lifted, as transient 429s are.
  */
+/**
+ * Whether a stored run update starts the run-end reaction (queue, holds, continuations, a
+ * delegating parent). A run read back from a provider transcript ended outside T3, so it never does.
+ */
+export function reactsToRunUpdate(stored: OrchestrationV2StoredEvent): boolean {
+  if (stored.event.type !== "run.updated") return false;
+  const run = stored.event.payload;
+  if (isNativeOriginRun(run)) return false;
+  return (
+    (!String(stored.commandId).startsWith("command:runtime-reconcile:") ||
+      (run.delegatedTaskId !== undefined && run.status === "queued" && run.queueHeld === true)) &&
+    ((run.delegatedTaskId !== undefined &&
+      (run.status === "queued" || run.status === "starting" || run.status === "waiting")) ||
+      run.status === "completed" ||
+      run.status === "interrupted" ||
+      run.status === "failed" ||
+      run.status === "cancelled" ||
+      run.status === "rolled_back")
+  );
+}
+
 function usageLimitHoldsQueue(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems" | "providerSessions">,
   providerInstanceId: ModelSelection["instanceId"],
@@ -1125,7 +1146,7 @@ function usageLimitHoldsQueue(
     latestSession?.lastError ?? null,
   );
   if (limited === null) return false;
-  if (latestExecutedRun(projection.runs)?.id === limited.id) return true;
+  if (latestT3ExecutedRun(projection.runs)?.id === limited.id) return true;
   if (now === undefined) return false;
   const resetAt = latestRootProviderFailure(limited, projection.turnItems)?.resetAt;
   return resetAt != null && Date.parse(resetAt) > DateTime.toEpochMillis(now);
@@ -2623,7 +2644,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
       // Failed worktree creation would run queued work in the project checkout; wait for the user.
-      const failedRun = latestExecutedRun(projection.runs);
+      const failedRun = latestT3ExecutedRun(projection.runs);
       const endedRunId = options?.latestRunEnded === true ? failedRun?.id : options?.endedRunId;
       const failedRunId =
         options?.latestRunEnded === true && failedRun?.status === "failed"
@@ -3523,7 +3544,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Only the newest run completing shows the thread moved past the hold; a late or
     // bookkeeping update to an older run, overtaken by a failure or Stop, does not.
     if (
-      latestExecutedRun(projection.runs)?.id !== completedRunId ||
+      latestT3ExecutedRun(projection.runs)?.id !== completedRunId ||
       projection.turnItems.length > 0 ||
       worktreeSetupPending(projection)
     )
@@ -4556,7 +4577,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const { runs } = yield* projectionStore
         .getThreadRecords(command.threadId, ["runs"])
         .pipe(mapDispatchError(command));
-      const latest = latestExecutedRun(runs);
+      const latest = latestT3ExecutedRun(runs);
       if (latest !== null && (yield* stopReachedRun(command, command.threadId, latest.id))) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -5013,7 +5034,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       const userRuns = queuedRuns.filter((run) => !automaticMessageIds.has(run.userMessageId));
       // User work waiting behind a usage limit cannot start until the reset or the user acts.
-      const latest = latestExecutedRun(projection.runs);
+      const latest = latestT3ExecutedRun(projection.runs);
       const limitRecords =
         userRuns.length === 0 || latest?.status !== "failed"
           ? null
@@ -7375,7 +7396,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         source === undefined ||
         (source.status !== "interrupted" &&
           !(source.status === "failed" && limited?.class === "usage_limit")) ||
-        latestExecutedRun(projection.runs)?.id !== source.id ||
+        latestT3ExecutedRun(projection.runs)?.id !== source.id ||
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
         projection.runtimeRequests.some((request) => request.status === "pending")
@@ -8075,7 +8096,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const activeRun = projection.runs.find(isActiveRun);
     // Messages after failed or stopped worktree setup must wait for a worktree,
     // rather than start in the project checkout.
-    const latestRun = latestExecutedRun(projection.runs);
+    const latestRun = latestT3ExecutedRun(projection.runs);
     const worktreeMissingRun =
       activeRun === undefined &&
       (dispatchMode.type === "queue_after_active" || dispatchMode.type === "start_immediately") &&
@@ -13095,7 +13116,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
     // Messages held when this preparation failed follow the run again. A hold
     // from a later run (a stop, say) is not this failure's to release.
-    const failureOwnsQueue = latestExecutedRun(projection.runs)?.id === state.run.id;
+    const failureOwnsQueue = latestT3ExecutedRun(projection.runs)?.id === state.run.id;
     for (const run of projection.runs) {
       if (!failureOwnsQueue || run.status !== "queued" || run.queueHeld !== true) continue;
       yield* emitEvent({
@@ -13598,7 +13619,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const { runs, subagents } = input.projection;
     let { thread } = input.projection;
     let recovery = thread.limitRecovery;
-    const latest = latestExecutedRun(runs);
+    const latest = latestT3ExecutedRun(runs);
     if (latest?.status === "failed") {
       const { turnItems } = yield* projectionStore
         .getThreadRecords(thread.id, ["turnItems"], {
@@ -14741,7 +14762,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const now = yield* DateTime.now;
     // Record that Stop reached the turn it could not interrupt and the thread's last executed
     // run, so a late tool call from their agent starts nothing.
-    const executed = latestExecutedRun(projection.runs);
+    const executed = latestT3ExecutedRun(projection.runs);
     const reached = new Map<RunId, OrchestrationV2Run>();
     if (target !== undefined) reached.set(target.id, target);
     if (executed !== null && !hasLiveRun({ runs: [executed] })) reached.set(executed.id, executed);
@@ -14919,12 +14940,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       if (
         command.restoreFiles !== false &&
-        projection.runs.some(
-          (run) =>
-            run.ordinal > (targetCheckpoint.appRunOrdinal ?? 0) &&
-            run.status !== "rolled_back" &&
-            isNativeOriginRun(run),
-        )
+        hasTranscriptRunAfter(projection.runs, targetCheckpoint.appRunOrdinal ?? 0)
       ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -16087,7 +16103,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // The completion reaction starts or holds the queue just after a run ends; settling
         // first would cancel an automatic wake it was about to start.
         const { runs } = yield* loadProjectionForCommand(command, ["runs"]);
-        const endedAt = latestExecutedRun(runs)?.completedAt;
+        const endedAt = latestT3ExecutedRun(runs)?.completedAt;
         if (
           endedAt != null &&
           runs.some((run) => run.status === "queued") &&
@@ -16974,9 +16990,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (stored.event.type !== "run.updated") return;
       const threadId = stored.event.threadId;
       const run = stored.event.payload;
-      // A run read back from a provider transcript ended outside T3: it is not a turn the queue,
-      // its holds or a delegating parent wait on.
-      if (isNativeOriginRun(run)) return;
       // Take parent and child locks sequentially, never nested: delegation holds the parent
       // while writing child events, so nesting parent inside child would invert the order.
       // The keyed semaphores are neither reentrant nor deadlock-aware.
@@ -17059,23 +17072,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   yield* eventSink
     .stream({ afterSequence: terminalEventsAfterSequence, eventType: "run.updated" })
     .pipe(
-      Stream.filter(
-        (stored) =>
-          stored.event.type === "run.updated" &&
-          (!String(stored.commandId).startsWith("command:runtime-reconcile:") ||
-            (stored.event.payload.delegatedTaskId !== undefined &&
-              stored.event.payload.status === "queued" &&
-              stored.event.payload.queueHeld === true)) &&
-          ((stored.event.payload.delegatedTaskId !== undefined &&
-            (stored.event.payload.status === "queued" ||
-              stored.event.payload.status === "starting" ||
-              stored.event.payload.status === "waiting")) ||
-            stored.event.payload.status === "completed" ||
-            stored.event.payload.status === "interrupted" ||
-            stored.event.payload.status === "failed" ||
-            stored.event.payload.status === "cancelled" ||
-            stored.event.payload.status === "rolled_back"),
-      ),
+      Stream.filter(reactsToRunUpdate),
       Stream.runForEach((stored) =>
         threadReactions.run(stored.event.threadId, handleRunUpdate(stored)),
       ),

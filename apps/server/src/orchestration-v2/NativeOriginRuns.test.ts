@@ -5,6 +5,7 @@ import {
   MessageId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2Run,
+  type OrchestrationV2StoredEvent,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -45,7 +46,50 @@ const layerTest = Layer.mergeAll(
   ),
 );
 
-it.effect("releases an unattended hold only when a run T3 executed ends", () =>
+it("never starts the run-end reaction for a run read back from a transcript", () => {
+  const now = DateTime.makeUnsafe("2026-11-26T12:00:00.000Z");
+  const threadId = ThreadId.make("thread:native-origin-filter");
+  const ended: OrchestrationV2Run = {
+    id: RunId.make("run:native-origin-filter"),
+    threadId,
+    ordinal: 1,
+    providerInstanceId: instanceId,
+    modelSelection,
+    providerThreadId: null,
+    userMessageId: MessageId.make("message:native-origin-filter"),
+    rootNodeId: null,
+    activeAttemptId: null,
+    status: "completed",
+    requestedAt: now,
+    startedAt: now,
+    completedAt: now,
+    checkpointId: null,
+    contextHandoffId: null,
+  };
+  const stored = (payload: OrchestrationV2Run): OrchestrationV2StoredEvent => ({
+    sequence: 1,
+    commandId: null,
+    event: {
+      id: EventId.make(`event:${payload.id}`),
+      type: "run.updated",
+      threadId,
+      runId: payload.id,
+      occurredAt: now,
+      payload,
+    },
+  });
+  assert.isTrue(Orchestrator.reactsToRunUpdate(stored(ended)));
+  assert.isFalse(
+    Orchestrator.reactsToRunUpdate(
+      stored({
+        ...ended,
+        nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+      }),
+    ),
+  );
+});
+
+it.effect("releases an unattended hold when T3's run ends before a transcript run", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const sink = yield* EventSink.EventSinkV2;
@@ -140,18 +184,22 @@ it.effect("releases an unattended hold only when a run T3 executed ends", () =>
       ],
     });
 
-    yield* sink.write({
-      events: runEvents({
-        ...run("run:native-origin:transcript", 2),
-        nativeOrigin: {
-          kind: "claude_transcript",
-          nativeSessionId: "session-1",
-          promptUuid: "prompt-1",
-        },
-      }),
+    // One batch, so both runs are projected before either reaction reads: the transcript run
+    // ended last, and the T3 run's end must still release the hold.
+    const written = yield* sink.write({
+      events: [
+        ...runEvents(run("run:native-origin:t3", 2)),
+        ...runEvents({
+          ...run("run:native-origin:transcript", 3),
+          nativeOrigin: {
+            kind: "claude_transcript",
+            nativeSessionId: "session-1",
+            promptUuid: "prompt-1",
+          },
+        }),
+      ],
     });
-    const t3Written = yield* sink.write({ events: runEvents(run("run:native-origin:t3", 3)) });
-    const t3Ended = t3Written.at(-1)!.sequence;
+    const t3Ended = written[1]!.sequence;
 
     const released = yield* sink
       .stream({ afterSequence: heldWritten!.sequence, eventType: "run.updated" })
@@ -165,7 +213,6 @@ it.effect("releases an unattended hold only when a run T3 executed ends", () =>
         Stream.take(1),
         Stream.runCollect,
       );
-    // Released by the T3 run's end, never by the transcript run's before it.
     assert.isAbove(released[0]!.sequence, t3Ended);
   }).pipe(Effect.provide(layerTest)),
 );

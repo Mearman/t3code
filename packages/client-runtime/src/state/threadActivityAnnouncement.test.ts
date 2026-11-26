@@ -153,6 +153,48 @@ describe("nextThreadAnnouncement", () => {
     expect(speak([busy(), idle(ended?.runId ?? null, ended?.status ?? null)])).toEqual(["Done"]);
   });
 
+  it("keeps following T3's run when a transcript run becomes the thread's latest", () => {
+    const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
+    const t3Run: OrchestrationV2Run = {
+      id: firstRun,
+      threadId: ThreadId.make("thread-1"),
+      ordinal: 1,
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "opus" },
+      providerThreadId: null,
+      userMessageId: MessageId.make("message-1"),
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "completed",
+      requestedAt: now,
+      startedAt: now,
+      completedAt: now,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+    const transcriptRun: OrchestrationV2Run = {
+      ...t3Run,
+      id: secondRun,
+      ordinal: 2,
+      userMessageId: MessageId.make("message-2"),
+      status: "failed",
+      nativeOrigin: { kind: "claude_transcript", nativeSessionId: "s-1", promptUuid: "p-1" },
+    };
+    const announced = announcedRun({ runId: secondRun, status: "failed", startedAt: null }, [
+      t3Run,
+      transcriptRun,
+    ]);
+    expect(announced).toEqual({ runId: firstRun, status: "completed" });
+    // A send that becomes unknown work, then the transcript run lands: nothing claims it.
+    expect(
+      speak([
+        idle(firstRun, "completed"),
+        busy("working", null, null),
+        idle(announced?.runId ?? null, announced?.status ?? null),
+      ]),
+    ).toEqual(["Working"]);
+  });
+
   it("waits for the run to settle before announcing how the turn ended", () => {
     expect(
       speak([
