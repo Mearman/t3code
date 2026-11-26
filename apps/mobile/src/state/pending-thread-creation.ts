@@ -59,7 +59,7 @@ export function resolvePendingThreadCreation(input: {
   readonly previous: PendingThreadCreation | null;
   readonly detail: {
     readonly messages: ReadonlyArray<{ readonly id: string }>;
-    readonly runs: ReadonlyArray<{ readonly status: string; readonly nativeOrigin?: unknown }>;
+    readonly runs: ReadonlyArray<{ readonly status: string }>;
   } | null;
 }): PendingThreadCreation | null {
   const creation = input.pending ?? input.previous;

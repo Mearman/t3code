@@ -389,6 +389,7 @@ export function summaryTable(metrics: ClientMetrics) {
       );
     }
   }
+  // oxlint-disable-next-line t3code/explicit-run-origin -- benchmark runs, not orchestration runs
   const traced = metrics.runs.at(-1)?.trace ?? [];
   if (traced.length > 0) {
     lines.push(

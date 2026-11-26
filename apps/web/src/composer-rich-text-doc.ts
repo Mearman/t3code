@@ -1224,6 +1224,7 @@ interface RichAccumulator {
 }
 
 function pushBreakRun(acc: RichAccumulator, position?: number): void {
+  // oxlint-disable-next-line t3code/explicit-run-origin -- rich-text runs, not orchestration runs
   const previous = acc.runs[acc.runs.length - 1];
   const pmPos = position ?? (previous ? previous.pmPos + previous.docLen : 1);
   acc.runs.push({
@@ -1868,6 +1869,7 @@ export function flatToMarkdown(map: RichDocMap, flatOffset: number): number {
       return run.mdStart + (bounded - run.flatStart);
     }
   }
+  // oxlint-disable-next-line t3code/explicit-run-origin -- rich-text runs, not orchestration runs
   const last = map.runs[map.runs.length - 1];
   return last ? last.mdStart + last.mdLen : 0;
 }
@@ -1898,6 +1900,7 @@ export function flatToPm(map: RichDocMap, flatOffset: number): number {
       return run.pmPos + (bounded - run.flatStart);
     }
   }
+  // oxlint-disable-next-line t3code/explicit-run-origin -- rich-text runs, not orchestration runs
   const last = map.runs[map.runs.length - 1];
   if (!last) return 1;
   return last.pmPos + last.docLen;

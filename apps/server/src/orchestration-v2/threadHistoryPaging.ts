@@ -5,6 +5,7 @@ import type {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Schema from "effect/Schema";
 
 /**
@@ -602,10 +603,9 @@ function messagesForBoundedProjection(
     }
   }
 
-  const latestRun = projection.runs.reduce<(typeof projection.runs)[number] | null>(
-    (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
-    null,
-  );
+  const latestRun = runsByOrigin(projection.runs, "any").reduce<
+    (typeof projection.runs)[number] | null
+  >((latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest), null);
   const retainedRunIds = new Set<string>();
   for (const run of projection.runs) {
     if (

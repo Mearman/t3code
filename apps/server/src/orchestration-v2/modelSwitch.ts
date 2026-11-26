@@ -5,7 +5,7 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { runRanAfter, runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 
 /**
  * Clients hide pending queued messages, fold async answers into their question, and replace
@@ -45,7 +45,7 @@ export function modelSwitchSince(
     ),
   );
   let previous: ModelSwitchRun | undefined;
-  for (const run of projection.runs) {
+  for (const run of runsByOrigin(projection.runs, "any")) {
     // A wake shows as a notification, but its context handoff row still shows the swap.
     if (!anchorsModelSwitch(run, shown)) continue;
     if (previous === undefined || runRanAfter(run, previous)) previous = run;

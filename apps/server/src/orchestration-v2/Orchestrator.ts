@@ -10451,9 +10451,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const latestFollowupId =
       command.notification === undefined
         ? undefined
-        : (yield* projectionStore
-            .getThreadRecords(command.threadId, ["runs"])
-            .pipe(mapDispatchError(command))).runs
+        : runsByOrigin(
+            (yield* projectionStore
+              .getThreadRecords(command.threadId, ["runs"])
+              .pipe(mapDispatchError(command))).runs,
+            "t3",
+          )
             .filter((row) => row.id !== run.id && row.delegatedTaskId !== undefined)
             .toSorted((a, b) => b.ordinal - a.ordinal)[0]?.delegatedTaskId;
     const parent = yield* projectionStore
@@ -17129,7 +17132,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 candidate.activeAttemptId === turn.runAttemptId && candidate.status === "running",
             );
             if (run === undefined) return;
-            const pending = projection.runs
+            const pending = runsByOrigin(projection.runs, "t3")
               .filter(
                 (queued) => queued.status === "queued" && queued.steerWhenReadyRunId === run.id,
               )
@@ -17416,7 +17419,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             { messageRoles: ["user"] },
           )
           .pipe(mapDispatchError(command));
-        const followUpRun = child.runs
+        const followUpRun = runsByOrigin(child.runs, "t3")
           .filter((run) => run.delegatedTaskId === input.taskId)
           .toSorted((a, b) => b.ordinal - a.ordinal)[0];
         const unsettled =
@@ -17442,7 +17445,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 { messageRoles: ["user"] },
               )
               .pipe(mapDispatchError(command));
-            const followUpRun = child.runs
+            const childRuns = runsByOrigin(child.runs, "t3");
+            const followUpRun = childRuns
               .filter((run) => run.delegatedTaskId === input.taskId)
               .toSorted((a, b) => b.ordinal - a.ordinal)[0];
             const monitorRunIds = new Set(
@@ -17450,7 +17454,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 .filter((message) => message.notification?.source.kind === "monitor")
                 .map((message) => message.runId),
             );
-            const activeRun = child.runs
+            const activeRun = childRuns
               .filter((run) => isLiveRun(run) && !monitorRunIds.has(run.id))
               .toSorted((a, b) => b.ordinal - a.ordinal)[0];
             const cancelledRun = followUpRun ?? activeRun ?? progressAfterTurn(child).resultRun;

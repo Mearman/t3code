@@ -14,6 +14,7 @@ import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2Pend
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
+  runsByOrigin,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Option from "effect/Option";
 import type { SetStateAction } from "react";
@@ -951,7 +952,9 @@ export async function waitForRevertedMessage(
   );
   const initialProviderThreadIds = new Set(initial?.providerThreads.map((thread) => thread.id));
   // Paging can omit the source run. Rollback commits the entire settled suffix atomically.
-  const witness = initial?.runs.reduce<(typeof initial.runs)[number] | undefined>((latest, run) => {
+  // Rollback marks every later run, transcript turns included.
+  const initialRuns = initial == null ? undefined : runsByOrigin(initial.runs, "any");
+  const witness = initialRuns?.reduce<(typeof initialRuns)[number] | undefined>((latest, run) => {
     if (
       run.ordinal <= turnCount ||
       (run.status !== "completed" &&

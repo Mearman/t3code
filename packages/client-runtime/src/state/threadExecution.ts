@@ -559,7 +559,7 @@ function threadErrorSource(
   }
   if (sessionError === null) return null;
   let ended: ThreadStructure["runs"][number] | null = null;
-  for (const run of projection.runs) {
+  for (const run of runsByOrigin(projection.runs, "any")) {
     if (run.status !== "failed" && run.status !== "completed") continue;
     if (ended === null || run.ordinal > ended.ordinal) ended = run;
   }
@@ -724,7 +724,8 @@ export function presentRunStop(
 ): RunStopPresentation | null {
   let active: ThreadStructure["runs"][number] | null = null;
   let latest: ThreadStructure["runs"][number] | null = null;
-  for (const candidate of projection.runs) {
+  // As the server's Stop: a transcript run ended outside T3 and holds no Stop.
+  for (const candidate of runsByOrigin(projection.runs, "t3")) {
     // Queued follow-ups never ran, so they hold no Stop of their own.
     if (candidate.status !== "queued" && candidate.ordinal > (latest?.ordinal ?? -1))
       latest = candidate;

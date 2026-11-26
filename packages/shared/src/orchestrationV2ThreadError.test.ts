@@ -15,6 +15,7 @@ import {
   latestExecutedRun,
   latestT3ExecutedRun,
   orchestrationV2WorktreePending,
+  runsByOrigin,
   usageLimitBlockedRun,
   usageLimitRunPresentedAsLatest,
 } from "./orchestrationV2ThreadError.ts";
@@ -81,6 +82,12 @@ describe("latestT3ExecutedRun", () => {
     expect(latestExecutedRun(runs)?.ordinal).toBe(2);
     expect(latestT3ExecutedRun(runs)?.ordinal).toBe(1);
     expect(latestT3ExecutedRun([transcript(1)])).toBeNull();
+  });
+
+  it("drops a transcript run's object even through a run type without the field", () => {
+    const shown: ReadonlyArray<{ readonly id: string }> = [run(1), transcript(2)];
+    expect(runsByOrigin(shown, "t3").map((entry) => entry.id)).toEqual([run(1).id]);
+    expect(runsByOrigin(shown, "any")).toBe(shown);
   });
 
   it("never treats a transcript run's limit as blocking T3", () => {

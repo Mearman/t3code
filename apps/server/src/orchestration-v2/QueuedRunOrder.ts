@@ -1,3 +1,4 @@
+import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import type { OrchestrationV2Run, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -18,7 +19,7 @@ export function queuedRunsInDeliveryOrder(
       .filter((message) => message.delegatedCompletion !== undefined)
       .map((message) => message.id),
   );
-  const queued = projection.runs
+  const queued = runsByOrigin(projection.runs, "t3")
     .filter((run) => run.status === "queued")
     .toSorted(
       (left, right) =>
