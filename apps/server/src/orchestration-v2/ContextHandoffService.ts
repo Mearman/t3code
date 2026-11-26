@@ -188,19 +188,24 @@ const readOwnHistoryItems = Effect.fn("orchestrationV2.contextHandoff.readOwnHis
   },
 );
 
-/** History `thread` shows from its fork ancestors, oldest first. Side chats inherit no rows. */
+/**
+ * History `thread` shows from its fork ancestors, oldest first. Side chats show no inherited rows;
+ * with `throughSideChat`, a side chat `thread` still carries its parent's, as a fork of it must.
+ */
 export const readInheritedHandoffItems = Effect.fn(
   "orchestrationV2.contextHandoff.readInheritedHandoffItems",
 )(function* (
   projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords" | "getForkSourceRunIds">,
   thread: OrchestrationV2AppThread,
+  options: { readonly throughSideChat?: boolean } = {},
 ) {
   const segments: Array<ReadonlyArray<OrchestrationV2TurnItem>> = [];
   const seen = new Set([thread.id]);
   let current = thread;
   while (
     current.forkedFrom?.type === "run" &&
-    current.lineage.sideChat !== true &&
+    (current.lineage.sideChat !== true ||
+      (options.throughSideChat === true && current.id === thread.id)) &&
     !seen.has(current.forkedFrom.threadId)
   ) {
     const { threadId, runId } = current.forkedFrom;
@@ -229,7 +234,12 @@ export const readForkHistoryItems = Effect.fn(
 ) {
   const own = yield* readOwnHistoryItems(projectionStore, source, throughRun, fork);
   if (own.cleared) return own.items;
-  return [...(yield* readInheritedHandoffItems(projectionStore, source.thread)), ...own.items];
+  return [
+    ...(yield* readInheritedHandoffItems(projectionStore, source.thread, {
+      throughSideChat: true,
+    })),
+    ...own.items,
+  ];
 });
 
 function summarizeDeltaItem(item: OrchestrationV2TurnItem): string | null {
