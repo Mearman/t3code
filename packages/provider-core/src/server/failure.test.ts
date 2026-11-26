@@ -22,6 +22,7 @@ import {
   ContextHandoffBudgetError,
   ContextHandoffBackgroundWorkError,
 } from "./failure.ts";
+import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "../client.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -287,7 +288,10 @@ it("explains a native thread another client is writing to", () => {
     runId: RunId.make("run:in-use"),
     cause: inUse,
   });
-  assert.equal(makeProviderFailure({ cause: Cause.fail(cause) }).message, inUse.message);
+  const failure = makeProviderFailure({ cause: Cause.fail(cause) });
+  assert.equal(failure.message, inUse.message);
+  // Clients offer a fork on this code.
+  assert.equal(failure.code, PROVIDER_THREAD_IN_USE_FAILURE_CODE);
 });
 
 it("does not expose defect text nested inside a known error category", () => {

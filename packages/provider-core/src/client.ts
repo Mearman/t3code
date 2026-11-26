@@ -1,6 +1,9 @@
 import type { ProviderDriverKind } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
 
+/** Failure code of a turn refused because another process holds the provider's native thread. */
+export const PROVIDER_THREAD_IN_USE_FAILURE_CODE = "provider_thread_in_use";
+
 export type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
 } & Schema.Top;
