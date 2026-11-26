@@ -5,23 +5,27 @@ import type * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 
 import {
-  claudeProcessTree,
   indexClaudeProcessTable,
   type ClaudeProcessRow,
   type ClaudeProcessTableError,
 } from "./ClaudeProcessTable.ts";
 import {
   externalClaudeSessionHolders,
+  ownedByRoot,
   readClaudeSessionRegistry,
   type ClaudeSessionRegistryEntry,
   type ClaudeSessionRegistryEntryError,
 } from "./ClaudeSessionRegistry.ts";
 
 /**
- * Why T3 Code must not write to a Claude session: a live process outside its own tree holds it (`sdk` when that process runs through the Agent SDK, as T3 Code's own do), or a registry entry of such a process stays unreadable, so it may hold it.
+ * Why T3 Code must not write to a Claude session: a live process outside its own tree holds it
+ * (`sdk` when it runs through the Agent SDK, as T3 Code's own do); a live process's entry names
+ * it but the process could be matched by pid alone (`unconfirmed`); or a live process's entry
+ * stays unreadable, so it may hold it.
  */
 export type ClaudeSessionHold =
   | { readonly _tag: "held"; readonly pid: number; readonly sdk: boolean }
+  | { readonly _tag: "unconfirmed"; readonly pid: number }
   | { readonly _tag: "unreadable"; readonly pid: number };
 
 const candidatesFor = (
@@ -31,6 +35,10 @@ const candidatesFor = (
   },
   sessionId: string,
 ) => ({
+  entryPids: new Set([
+    ...registry.entries.map((entry) => entry.pid),
+    ...registry.unrecognised.map((entry) => entry.pid),
+  ]),
   entries: registry.entries.filter((entry) => entry.sessionId === sessionId),
   unattributed: registry.unrecognised.filter(
     (entry) => entry.sessionId === undefined || entry.sessionId === sessionId,
@@ -38,43 +46,56 @@ const candidatesFor = (
 });
 
 /**
- * Reads `sessionsDir` and, only when an entry may name `sessionId`, the process table. Succeeds with `undefined` when no other process holds the session; a read that fails is an error.
+ * Reads `sessionsDir` and, only when an entry not of a CLI T3 Code spawned may name `sessionId`,
+ * the process table. Succeeds with `undefined` when no other process holds the session; a read
+ * that fails is an error.
  */
 export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(function* (input: {
   readonly sessionsDir: string;
   readonly sessionId: string;
-  /** The CLIs the query runner spawned; they and their descendants are T3 Code's own. */
-  readonly ownRootPids: ReadonlyArray<number>;
+  /** The CLIs the query runner spawned, read after each registry read so a new one counts. */
+  readonly ownRootPids: Effect.Effect<ReadonlyArray<number>>;
   readonly readProcesses: Effect.Effect<ReadonlyArray<ClaudeProcessRow>, ClaudeProcessTableError>;
   /** False where `procStart` cannot be matched to the process table, such as Windows. */
   readonly matchStartTime: boolean;
 }) {
   const first = candidatesFor(yield* readClaudeSessionRegistry(input.sessionsDir), input.sessionId);
-  if (first.entries.length === 0 && first.unattributed.length === 0) return undefined;
+  const spawned = new Set(yield* input.ownRootPids);
+  // A spawned CLI's own entry needs no process table: its pid is alive and T3 Code's.
+  if (
+    first.entries.every((entry) => spawned.has(entry.pid)) &&
+    first.unattributed.every((entry) => spawned.has(entry.pid))
+  ) {
+    return undefined;
+  }
   const processes = yield* input.readProcesses;
-  // Claude may have been writing an entry; only one still unreadable after the `ps` read counts.
-  const { entries, unattributed } =
+  // Claude may have been writing an entry; only one still unreadable after the read counts.
+  const { entryPids, entries, unattributed } =
     first.unattributed.length === 0
       ? first
       : candidatesFor(yield* readClaudeSessionRegistry(input.sessionsDir), input.sessionId);
+  const ownRootPids = yield* input.ownRootPids;
   const holder = externalClaudeSessionHolders({
     entries,
+    entryPids,
     processes,
-    ownRootPids: input.ownRootPids,
+    ownRootPids,
     matchStartTime: input.matchStartTime,
   }).get(input.sessionId);
   if (holder !== undefined) {
-    return {
-      _tag: "held",
-      pid: holder.pid,
-      sdk: holder.entrypoint?.startsWith("sdk") === true,
-    } satisfies ClaudeSessionHold;
+    return holder.confirmed
+      ? ({
+          _tag: "held",
+          pid: holder.entry.pid,
+          sdk: holder.entry.entrypoint?.startsWith("sdk") === true,
+        } satisfies ClaudeSessionHold)
+      : ({ _tag: "unconfirmed", pid: holder.entry.pid } satisfies ClaudeSessionHold);
   }
   const table = indexClaudeProcessTable(processes);
-  const own = claudeProcessTree(table, input.ownRootPids);
-  // Without a readable `procStart` a live pid is all there is to match.
+  const roots = new Set(ownRootPids);
+  // Without a readable entry a live pid is all there is to match.
   const unreadable = unattributed.find(
-    (entry) => table.byPid.has(entry.pid) && !own.has(entry.pid),
+    (entry) => table.byPid.has(entry.pid) && !ownedByRoot(entry.pid, table, roots, entryPids),
   );
   return unreadable === undefined
     ? undefined
@@ -88,26 +109,57 @@ export type ClaudeSessionHoldProbe = (
   PlatformError.PlatformError | ClaudeProcessTableError
 >;
 
+/** Why a write was refused, for a person to act on, and whether a holder was actually seen. */
+export interface ClaudeSessionRefusal {
+  readonly detail: string;
+  readonly holderObserved: boolean;
+}
+
 const FORK_OPTION =
   "Fork this conversation to continue in a new session from what T3 Code has recorded; anything another process added since is left out. Or close any other claude running this session and send again.";
 
-function holdDetail(hold: ClaudeSessionHold): string {
-  if (hold._tag === "unreadable") {
-    return `Claude Code's registry entry for a running process (pid ${hold.pid}) could not be read, so T3 Code cannot tell whether it has this session open and sent nothing. ${FORK_OPTION}`;
+const RETRY_OPTION = "Close any other claude running this session, then send again.";
+
+function holdRefusal(hold: ClaudeSessionHold): ClaudeSessionRefusal {
+  switch (hold._tag) {
+    case "held": {
+      const holder = hold.sdk
+        ? `A Claude Code process started through the Agent SDK (pid ${hold.pid}), possibly one T3 Code started before it restarted,`
+        : `Another Claude Code process (pid ${hold.pid})`;
+      return {
+        detail: `${holder} has this session open, so T3 Code sent nothing: two processes writing one session would split its history. ${FORK_OPTION}`,
+        holderObserved: true,
+      };
+    }
+    case "unconfirmed":
+      return {
+        detail: `Claude Code's registry says a running process (pid ${hold.pid}) has this session open, but T3 Code cannot confirm that process is Claude, so it sent nothing. ${RETRY_OPTION}`,
+        holderObserved: false,
+      };
+    case "unreadable":
+      return {
+        detail: `Claude Code's registry entry for a running process (pid ${hold.pid}) could not be read, so T3 Code cannot tell whether it has this session open and sent nothing. ${RETRY_OPTION}`,
+        holderObserved: false,
+      };
   }
-  const holder = hold.sdk
-    ? `A Claude Code process started through the Agent SDK (pid ${hold.pid}), possibly one T3 Code started before it restarted,`
-    : `Another Claude Code process (pid ${hold.pid})`;
-  return `${holder} has this session open, so T3 Code sent nothing: two processes writing one session would split its history. ${FORK_OPTION}`;
 }
 
-function uncheckedDetail(error: PlatformError.PlatformError | ClaudeProcessTableError): string {
+function uncheckedRefusal(
+  error: PlatformError.PlatformError | ClaudeProcessTableError,
+  requirement: string,
+): ClaudeSessionRefusal {
   const why =
     error._tag === "ClaudeProcessTableError"
-      ? error.message
+      ? `${error.message} ${requirement}`
       : "Claude Code's session registry could not be read.";
-  return `T3 Code could not check whether another Claude Code process has this session open, so it sent nothing. ${why} Send again to retry the check.`;
+  return {
+    detail: `T3 Code could not check whether another Claude Code process has this session open, so it sent nothing. ${why} Then send again.`,
+    holderObserved: false,
+  };
 }
+
+// Each write checks up to this many more times before refusing for a holder it did not see.
+const PROBE_RETRIES = 2;
 
 type SessionRuntime = ProviderAdapter.ProviderAdapterV2SessionRuntime;
 type GatedRuntime = Pick<
@@ -130,39 +182,51 @@ type GatedRuntime = Pick<
 export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   runtime: Runtime,
   probe: ClaudeSessionHoldProbe,
+  /** What the host needs to list processes, told to the user when it cannot. */
+  processTableRequirement: string,
 ): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
-  const refuse = (
-    providerThread: OrchestrationV2ProviderThread,
-    detail: string,
-    cause: unknown,
-    holderObserved: boolean,
-  ): Effect.Effect<never, ProviderAdapter.ProviderAdapterThreadInUseError> =>
-    Effect.fail(
-      new ProviderAdapter.ProviderAdapterThreadInUseError({
-        driver: runtime.driver,
-        providerThreadId: providerThread.id,
-        detail,
-        cause,
-        ...(holderObserved ? { holderObserved: true } : {}),
+  // A failed check or a holder only possibly there may clear on its own (a slow `ps`, an entry
+  // being written), so it is checked again before the write is refused.
+  const settledProbe = (sessionId: string, attemptsLeft: number) => {
+    const attempt: Effect.Effect<ClaudeSessionRefusal | undefined> = Effect.result(
+      probe(sessionId),
+    ).pipe(
+      Effect.flatMap((probed) => {
+        if (Result.isSuccess(probed)) {
+          const hold = probed.success;
+          if (hold === undefined) return Effect.succeed(undefined);
+          const refusal = holdRefusal(hold);
+          return refusal.holderObserved || attemptsLeft === 0
+            ? Effect.succeed(refusal)
+            : settledProbe(sessionId, attemptsLeft - 1);
+        }
+        return attemptsLeft > 0
+          ? settledProbe(sessionId, attemptsLeft - 1)
+          : Effect.logWarning("Claude send gate could not check a session's holders", {
+              sessionId,
+              reason: probed.failure.message,
+            }).pipe(Effect.as(uncheckedRefusal(probed.failure, processTableRequirement)));
       }),
     );
-  // A failed probe or an unreadable entry also refuses, unmarked, so the caller retries instead
-  // of offering a fork for a holder nobody saw.
+    return attempt;
+  };
   const refuseHeld = (
     providerThread: OrchestrationV2ProviderThread,
   ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
     const sessionId = providerThread.nativeThreadRef?.nativeId;
     if (sessionId === undefined || sessionId === null) return Effect.void;
-    return Effect.result(probe(sessionId)).pipe(
-      Effect.flatMap((probed) => {
-        if (Result.isFailure(probed)) {
-          return refuse(providerThread, uncheckedDetail(probed.failure), probed.failure, false);
-        }
-        const hold = probed.success;
-        return hold === undefined
-          ? Effect.void
-          : refuse(providerThread, holdDetail(hold), hold, hold._tag === "held");
-      }),
+    return Effect.flatMap(settledProbe(sessionId, PROBE_RETRIES), (refusal) =>
+      refusal === undefined
+        ? Effect.void
+        : Effect.fail(
+            new ProviderAdapter.ProviderAdapterThreadInUseError({
+              driver: runtime.driver,
+              providerThreadId: providerThread.id,
+              detail: refusal.detail,
+              cause: refusal,
+              ...(refusal.holderObserved ? { holderObserved: true } : {}),
+            }),
+          ),
     );
   };
   const refuseBeforePrompt = (
@@ -253,12 +317,17 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
 export function gateHeldClaudeSessions(
   adapter: ProviderAdapter.ProviderAdapterV2["Service"],
   probe: ClaudeSessionHoldProbe,
+  processTableRequirement: string,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     ...adapter,
     openSession: (input) =>
       adapter
         .openSession(input)
-        .pipe(Effect.map((runtime) => gateHeldClaudeSessionRuntime(runtime, probe))),
+        .pipe(
+          Effect.map((runtime) =>
+            gateHeldClaudeSessionRuntime(runtime, probe, processTableRequirement),
+          ),
+        ),
   };
 }

@@ -41,7 +41,13 @@ const processes = parseClaudeProcessTable(
 
 describe("externalClaudeSessionHolders", () => {
   const holders = (entries: ReadonlyArray<ClaudeSessionRegistryEntry>, matchStartTime = true) =>
-    externalClaudeSessionHolders({ entries, processes, ownRootPids: [101], matchStartTime });
+    externalClaudeSessionHolders({
+      entries,
+      entryPids: new Set(entries.map((candidate) => candidate.pid)),
+      processes,
+      ownRootPids: [101],
+      matchStartTime,
+    });
 
   it("excludes only the spawned CLI's tree, so a claude in the server's terminal holds", () => {
     expect([...holders([entry(101), entry(102), entry(103), entry(200)]).keys()]).toEqual([
@@ -55,9 +61,14 @@ describe("externalClaudeSessionHolders", () => {
     expect(holders([entry(200, { procStart: "Fri Jan  2 00:00:00 2026" })]).size).toBe(0);
   });
 
-  it("lets liveness decide when the start time cannot be matched", () => {
-    expect(holders([entry(200, { procStart: "not a time" })]).size).toBe(1);
-    expect(holders([entry(200, { procStart: "Fri Jan  2 00:00:00 2026" })], false).size).toBe(1);
+  it("confirms nothing by liveness alone when the start time cannot be matched", () => {
+    expect(holders([entry(200, { procStart: "not a time" })]).get("session-200")?.confirmed).toBe(
+      false,
+    );
+    expect(
+      holders([entry(200, { procStart: "Fri Jan  2 00:00:00 2026" })], false).get("session-200")
+        ?.confirmed,
+    ).toBe(false);
     expect(holders([entry(300)], false).size).toBe(0);
   });
 
@@ -66,7 +77,7 @@ describe("externalClaudeSessionHolders", () => {
       entry(200, { sessionId: "shared", updatedAt: 2 }),
       entry(200, { sessionId: "shared", updatedAt: 1, status: "stale" }),
     ]);
-    expect(current.get("shared")?.updatedAt).toBe(2);
+    expect(current.get("shared")?.entry.updatedAt).toBe(2);
   });
 });
 

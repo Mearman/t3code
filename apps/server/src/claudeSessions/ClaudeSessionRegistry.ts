@@ -6,22 +6,19 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import {
-  claudeProcessTree,
-  indexClaudeProcessTable,
-  type ClaudeProcessRow,
-} from "./ClaudeProcessTable.ts";
+import { indexClaudeProcessTable, type ClaudeProcessRow } from "./ClaudeProcessTable.ts";
 
 /**
  * The fields T3 Code reads from `<home>/sessions/<pid>.json`, which Claude Code writes for each
  * live process. The format is undocumented. `procStart` is that process's `ps -o lstart=` under
- * `LC_ALL=C TZ=UTC`.
+ * `LC_ALL=C TZ=UTC`, and `startedAt` the epoch milliseconds the process wrote the entry at.
  */
 export const ClaudeSessionRegistryEntry = Schema.Struct({
   pid: Schema.Int,
   sessionId: Schema.String,
   cwd: Schema.String,
-  procStart: Schema.String,
+  procStart: Schema.optional(Schema.String),
+  startedAt: Schema.optional(Schema.Number),
   kind: Schema.optional(Schema.String),
   entrypoint: Schema.optional(Schema.String),
   status: Schema.optional(Schema.String),
@@ -95,31 +92,79 @@ const startSeconds = (procStart: string) =>
     DateTime.toEpochSeconds,
   );
 
+/** A live process that holds a session; `confirmed` unless only its pid could be matched. */
+export interface ClaudeSessionHolder {
+  readonly entry: ClaudeSessionRegistryEntry;
+  readonly confirmed: boolean;
+}
+
+// The entry's own record of when its process started, as far as this host can check it.
+function holderIdentity(
+  entry: ClaudeSessionRegistryEntry,
+  started: number,
+  matchStartTime: boolean,
+): "same" | "other" | "unknown" {
+  const recorded =
+    matchStartTime && entry.procStart !== undefined ? startSeconds(entry.procStart) : Option.none();
+  if (Option.isSome(recorded)) return recorded.value === started ? "same" : "other";
+  // The process wrote its entry after it started; a process that started later reused the pid.
+  if (entry.startedAt !== undefined) {
+    return started <= Math.ceil(entry.startedAt / 1000) ? "same" : "other";
+  }
+  return "unknown";
+}
+
 /**
- * Live holders per session id, excluding `ownRootPids` and their descendants (a launcher may run
- * `claude` as a child). With `matchStartTime`, a live pid holds only when `procStart` names its
- * start, so a reused pid does not; read `processes` with `LC_ALL=C TZ=UTC`, how `procStart` is
- * written. An unparseable `procStart`, or no `matchStartTime`, leaves liveness alone to decide.
+ * Whether `pid` is one of T3 Code's own: a spawned CLI in `ownRootPids`, or a process below one
+ * with no other Claude registry entry on the way, as when a launcher runs `claude` as its child.
+ * A `claude` under another entry's process was started by that Claude, from its agent's shell.
+ */
+export function ownedByRoot(
+  pid: number,
+  table: ReturnType<typeof indexClaudeProcessTable>,
+  ownRootPids: ReadonlySet<number>,
+  entryPids: ReadonlySet<number>,
+): boolean {
+  const seen = new Set<number>();
+  for (let current = table.byPid.get(pid); current !== undefined;) {
+    if (ownRootPids.has(current.pid)) return true;
+    if (seen.has(current.pid)) return false;
+    seen.add(current.pid);
+    const parent = table.byPid.get(current.ppid);
+    // Windows never reparents, so a parent started later is not this process's parent.
+    if (parent === undefined || parent.startTimeSeconds > current.startTimeSeconds) return false;
+    if (entryPids.has(parent.pid) && !ownRootPids.has(parent.pid)) return false;
+    current = parent;
+  }
+  return false;
+}
+
+/**
+ * Live holders per session id among `entries` that are not T3 Code's own (see `ownedByRoot`);
+ * `entryPids` are every entry's pid. `procStart` (read with `LC_ALL=C TZ=UTC`) must name the
+ * process's start under `matchStartTime`; otherwise `startedAt` rules out a reused pid, and a
+ * holder neither can check is returned unconfirmed.
  */
 export function externalClaudeSessionHolders(input: {
   readonly entries: ReadonlyArray<ClaudeSessionRegistryEntry>;
+  readonly entryPids: ReadonlySet<number>;
   readonly processes: ReadonlyArray<ClaudeProcessRow>;
   readonly ownRootPids: ReadonlyArray<number>;
   readonly matchStartTime: boolean;
-}): ReadonlyMap<string, ClaudeSessionRegistryEntry> {
+}): ReadonlyMap<string, ClaudeSessionHolder> {
   const table = indexClaudeProcessTable(input.processes);
-  const ownPids = claudeProcessTree(table, input.ownRootPids);
-  const holders = new Map<string, ClaudeSessionRegistryEntry>();
+  const ownRoots = new Set(input.ownRootPids);
+  const holders = new Map<string, ClaudeSessionHolder>();
   for (const entry of input.entries) {
     const started = table.byPid.get(entry.pid)?.startTimeSeconds;
     if (started === undefined) continue;
-    const recorded = input.matchStartTime ? startSeconds(entry.procStart) : Option.none();
-    if (Option.isSome(recorded) && recorded.value !== started) continue;
-    if (ownPids.has(entry.pid)) continue;
+    const identity = holderIdentity(entry, started, input.matchStartTime);
+    if (identity === "other") continue;
+    if (ownedByRoot(entry.pid, table, ownRoots, input.entryPids)) continue;
     // A resumed session can briefly have two live entries; the later one is current.
     const known = holders.get(entry.sessionId);
-    if (known === undefined || (entry.updatedAt ?? 0) >= (known.updatedAt ?? 0)) {
-      holders.set(entry.sessionId, entry);
+    if (known === undefined || (entry.updatedAt ?? 0) >= (known.entry.updatedAt ?? 0)) {
+      holders.set(entry.sessionId, { entry, confirmed: identity === "same" });
     }
   }
   return holders;
