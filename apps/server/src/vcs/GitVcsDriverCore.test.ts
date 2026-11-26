@@ -7843,10 +7843,12 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       "a %s command in a new worktree waits for its index swap instead of failing on the lock",
       (runner) =>
         Effect.gen(function* () {
+          yield* Effect.sync(() => process.stderr.write("SWAPPROBE start\n"));
           const cwd = yield* makeTmpDir();
           const { initialBranch } = yield* initRepoWithCommit(cwd);
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
+          yield* Effect.sync(() => process.stderr.write("SWAPPROBE repo\n"));
           const processes = yield* VcsProcess;
           const clock = yield* Clock.Clock;
           const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "swapped");
@@ -7878,6 +7880,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           const driver = yield* makeGitVcsDriverCore().pipe(
             Effect.provideService(FileSystem.FileSystem, swappingFs),
           );
+          yield* Effect.sync(() => process.stderr.write("SWAPPROBE driver\n"));
           // Git's own timeouts sleep for longer than the second the swap waits out.
           const swapClock: Clock.Clock = {
             ...clock,
