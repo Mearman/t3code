@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderMcpSignInError,
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
@@ -327,7 +328,14 @@ describe("gateHeldClaudeSessionRuntime", () => {
     };
   };
   const TURN_STARTS = new Set(["startTurn", "resumeTurn", "compactThread"]);
-  const refusals = (operations: Readonly<Record<string, Effect.Effect<unknown, unknown>>>) =>
+  const refusals = (
+    operations: Readonly<
+      Record<
+        string,
+        Effect.Effect<unknown, ProviderAdapter.ProviderAdapterV2Error | ProviderMcpSignInError>
+      >
+    >,
+  ) =>
     Effect.forEach(Object.entries(operations), ([name, operation]) =>
       Effect.flip(operation).pipe(Effect.map((refusal) => [name, refusal] as const)),
     );
