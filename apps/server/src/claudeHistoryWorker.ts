@@ -31,14 +31,14 @@ export async function runClaudeHistoryWorker(
       : method === "getSubagentMessages" && agentId !== undefined
         ? await getSubagentMessages(sessionId, agentId, options)
         : method === "forkSession"
-        ? await forkSession(sessionId, options).then(async (forked) => {
-            const headMessageId = await getSessionMessages(forked.sessionId, options)
-              .then((messages) => messages.at(-1)?.uuid)
-              .catch(() => undefined);
-            return headMessageId === undefined ? forked : { ...forked, headMessageId };
-          })
-        : (() => {
-            throw new Error("Unknown Claude history operation.");
-          })();
+          ? await forkSession(sessionId, options).then(async (forked) => {
+              const headMessageId = await getSessionMessages(forked.sessionId, options)
+                .then((messages) => messages.at(-1)?.uuid)
+                .catch(() => undefined);
+              return headMessageId === undefined ? forked : { ...forked, headMessageId };
+            })
+          : (() => {
+              throw new Error("Unknown Claude history operation.");
+            })();
   process.stdout.write(JSON.stringify(result));
 }
