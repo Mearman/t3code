@@ -42,7 +42,6 @@ import {
   VcsListRefsResult,
   type ReviewDiffFileContentsInput,
   type ReviewDiffPreviewResult,
-  type VcsError,
   type WorktreeSubmodules,
 } from "@t3tools/contracts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
@@ -57,7 +56,7 @@ import {
 import { autoPullProjects } from "../serverRuntimeStartup.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
-import { gitConfigEnv, layer as layerVcsProcess, VcsProcess } from "./VcsProcess.ts";
+import { gitConfigEnv } from "./VcsProcess.ts";
 
 const encodeGitCommandError = Schema.encodeEffect(Schema.fromJsonString(GitCommandError));
 const decodeVcsRef = Schema.decodeUnknownSync(VcsRef);
@@ -7833,106 +7832,260 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           assert.equal(entrySeconds.length, 51);
           return entrySeconds.filter((seconds) => seconds >= indexSecond);
         });
-        while ((yield* racyEntries).length > 0 || (yield* fs.exists(`${indexPath}.t3-refresh`))) {
+        const pinned = fs
+          .readDirectory(path.dirname(indexPath))
+          .pipe(Effect.map((names) => names.some((name) => name.startsWith("index.t3-refresh-"))));
+        while ((yield* racyEntries).length > 0 || (yield* pinned)) {
           yield* Queue.take(indexChanges);
         }
         assert.isFalse(yield* fs.exists(`${indexPath}.lock`));
       }),
     );
-    it.effect.each(["GitVcsDriver", "VcsProcess"] as const)(
-      "a %s command in a new worktree waits for its index swap instead of failing on the lock",
-      (runner) =>
-        Effect.gen(function* () {
-          const cwd = yield* makeTmpDir();
-          const { initialBranch } = yield* initRepoWithCommit(cwd);
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const processes = yield* VcsProcess;
-          const clock = yield* Clock.Clock;
-          const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "swapped");
-          const worktreesDir = path.join(cwd, ".git", "worktrees");
-          const sleeping = yield* Deferred.make<void>();
-          const locked = yield* Deferred.make<void>();
-          const release = yield* Deferred.make<void>();
-          // Stamped in the layer clock's current second, the index is racy; its swap holds index.lock.
-          const swappingFs = FileSystem.FileSystem.of({
-            ...fs,
-            stat: (file) =>
-              fs.stat(file).pipe(
-                Effect.map((info) =>
-                  file.startsWith(worktreesDir) && path.basename(file) === "index"
-                    ? {
-                        ...info,
-                        mtime: Option.some(
-                          DateTime.toDateUtc(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe())),
-                        ),
-                      }
-                    : info,
+    // A new worktree whose index stays in second `second`: T3 and Git both see it there, and its
+    // background check waits on the test clock. `afterPin` and `beforeBump` run inside that check.
+    const racyIndexFixture = Effect.fnUntraced(function* (
+      hooks: {
+        readonly afterPin?: Effect.Effect<void>;
+        readonly beforeBump?: Effect.Effect<void>;
+      } = {},
+    ) {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const clock = yield* Clock.Clock;
+      // A second already over, so files written now land after it.
+      const second = Math.floor((yield* TestClock.withLive(Clock.currentTimeMillis)) / 1000) - 60;
+      const sleeps = yield* Queue.unbounded<void>();
+      const finished = yield* Queue.unbounded<void>();
+      const isPin = (file: string) => path.basename(file).startsWith("index.t3-refresh-");
+      const isWorktreeIndex = (file: string) =>
+        path.basename(file) === "index" &&
+        path.basename(path.dirname(path.dirname(file))) === "worktrees";
+      const fixtureFs = FileSystem.FileSystem.of({
+        ...fs,
+        stat: (file) =>
+          fs.stat(file).pipe(
+            Effect.map((info) =>
+              isWorktreeIndex(file)
+                ? {
+                    ...info,
+                    mtime: Option.some(DateTime.toDateUtc(DateTime.makeUnsafe(second * 1000))),
+                  }
+                : info,
+            ),
+          ),
+        link: (from, to) =>
+          fs
+            .link(from, to)
+            .pipe(Effect.andThen(isPin(to) ? (hooks.afterPin ?? Effect.void) : Effect.void)),
+        utimes: (file, atime, mtime) =>
+          (isPin(file) ? (hooks.beforeBump ?? Effect.void) : Effect.void).pipe(
+            Effect.andThen(fs.utimes(file, atime, mtime)),
+          ),
+        remove: (file, options) =>
+          fs
+            .remove(file, options)
+            .pipe(Effect.andThen(isPin(file) ? Queue.offer(finished, undefined) : Effect.void)),
+      });
+      const fixtureClock: Clock.Clock = {
+        ...clock,
+        currentTimeMillisUnsafe: () => second * 1000,
+        currentTimeMillis: Effect.succeed(second * 1000),
+        // Git's own timeouts sleep longer than the second the check waits out.
+        sleep: (duration) =>
+          Duration.isLessThan(duration, Duration.seconds(2))
+            ? Queue.offer(sleeps, undefined).pipe(Effect.andThen(clock.sleep(duration)))
+            : clock.sleep(duration),
+      };
+      const driver = yield* makeGitVcsDriverCore().pipe(
+        Effect.provideService(FileSystem.FileSystem, fixtureFs),
+      );
+      const indexPath = (worktreePath: string) =>
+        git(worktreePath, ["rev-parse", "--git-path", "index"]).pipe(
+          Effect.map((relative) => path.resolve(worktreePath, relative)),
+        );
+      return {
+        second,
+        indexPath,
+        createWorktree: (input: Parameters<typeof driver.createWorktree>[0]) =>
+          driver.createWorktree(input).pipe(Effect.provideService(Clock.Clock, fixtureClock)),
+        /** Waits until `count` checks are sleeping, wakes them and waits for them to finish. */
+        runChecks: (count: number) =>
+          Effect.gen(function* () {
+            yield* Effect.forEach(Array.from({ length: count }), () => Queue.take(sleeps), {
+              discard: true,
+            });
+            return {
+              wake: TestClock.adjust("2 seconds").pipe(
+                Effect.andThen(
+                  Effect.forEach(Array.from({ length: count }), () => Queue.take(finished), {
+                    discard: true,
+                  }),
                 ),
               ),
-            link: (from, to) =>
-              fs
-                .link(from, to)
-                .pipe(
-                  Effect.andThen(Deferred.succeed(locked, undefined)),
-                  Effect.andThen(Deferred.await(release)),
-                ),
-          });
-          const driver = yield* makeGitVcsDriverCore().pipe(
-            Effect.provideService(FileSystem.FileSystem, swappingFs),
+            };
+          }),
+        /** Records every tracked file and the index itself as stamped in `second`. */
+        stampInSecond: (worktreePath: string) =>
+          Effect.gen(function* () {
+            const files = (yield* git(worktreePath, ["ls-files", "-z"]))
+              .split("\0")
+              .filter((file) => file.length > 0);
+            yield* Effect.forEach(
+              files,
+              (file) => fs.utimes(path.join(worktreePath, file), second, second),
+              {
+                discard: true,
+              },
+            );
+            yield* git(worktreePath, ["update-index", "-q", "--refresh"]);
+            yield* fs.utimes(yield* indexPath(worktreePath), second, second);
+          }),
+        indexSecond: (worktreePath: string) =>
+          indexPath(worktreePath).pipe(
+            Effect.flatMap((file) => fs.stat(file)),
+            Effect.map((info) => Math.floor(Option.getOrThrow(info.mtime).getTime() / 1000)),
+          ),
+        // Git compares the contents of every entry stamped in the index's own second or later.
+        racyEntries: (worktreePath: string) =>
+          Effect.gen(function* () {
+            const info = yield* fs.stat(yield* indexPath(worktreePath));
+            const indexSecond = Math.floor(Option.getOrThrow(info.mtime).getTime() / 1000);
+            return Array.from(
+              (yield* git(worktreePath, ["ls-files", "--debug"])).matchAll(/^ {2}mtime: (\d+):/gm),
+              ([, seconds]) => Number(seconds),
+            ).filter((seconds) => seconds >= indexSecond);
+          }),
+      };
+    });
+
+    it.effect("moves a new worktree's racy index past its checkout second", () =>
+      Effect.gen(function* () {
+        const fixture = yield* racyIndexFixture();
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const path = yield* Path.Path;
+        const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "racy");
+        yield* fixture.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: initialBranch,
+          newRefName: "t3/racy",
+        });
+        const checks = yield* fixture.runChecks(1);
+        yield* fixture.stampInSecond(worktreePath);
+        assert.isNotEmpty(yield* fixture.racyEntries(worktreePath));
+
+        yield* checks.wake;
+
+        assert.equal(yield* fixture.indexSecond(worktreePath), fixture.second + 1);
+        assert.deepStrictEqual(yield* fixture.racyEntries(worktreePath), []);
+        assert.equal(yield* git(worktreePath, ["status", "--porcelain"]), "");
+      }),
+    );
+    it.effect("keeps a new worktree's index racy while an edit its stat cannot show is there", () =>
+      Effect.gen(function* () {
+        const fixture = yield* racyIndexFixture();
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const path = yield* Path.Path;
+        const fs = yield* FileSystem.FileSystem;
+        yield* writeTextFile(cwd, "same.txt", "before\n");
+        yield* git(cwd, ["add", "same.txt"]);
+        yield* git(cwd, ["commit", "-m", "same size"]);
+        // An edit inside the checkout second keeps its ctime second too, which the test cannot set.
+        yield* git(cwd, ["config", "core.trustctime", "false"]);
+        const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "edited");
+        yield* fixture.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: initialBranch,
+          newRefName: "t3/edited",
+        });
+        const checks = yield* fixture.runChecks(1);
+        yield* fixture.stampInSecond(worktreePath);
+        yield* writeTextFile(worktreePath, "same.txt", "after!\n");
+        yield* fs.utimes(path.join(worktreePath, "same.txt"), fixture.second, fixture.second);
+        assert.equal(yield* git(worktreePath, ["diff", "--name-only"]), "same.txt");
+
+        yield* checks.wake;
+
+        assert.equal(yield* fixture.indexSecond(worktreePath), fixture.second);
+        assert.equal(yield* git(worktreePath, ["diff", "--name-only"]), "same.txt");
+      }),
+    );
+    it.effect(
+      "never holds a new worktree's index lock against Git, nested worktrees included",
+      () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const fs = yield* FileSystem.FileSystem;
+          const layerGit = yield* GitVcsDriver.GitVcsDriver;
+          const outerRepo = yield* makeTmpDir();
+          const innerRepo = yield* makeTmpDir();
+          const outer = path.join(yield* makeTmpDir("git-worktrees-"), "outer");
+          const inner = path.join(outer, "web");
+          const added: Array<string> = [];
+          const failures: Array<unknown> = [];
+          let pins = 0;
+          let bumps = 0;
+          // Stages a new file in both worktrees, as an agent's own Git might at any moment.
+          const addEverywhere = Effect.forEach(
+            [outer, inner],
+            (worktreePath) =>
+              Effect.gen(function* () {
+                const file = `step-${added.length}.txt`;
+                yield* writeTextFile(worktreePath, file, "step\n");
+                yield* git(worktreePath, ["add", file]);
+                added.push(path.join(worktreePath, file));
+              }).pipe(
+                Effect.catch((cause) => Effect.sync(() => failures.push(cause))),
+                Effect.provideService(GitVcsDriver.GitVcsDriver, layerGit),
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, path),
+              ),
+            { discard: true },
           );
-          // Git's own timeouts sleep for longer than the second the swap waits out.
-          const swapClock: Clock.Clock = {
-            ...clock,
-            sleep: (duration) =>
-              Duration.isLessThan(duration, Duration.seconds(2))
-                ? Deferred.succeed(sleeping, undefined).pipe(Effect.andThen(clock.sleep(duration)))
-                : clock.sleep(duration),
-          };
-          yield* driver
-            .createWorktree({
-              cwd,
-              path: worktreePath,
-              refName: initialBranch,
-              newRefName: "feature/swapped",
-            })
-            .pipe(Effect.provideService(Clock.Clock, swapClock));
-          yield* Deferred.await(sleeping);
-          yield* TestClock.adjust("2 seconds");
-          yield* Deferred.await(locked);
-
-          yield* writeTextFile(worktreePath, "staged.txt", "staged\n");
-          const waiting = yield* Deferred.make<void>();
-          const tracer = Tracer.make({
-            span(options) {
-              if (options.name === "GitVcsDriver.afterIndexSwap") {
-                Deferred.doneUnsafe(waiting, Effect.void);
-              }
-              return new Tracer.NativeSpan(options);
-            },
+          const fixture = yield* racyIndexFixture({
+            afterPin: Effect.sync(() => pins++).pipe(Effect.andThen(addEverywhere)),
+            beforeBump: Effect.sync(() => bumps++).pipe(Effect.andThen(addEverywhere)),
           });
-          const operation = "GitVcsDriver.test.afterIndexSwap";
-          const stage: Effect.Effect<void, GitCommandError | VcsError> =
-            runner === "GitVcsDriver"
-              ? driver
-                  .execute({ operation, cwd: worktreePath, args: ["add", "staged.txt"] })
-                  .pipe(Effect.asVoid)
-              : processes
-                  .run({
-                    operation,
-                    command: "git",
-                    args: ["-C", worktreePath, "add", "staged.txt"],
-                    cwd: worktreePath,
-                  })
-                  .pipe(Effect.asVoid);
-          const staged = yield* stage.pipe(Effect.withTracer(tracer), Effect.forkChild);
-          // Release once the command has failed on the lock or is waiting for the swap.
-          yield* Effect.raceFirst(Fiber.await(staged).pipe(Effect.asVoid), Deferred.await(waiting));
-          yield* Deferred.succeed(release, undefined);
-          yield* Fiber.join(staged);
+          const { initialBranch: outerBranch } = yield* initRepoWithCommit(outerRepo);
+          const { initialBranch: innerBranch } = yield* initRepoWithCommit(innerRepo);
+          yield* fixture.createWorktree({
+            cwd: outerRepo,
+            path: outer,
+            refName: outerBranch,
+            newRefName: "t3/outer",
+          });
+          yield* fixture.createWorktree({
+            cwd: innerRepo,
+            path: inner,
+            refName: innerBranch,
+            newRefName: "t3/inner",
+          });
+          const checks = yield* fixture.runChecks(2);
+          yield* addEverywhere;
+          yield* fixture.stampInSecond(outer);
+          yield* fixture.stampInSecond(inner);
 
-          assert.equal(yield* git(worktreePath, ["diff", "--cached", "--name-only"]), "staged.txt");
-        }).pipe(Effect.provide(layerVcsProcess)),
+          yield* checks.wake;
+          yield* addEverywhere;
+
+          assert.deepStrictEqual(failures, []);
+          // An add replaces its index, so a check that pins the new one stops before its bump.
+          assert.equal(pins, 2);
+          assert.isAtLeast(bumps, 1);
+          assert.equal(added.length, 2 * (2 + pins + bumps));
+          for (const worktreePath of [outer, inner]) {
+            const staged = (yield* git(worktreePath, ["diff", "--cached", "--name-only"])).split(
+              "\n",
+            );
+            assert.equal(
+              staged.length,
+              added.filter((file) => path.dirname(file) === worktreePath).length,
+            );
+          }
+        }),
     );
     it.effect("returns the worktree when its index refresh fails", () =>
       Effect.gen(function* () {

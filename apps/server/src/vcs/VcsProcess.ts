@@ -24,7 +24,6 @@ import type { SourceControlProcessInput } from "@t3tools/source-control-core/ser
 
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { outsideIndexSwap } from "./worktreeIndexSwap.ts";
 
 export interface VcsProcessInput {
   readonly operation: string;
@@ -402,11 +401,7 @@ export const make = Effect.gen(function* () {
   });
 
   const run = Effect.fn("VcsProcess.run")(function* (input: VcsProcessInput) {
-    const unbounded =
-      input.command === "git"
-        ? outsideIndexSwap(input.cwd, runUnbounded(input))
-        : runUnbounded(input);
-    const bounded = vcsProcesses.withPermits(1)(unbounded);
+    const bounded = vcsProcesses.withPermits(1)(runUnbounded(input));
     if (
       input.command === "git" &&
       input.operation === CHECKPOINT_CAPTURE_OPERATION &&
