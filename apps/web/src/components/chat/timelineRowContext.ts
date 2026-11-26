@@ -93,8 +93,12 @@ export interface TimelineRowSharedState {
   onForkFromRun:
     | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
     | undefined;
-  /** Per run refused for a held session, the run the fork offered on its error starts from. */
-  heldSessionForkSources: ReadonlyMap<RunId, RunId>;
+  /** This thread's runs refused for a held session; their error rows offer a fork from the run. */
+  heldSessionRefusedRuns: ReadonlySet<RunId>;
+  /** Offered on those rows even where response forks are hidden, as it is the way forward. */
+  onForkHeldSession:
+    | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
+    | null;
   onToggleTurnFold: (runId: RunId) => void;
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;

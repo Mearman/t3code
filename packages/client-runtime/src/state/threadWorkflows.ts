@@ -4,7 +4,6 @@ import {
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ProviderFailure,
-  type OrchestrationV2Run,
   type RunId,
 } from "@t3tools/contracts";
 import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
@@ -260,53 +259,26 @@ export function canForkProjectedAssistantItem(input: {
   return canForkNatively || capabilities.context.supportsFullThreadHandoff;
 }
 
-const FORKABLE_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["status"]> = new Set([
-  "completed",
-  "waiting",
-  "failed",
-  "interrupted",
-  "cancelled",
-]);
-
-/** Whether a failure is a refusal because another process was seen holding the session. */
-export function isHeldSessionFailure(failure: Pick<OrchestrationV2ProviderFailure, "code">) {
-  return failure.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE;
-}
-
 /**
- * For each run of this thread refused because another process holds its session, the run a fork
- * offered on it starts from: the latest earlier forkable run the provider took a turn for, so a
- * native fork stops at that turn, else the refused run, which forks what T3 Code recorded.
+ * This thread's runs refused because another process was seen holding its session, sorted. A
+ * fork offered on one starts from it: a failed run is never forked natively, so the fork carries
+ * what T3 Code recorded, the refused message included, and nothing only the other process wrote.
  */
-export function heldSessionForkSources(
-  projection: Pick<Projection, "thread" | "runs" | "providerTurns" | "turnItems">,
-): ReadonlyMap<RunId, RunId> {
-  const sources = new Map<RunId, RunId>();
+export function heldSessionRefusedRunIds(
+  projection: Pick<Projection, "thread" | "turnItems">,
+): ReadonlyArray<RunId> {
+  const refused = new Set<RunId>();
   for (const item of projection.turnItems) {
     if (
-      item.type !== "error" ||
-      item.threadId !== projection.thread.id ||
-      item.runId === null ||
-      !isHeldSessionFailure(item.failure)
+      item.type === "error" &&
+      item.threadId === projection.thread.id &&
+      item.runId !== null &&
+      isHeldSessionFailure(item.failure)
     ) {
-      continue;
+      refused.add(item.runId);
     }
-    const refused = projection.runs.find((run) => run.id === item.runId);
-    if (refused === undefined) continue;
-    const source = projection.runs
-      .filter(
-        (run) =>
-          run.ordinal < refused.ordinal &&
-          FORKABLE_RUN_STATUSES.has(run.status) &&
-          projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId),
-      )
-      .reduce<OrchestrationV2Run | undefined>(
-        (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
-        undefined,
-      );
-    sources.set(refused.id, (source ?? refused).id);
   }
-  return sources;
+  return [...refused].toSorted();
 }
 
 export function canDetachThreadProviderSession(projection: Projection): boolean {

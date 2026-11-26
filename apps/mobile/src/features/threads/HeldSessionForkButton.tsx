@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
-import { heldSessionForkSources } from "@t3tools/client-runtime/state/thread-workflows";
 import { ThreadId, type EnvironmentId, type RunId } from "@t3tools/contracts";
 import * as Haptics from "expo-haptics";
 import { useGT } from "gt-react-native";
@@ -16,25 +15,25 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { waitForThreadShell } from "./threadForkNavigation";
 
-/** Offered on this thread's own run refused because another process holds its session. */
+/**
+ * Offered on this thread's own run refused because another process holds its session. The fork
+ * starts from the refused run, which is never forked natively, so it carries what T3 Code
+ * recorded and nothing only the other process wrote.
+ */
 export function HeldSessionForkButton(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly refusedRunId: RunId;
 }) {
-  const fork = useAtomValue(
+  const title = useAtomValue(
     environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, props.threadId)),
-    (thread) => {
-      if (thread === null || thread === undefined) return undefined;
-      const runId = heldSessionForkSources(thread.projection).get(props.refusedRunId);
-      return runId === undefined ? undefined : { runId, title: thread.projection.thread.title };
-    },
+    (thread) => thread?.projection.thread.title,
   );
   const gt = useGT();
   const forkFromRun = useAtomCommand(threadEnvironment.forkFromRun, "fork held session");
   const selectDetail = useSelectWorkspaceDetail();
   const [busy, setBusy] = useState(false);
-  if (fork === undefined) return null;
+  if (title === undefined) return null;
   return (
     <View className="ml-7 mt-2">
       <Button
@@ -51,8 +50,8 @@ export function HeldSessionForkButton(props: {
             input: {
               sourceThreadId: props.threadId,
               targetThreadId,
-              runId: fork.runId,
-              title: `${fork.title} fork`,
+              runId: props.refusedRunId,
+              title: `${title} fork`,
               creationSource: "mobile",
             },
           })
