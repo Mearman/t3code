@@ -837,12 +837,11 @@ const make = Effect.gen(function* () {
     groups: ReadonlyArray<ReadonlyArray<OrchestrationV2DomainEvent>>,
   ) {
     let batch: Array<OrchestrationV2DomainEvent> = [];
-    let writes = 0;
-    // Live subscribers buffer a bounded backlog, so writes after the first wait for capacity.
-    const flush = Effect.gen(function* () {
-      if (writes++ > 0) yield* capacity.wait;
-      yield* eventSink.write({ events: batch });
+    // Runs under the thread's lock, so it never waits; the scheduler waits between steps instead.
+    const flush = Effect.suspend(() => {
+      const events = batch;
       batch = [];
+      return eventSink.write({ events });
     });
     for (const group of groups) {
       if (batch.length > 0 && batch.length + group.length > MAX_EVENTS_PER_WRITE) yield* flush;
@@ -1308,13 +1307,10 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(fail("sync a session", input.transcript.sessionId))),
   );
 
-  /*
-   * The scheduler. Invariants: a session is queued at most once; a request runs one bounded
-   * step, and one that has more goes to the back of its lane, so N appending sessions each
-   * advance in turn; urgent work never waits on host load; every step first waits, outside any
-   * lock, for live subscribers to catch up; a session is asked for again only when its file's
-   * size or mtime changed since its last step, or a T3 Code run on its thread settled.
-   */
+  // Scheduler invariants: a session is queued once; a step that has more goes to the back of its
+  // lane, so appending sessions advance in turn; urgent work never waits on host load; each step
+  // waits for live subscribers outside any lock; a session is asked for again only when its
+  // file's size or mtime changed, or a T3 Code run on its thread settled.
   const requestKey = (storeKey: string, sessionId: string) => `${storeKey}\0${sessionId}`;
   const queued = new Map<string, HydrationRequest>();
   const lanes = { urgent: new Fifo<string>(), fill: new Fifo<string>() };
