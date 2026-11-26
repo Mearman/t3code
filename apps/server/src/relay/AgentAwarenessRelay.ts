@@ -640,7 +640,8 @@ export const make = Effect.gen(function* () {
     if (
       snapshot.state === null &&
       Option.isSome(thread) &&
-      (thread.value.latestRunId === null || thread.value.latestRunNativeOrigin === true) &&
+      ((thread.value.status === "idle" && thread.value.latestRunId === null) ||
+        thread.value.latestRunNativeOrigin === true) &&
       !hasLivePublishedState(publishedStateByThread, threadId)
     ) {
       return;
