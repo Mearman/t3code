@@ -79,6 +79,7 @@ export type ClaudeTranscriptItem =
 /** One line's items, with the hash that says whether a caller already holds this version. */
 export interface ClaudeTranscriptLineContent {
   readonly lineUuid: string;
+  /** The line's version: its bytes, and for the opener also the turn's opener kind and prompt id. */
   readonly hash: number;
   readonly items: ReadonlyArray<ClaudeTranscriptItem>;
 }
@@ -249,6 +250,16 @@ const forkOf = (record: ClaudeTranscriptRecord) =>
     ? record.line.forkedFrom
     : undefined;
 
+// The opener's prompt takes its prompt id and kind from the turn, which can change while its bytes do not.
+function openerVersion(hash: number, turn: ClaudeTranscriptTurn): number {
+  const key = `${hash}\u0000${turn.opener}\u0000${turn.promptId ?? ""}`;
+  let version = 0x811c9dc5;
+  for (let index = 0; index < key.length; index++) {
+    version = Math.imul(version ^ key.charCodeAt(index), 0x01000193);
+  }
+  return version >>> 0;
+}
+
 // Adjacent lines are read together up to this size, and the fiber yields between reads.
 const READ_GROUP_BYTES = 1024 * 1024;
 
@@ -274,13 +285,15 @@ export const readClaudeTranscriptTurn = Effect.fn("readClaudeTranscriptTurn")(fu
     readonly offset: number;
     readonly length: number;
     readonly hash: number;
+    readonly version: number;
   }> = [];
   const inTurn = new Set(turn.lineUuids);
   for (const uuid of turn.lineUuids) {
     const entry = index.entryOf(uuid);
     if (entry === undefined) return yield* new ClaudeTranscriptChangedError({ lineUuid: uuid });
     const location = index.location(entry);
-    if (known.get(uuid) !== location.hash) located.push({ uuid, ...location });
+    const hash = uuid === turn.id ? openerVersion(location.hash, turn) : location.hash;
+    if (known.get(uuid) !== hash) located.push({ uuid, ...location, version: hash });
   }
   const groups: Array<Array<(typeof located)[number]>> = [];
   let groupBytes = 0;
@@ -325,7 +338,7 @@ export const readClaudeTranscriptTurn = Effect.fn("readClaudeTranscriptTurn")(fu
 
   let opener: ClaudeTranscriptTurnContent["opener"];
   const lines: Array<ClaudeTranscriptLineContent> = [];
-  const hashes = new Map(located.map((line) => [line.uuid, line.hash]));
+  const hashes = new Map(located.map((line) => [line.uuid, line.version]));
   for (const uuid of turn.lineUuids) {
     const record = records.get(uuid);
     const hash = hashes.get(uuid);
