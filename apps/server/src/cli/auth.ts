@@ -353,6 +353,7 @@ const sessionIssueCommand = Command.make("issue", {
 const sessionListCommand = Command.make("list", {
   ...authLocationFlags,
   json: jsonFlag,
+  requireCurrentSchema: requireCurrentSchemaFlag,
 }).pipe(
   Command.withDescription("List active sessions without revealing bearer tokens."),
   Command.withHandler((flags) =>
@@ -365,6 +366,7 @@ const sessionListCommand = Command.make("list", {
         }),
       {
         quietLogs: flags.json,
+        requireCurrentSchema: flags.requireCurrentSchema,
       },
     ),
   ),
