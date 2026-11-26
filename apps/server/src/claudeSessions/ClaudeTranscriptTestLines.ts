@@ -1,6 +1,12 @@
+import { expect } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 
 import { ClaudeTranscriptIndex } from "./ClaudeTranscriptIndex.ts";
+import { ClaudeTranscriptTurnTracker } from "./ClaudeTranscriptTurnTracker.ts";
+import {
+  claudeTranscriptStructure,
+  type ClaudeTranscriptStructure,
+} from "./ClaudeTranscriptTurns.ts";
 
 /** Builds transcript lines shaped like Claude Code's, stamped one second apart unless told. */
 export function claudeTranscriptFixture() {
@@ -70,6 +76,28 @@ export function claudeTranscriptFixture() {
       stop: string | null = "end_turn",
       extra: Extra = {},
     ) => assistant(uuid, parentUuid, { type: "text", text: body }, stop, extra),
+    /** A reply line holding several blocks at once. */
+    blocks: (
+      uuid: string,
+      parentUuid: string | null,
+      blocks: ReadonlyArray<unknown>,
+      extra: Extra = {},
+    ) =>
+      line(
+        {
+          type: "assistant",
+          uuid,
+          parentUuid,
+          message: {
+            id: `msg-${uuid}`,
+            model: "claude-test",
+            role: "assistant",
+            content: blocks,
+            stop_reason: "end_turn",
+          },
+        },
+        extra,
+      ),
     thinking: (uuid: string, parentUuid: string | null, extra: Extra = {}) =>
       assistant(
         uuid,
@@ -160,4 +188,46 @@ export function indexClaudeTranscriptLines(lines: ReadonlyArray<unknown>): Claud
     offset += bytes.length + 1;
   }
   return index;
+}
+
+/**
+ * Feeds the lines to a tracker in the given order, in groups of `group` lines, and checks after
+ * every update that it equals the definition over the same index and that it reported exactly
+ * the turns whose digest is new or changed, and those that went away.
+ */
+export function expectTrackerFollows(
+  lines: ReadonlyArray<unknown>,
+  label: string,
+  groups: ReadonlyArray<number> = [1],
+) {
+  const encoder = new TextEncoder();
+  const tracker = new ClaudeTranscriptTurnTracker();
+  let previous: ClaudeTranscriptStructure | undefined;
+  let offset = 0;
+  let position = 0;
+  for (let round = 0; position < lines.length; round++) {
+    const size = groups[round % groups.length] ?? 1;
+    for (const line of lines.slice(position, position + size)) {
+      const bytes = encoder.encode(typeof line === "string" ? line : JSON.stringify(line));
+      tracker.index.addLine(bytes, offset);
+      offset += bytes.length + 1;
+    }
+    position += size;
+    const update = tracker.update();
+    const expected = claudeTranscriptStructure(tracker.index);
+    const where = `${label}, after line ${Math.min(position, lines.length)}`;
+    expect(tracker.structure(), where).toEqual(expected);
+    const before = new Map(previous?.turns.map((turn) => [turn.id, turn.digest]));
+    const now = new Map(expected.turns.map((turn) => [turn.id, turn.digest]));
+    const changed = [...now].flatMap(([id, digest]) => (before.get(id) === digest ? [] : [id]));
+    const removed = [...before.keys()].filter((id) => !now.has(id));
+    if (update.rebuilt) {
+      expect(update.changedTurnIds.toSorted(), where).toEqual([...now.keys()].toSorted());
+    } else {
+      expect(update.changedTurnIds.toSorted(), where).toEqual(changed.toSorted());
+    }
+    expect(update.removedTurnIds.toSorted(), where).toEqual(removed.toSorted());
+    previous = expected;
+  }
+  return tracker;
 }
