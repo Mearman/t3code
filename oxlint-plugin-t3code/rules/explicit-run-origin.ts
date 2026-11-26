@@ -348,10 +348,8 @@ export default defineRule({
       }
       if (node.type === "FunctionDeclaration" && node.id != null && node.body != null) {
         const states = returnsOf(node.body as Node).map((value) => runCollection(value, decided));
-        if (states.includes("undecided")) learn(bareFunctions, scope, node.id.name);
-        else if (states.length > 0 && states.every((state) => state === "decided")) {
-          learn(functions, scope, node.id.name);
-        }
+        if (states.some((state) => state === "decided")) learn(functions, scope, node.id.name);
+        else if (states.includes("undecided")) learn(bareFunctions, scope, node.id.name);
       }
       for (const child of children(node)) collectDecided(child, inner);
     };
