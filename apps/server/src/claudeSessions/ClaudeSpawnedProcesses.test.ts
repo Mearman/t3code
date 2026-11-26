@@ -25,6 +25,21 @@ describe("makeClaudeSpawnedProcesses", () => {
     }),
   );
 
+  it.effect("still lists a CLI that exits while the registry paths resolve", () =>
+    Effect.gen(function* () {
+      let exit = () => {};
+      const spawned = makeClaudeSpawnedProcesses(Effect.succeed([]), (path) =>
+        Effect.sync(() => {
+          exit();
+          return path;
+        }),
+      );
+      exit = spawned.register(101, "/work");
+
+      expect(yield* spawned.pids("/work")).toEqual([101]);
+    }),
+  );
+
   it.effect("lists only the CLIs writing to the registry asked about, by any path to it", () =>
     Effect.gen(function* () {
       const spawned = spawnedProcesses();
