@@ -519,8 +519,12 @@ describe("parseClaudeTranscriptLines", () => {
       // Typed while the reply streamed; Claude Code writes the reply's remaining lines after it.
       user("p1", "r0", "Typed during the reply", { promptId: "prompt-1" }),
       attachment("at1", "p1", { type: "hook_success" }),
-      assistant("a1", "r0", { type: "thinking", thinking: "", signature: "s" }, "tool_use", "m1"),
-      assistant("a2", "a1", text("Late text"), "tool_use", "m1"),
+      assistant("a1", "r0", { type: "thinking", thinking: "", signature: "s" }, "tool_use", "m1", {
+        timestamp: "2025-12-31T23:59:58.000Z",
+      }),
+      assistant("a2", "a1", text("Late text"), "tool_use", "m1", {
+        timestamp: "2025-12-31T23:59:59.000Z",
+      }),
       assistant("a3", "a2", toolUse("tool-1"), "tool_use", "m1"),
       user("r1", "a3", [toolResult("tool-1")], { promptId: "prompt-0" }),
       user("i1", "r1", [text(INTERRUPT)], { promptId: "prompt-0" }),
@@ -540,9 +544,18 @@ describe("parseClaudeTranscriptLines", () => {
       p1: ["p1", "b1"],
     });
     const ends = events.filter((event) => event._tag === "SegmentEnded");
+    // Each late line of the superseded turn is followed by its end again, then the interrupt.
+    expect(ends.filter((end) => end.segmentId === "p0").map((end) => end.reason)).toEqual([
+      "next-prompt",
+      "next-prompt",
+      "next-prompt",
+      "next-prompt",
+      "next-prompt",
+      "interrupted",
+    ]);
     expect(ends.filter((end) => end.segmentId === "p0").at(-1)).toMatchObject({
-      reason: "interrupted",
       lastAssistantUuid: "a3",
+      timestamp: AT,
     });
     expect(ends.at(-1)).toMatchObject({
       segmentId: "p1",
@@ -572,30 +585,33 @@ describe("parseClaudeTranscriptLines", () => {
     ]);
   });
 
-  it("keeps a command line written after compaction with an earlier timestamp", () => {
+  it("keeps the command lines written after compaction with earlier timestamps", () => {
+    const at = (time: string) => ({ timestamp: `2026-01-01T${time}.000Z` });
     const { events } = parse([
-      user("p0", null, "First", { promptId: "prompt-0", timestamp: "2026-01-01T00:00:10.000Z" }),
+      user("p0", null, "First", { promptId: "prompt-0", ...at("00:00:10") }),
       {
         ...system("compact_boundary", "b1", null, {
           compactMetadata: { trigger: "manual", preTokens: 9 },
         }),
-        timestamp: "2026-01-01T00:01:00.000Z",
+        ...at("00:01:00"),
       },
-      user("s0", "later", "Resumed", {
-        promptId: "prompt-1",
-        timestamp: "2026-01-01T00:01:01.000Z",
+      user("s0", "later", "Resumed", { promptId: "prompt-1", ...at("00:01:01") }),
+      user("cs", "b1", "Summary", { isCompactSummary: true, ...at("00:01:00") }),
+      user("cv", "cs", "<local-command-caveat>caveat</local-command-caveat>", {
+        isMeta: true,
+        ...at("00:00:50"),
       }),
-      user("cs", "b1", "Summary", {
-        isCompactSummary: true,
-        timestamp: "2026-01-01T00:01:01.000Z",
-      }),
-      user("c1", "cs", "<command-name>/compact</command-name>", {
+      user("c1", "cv", "<command-name>/compact</command-name>", {
         promptId: "prompt-2",
-        timestamp: "2026-01-01T00:00:50.000Z",
+        ...at("00:00:50"),
       }),
     ]);
 
     expect(prompts(events).map((prompt) => prompt?.text)).toEqual(["First", "Resumed", "/compact"]);
+    // The segment the command supersedes ends no earlier than it started.
+    expect(
+      events.find((event) => event._tag === "SegmentEnded" && event.segmentId === "s0"),
+    ).toMatchObject({ reason: "next-prompt", timestamp: "2026-01-01T00:01:01.000Z" });
   });
 
   it("skips lines an earlier read consumed, however far back, and moves nothing for them", () => {
@@ -640,6 +656,241 @@ describe("parseClaudeTranscriptLines", () => {
       `item ${id("lc1")}`,
       "end lc1 turn-end undefined",
     ]);
+  });
+
+  it("delivers a prompt queued into a superseded turn that still waits on a tool into that turn", () => {
+    const { events } = parse([
+      user("p1", null, "First", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      user("p2", "a1", "Second", { promptId: "prompt-2" }),
+      user("r1", "a1", [toolResult("tool-1")], { promptId: "prompt-1" }),
+      queued("q1", "r1", "<task-notification>done</task-notification>", {
+        commandMode: "task-notification",
+      }),
+      assistant("a3", "q1", text("Carrying on"), "end_turn"),
+    ]);
+
+    expect(events.find((event) => event._tag === "QueuedPrompt")).toMatchObject({
+      segmentId: "p1",
+      lineUuid: "q1",
+    });
+    expect(summary(events).filter((line) => line.startsWith("start"))).toEqual([
+      "start p1",
+      "start p2",
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      segmentId: "p1",
+      reason: "turn-end",
+      lastAssistantUuid: "a3",
+    });
+    expect(events.filter((event) => event._tag === "Branch")).toEqual([]);
+  });
+
+  it("keeps a turn interrupted when Claude Code writes its own reply after the marker", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      user("i1", "a1", [text("[Request interrupted by user]")], { promptId: "prompt-1" }),
+      {
+        ...assistant("s1", "i1", text("No response requested."), "stop_sequence"),
+        message: {
+          id: "msg-s1",
+          model: "<synthetic>",
+          role: "assistant",
+          content: [text("No response requested.")],
+          stop_reason: "stop_sequence",
+        },
+      },
+    ]);
+
+    expect(events.at(-1)).toMatchObject({
+      _tag: "SegmentEnded",
+      segmentId: "p1",
+      reason: "interrupted",
+      lastAssistantUuid: "a1",
+    });
+  });
+
+  it("files a late line under its turn however many segments opened since", () => {
+    const records: Array<unknown> = [
+      user("p0", null, "First", { promptId: "prompt-0" }),
+      assistant("a0", "p0", toolUse("tool-0"), "tool_use"),
+    ];
+    for (let index = 1; index <= 20; index += 1) {
+      records.push(
+        user(`p${index}`, index === 1 ? "a0" : `p${index - 1}`, `Prompt ${index}`, {
+          promptId: `prompt-${index}`,
+        }),
+      );
+    }
+    records.push(user("r0", "a0", [toolResult("tool-0")], { promptId: "prompt-0" }));
+
+    const { events } = parse(records);
+
+    expect(
+      events.find((event) => event._tag === "Item" && event.item.lineUuid === "r0"),
+    ).toMatchObject({
+      segmentId: "p0",
+    });
+  });
+
+  it.each([
+    ["a reply that stopped without an end", assistant("a1", "p1", text("Stopped"), null), "a1"],
+    [
+      "a reply waiting on a tool, chained to an older line",
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      "p1",
+    ],
+  ] as const)("opens a segment for a slash command after %s", (_name, reply, commandParent) => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      reply,
+      system("local_command", "lc1", commandParent, {
+        content: "<command-name>/status</command-name>",
+      }),
+    ]);
+
+    expect(summary(events).slice(-3)).toEqual([
+      "start lc1",
+      `item ${id("lc1")}`,
+      "end lc1 turn-end undefined",
+    ]);
+  });
+
+  it("keeps the duration of a timed end when later output ends the turn again", () => {
+    const { events } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("a1", "p1", text("Done"), "end_turn"),
+      turnDuration("d1", "a1", 1200),
+      user("o1", "d1", "<local-command-stdout>output</local-command-stdout>", {
+        promptId: "prompt-1",
+      }),
+    ]);
+
+    expect(events.at(-1)).toMatchObject({ reason: "turn-duration", durationMs: 1200 });
+  });
+
+  it("opens a meta-opened turn for a reply that descends from it through other lines", () => {
+    const { events } = parse([
+      user("p0", null, "First", { promptId: "prompt-0" }),
+      assistant("a0", "p0", text("Done"), "end_turn"),
+      user("p1", "a0", "Second", { promptId: "prompt-1" }),
+      assistant("a1", "p1", text("Done"), "end_turn"),
+      user("m1", "a0", "Peer message", { isMeta: true, promptId: "prompt-2" }),
+      attachment("x1", "m1", { type: "hook_success" }),
+      assistant("r1", "x1", text("Answering the peer"), "end_turn"),
+    ]);
+
+    expect(
+      events.find((event) => event._tag === "Item" && event.item.lineUuid === "r1"),
+    ).toMatchObject({
+      segmentId: "m1",
+    });
+  });
+
+  it("files a reply continuing an older turn there while a meta opener is pending", () => {
+    const { events } = parse([
+      user("p0", null, "First", { promptId: "prompt-0" }),
+      assistant("a0", "p0", toolUse("tool-0"), "tool_use"),
+      user("p1", "a0", "Second", { promptId: "prompt-1" }),
+      user("m1", "p1", "Peer message", { isMeta: true, promptId: "prompt-2" }),
+      user("r0", "a0", [toolResult("tool-0")], { promptId: "prompt-0" }),
+      assistant("a2", "r0", text("Old turn goes on"), "end_turn"),
+    ]);
+
+    expect(
+      events.find((event) => event._tag === "Item" && event.item.lineUuid === "a2"),
+    ).toMatchObject({
+      segmentId: "p0",
+    });
+    expect(summary(events).filter((line) => line.startsWith("start"))).toEqual([
+      "start p0",
+      "start p1",
+    ]);
+  });
+
+  it("gives a pending meta line's prompt id to the turn its tool result is filed in", () => {
+    const { events } = parse([
+      user("p1", null, "First", { promptId: "prompt-1" }),
+      assistant("a1", "p1", toolUse("tool-1"), "tool_use"),
+      user("p2", "a1", "Second", { promptId: "prompt-2" }),
+      user("m1", "p2", "Hook context", { isMeta: true, promptId: "prompt-x" }),
+      user("r1", "a1", [toolResult("tool-1")], { promptId: "prompt-x" }),
+      user("o1", null, "<local-command-stdout>output</local-command-stdout>", {
+        promptId: "prompt-x",
+      }),
+    ]);
+
+    // The latest turn keeps its own prompt id, so output under the other one is not its own.
+    expect(summary(events).at(-2)).toBe("start o1");
+  });
+
+  it("reads a good copy of a line it stepped past", () => {
+    const { events, malformed, consumedUuids } = parse([
+      user("p1", null, "Go", { promptId: "prompt-1" }),
+      assistant("x1", "p1", { type: "tool_use", name: "Read" }, "tool_use"),
+      assistant("x1", "p1", toolUse("tool-1"), "tool_use"),
+    ]);
+
+    expect(malformed).toHaveLength(1);
+    expect(summary(events)).toContain(`item ${id("x1", 0)}`);
+    expect(consumedUuids).toEqual(["p1", "x1"]);
+  });
+
+  it("files late timing, attachments and stepped-past lines under the turn they continue", () => {
+    const { events } = parse([
+      user("p0", null, "First", { promptId: "prompt-0" }),
+      assistant("a0", "p0", toolUse("tool-0"), "tool_use"),
+      user("p1", "a0", "Second", { promptId: "prompt-1" }),
+      attachment("at0", "a0", { type: "hook_success" }),
+      assistant("a1", "at0", text("Via an attachment"), "tool_use"),
+      user("bad", "a1", [{ type: "text", text: 3 }], { promptId: "prompt-0" }),
+      assistant("a2", "bad", text("Via a stepped-past line"), "end_turn"),
+      turnDuration("d0", "a2", 900),
+    ]);
+
+    const filed = (lineUuid: string) =>
+      events.find((event) => event._tag === "Item" && event.item.lineUuid === lineUuid);
+    expect(filed("a1")).toMatchObject({ segmentId: "p0" });
+    expect(filed("a2")).toMatchObject({ segmentId: "p0" });
+    expect(events.at(-1)).toMatchObject({
+      segmentId: "p0",
+      reason: "turn-duration",
+      durationMs: 900,
+    });
+  });
+
+  it("reports a branch from a line an earlier read consumed beyond the recent window", () => {
+    const records: Array<unknown> = [user("p1", null, "Go", { promptId: "prompt-1" })];
+    let parent = "p1";
+    for (let index = 0; index < 600; index += 1) {
+      records.push(attachment(`n${index}`, parent, { type: "hook_success" }));
+      parent = `n${index}`;
+    }
+    const first = parse(records);
+
+    const { events } = parse(
+      [user("p2", "p1", "From the start again", { promptId: "prompt-2" })],
+      first.state,
+      new Set(first.consumedUuids),
+    );
+
+    expect(events.filter((event) => event._tag === "Branch")).toEqual([
+      { _tag: "Branch", lineUuid: "p2", parentUuid: "p1", previousUuid: "n599" },
+    ]);
+  });
+
+  it("keeps no prompt text but the latest segment's in its stored state", () => {
+    const records: Array<unknown> = [];
+    let parent: string | null = null;
+    for (let index = 0; index < 100; index += 1) {
+      records.push(user(`p${index}`, parent, "x".repeat(10_000), { promptId: `prompt-${index}` }));
+      parent = `p${index}`;
+    }
+
+    const { state } = parse(records);
+
+    expect(encodeState(state).length).toBeLessThan(64 * 1024);
   });
 
   it("ends a meta-opened turn that is interrupted before its reply, leaving the turn before it", () => {

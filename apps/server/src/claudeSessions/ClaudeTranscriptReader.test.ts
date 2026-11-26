@@ -190,6 +190,53 @@ it.layer(NodeServices.layer)("readClaudeTranscript", (it) => {
     }),
   );
 
+  it.effect("asks for no known uuids when a read finds no new line", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const filePath = yield* transcriptFile;
+      yield* fileSystem.writeFileString(filePath, prompt("p1", null, "First") + '{"partial":');
+      const initial = yield* read(filePath);
+
+      const idle = yield* readClaudeTranscript({
+        filePath,
+        sessionId: SESSION,
+        cursor: stored(initial.cursor),
+        maxBytes: BUDGET,
+        knownUuids: () => Effect.die("asked"),
+      });
+
+      expect(idle.events).toEqual([]);
+    }),
+  );
+
+  it.effect("looks up the parents of a read's lines, so a branch is seen across reads", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const filePath = yield* transcriptFile;
+      const filler = Array.from(
+        { length: 600 },
+        (_, index) =>
+          JSON.stringify({
+            type: "attachment",
+            uuid: `n${index}`,
+            parentUuid: index === 0 ? "p1" : `n${index - 1}`,
+            timestamp: "2026-01-01T00:00:00.000Z",
+            attachment: { type: "hook_success" },
+          }) + "\n",
+      ).join("");
+      const history = prompt("p1", null, "First") + filler;
+      yield* fileSystem.writeFileString(filePath, history);
+      const initial = yield* read(filePath);
+
+      yield* fileSystem.writeFileString(filePath, history + prompt("p2", "p1", "Again"));
+      const next = yield* read(filePath, initial.cursor);
+
+      expect(next.events.filter((event) => event._tag === "Branch")).toMatchObject([
+        { lineUuid: "p2", parentUuid: "p1" },
+      ]);
+    }),
+  );
+
   it.effect("asks for no known uuids when it reads from the top", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
