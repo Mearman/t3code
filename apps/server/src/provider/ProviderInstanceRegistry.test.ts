@@ -199,9 +199,9 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       }),
     ),
     Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
-    Layer.provideMerge(ServerSettings.layerTest()),
+    // Update checks run the real `npm view` in a fiber that outlives the test's temp directory.
+    Layer.provideMerge(ServerSettings.layerTest({ enableProviderUpdateChecks: false })),
     Layer.provideMerge(layerTestHttpClient),
-    Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provideMerge(
       Layer.succeed(
         ProviderEventLoggers.ProviderEventLoggers,
