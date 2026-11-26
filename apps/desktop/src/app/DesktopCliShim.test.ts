@@ -80,6 +80,17 @@ const SLOW_SERVER = [
 // The launcher mounts only under setsid, which stock macOS and Windows lack; there it extracts instead.
 const hasSetsid = NodeChildProcess.spawnSync("setsid", ["true"]).status === 0;
 
+// Holds the launcher between starting the server and its next command until a line is written to
+// the returned pipe. The test holds both ends, so neither side blocks if the other is gone.
+const holdAfterServerStart = (root: string, shim: string) => {
+  const gate = NodePath.join(root, "gate");
+  expect(NodeChildProcess.spawnSync("mkfifo", [gate]).status).toBe(0);
+  const parts = NodeFS.readFileSync(shim, "utf8").split(" <&9 9<&- &\n");
+  expect(parts).toHaveLength(2);
+  NodeFS.writeFileSync(shim, parts.join(` <&9 9<&- &\nhead -n 1 '${gate}' >/dev/null\n`));
+  return NodeFS.openSync(gate, "r+");
+};
+
 const lines = (stream: NodeJS.ReadableStream) => {
   const seen: Array<string> = [];
   const waiters: Array<() => void> = [];
@@ -110,10 +121,17 @@ describe("renderCliShim", () => {
     ["SIGHUP", "the process group"],
     ["SIGTERM", "every process"],
     ["SIGTERM", "the launcher"],
+    ["SIGTERM", "a launcher still starting the server"],
+    ["SIGHUP", "a launcher still starting the server"],
+    ["SIGINT", "a launcher still starting the server"],
   ] as const)(
     "keeps the AppImage mounted until the server exits after %s to %s",
     async (signal, target) => {
       const { root, shim } = fakeAppImage(true, SLOW_SERVER);
+      const gate =
+        target === "a launcher still starting the server"
+          ? holdAfterServerStart(root, shim)
+          : undefined;
       const child = NodeChildProcess.spawn(shim, [], {
         detached: true,
         env: { PATH: process.env.PATH },
@@ -127,8 +145,17 @@ describe("renderCliShim", () => {
         await stdout.until((line) => line === "ready");
         mounter = Number(NodeFS.readFileSync(NodePath.join(root, "mounter.pid"), "utf8"));
 
-        process.kill(target === "the launcher" ? child.pid! : -child.pid!, signal);
+        const grouped = target === "the process group" || target === "every process";
+        process.kill(grouped ? -child.pid! : child.pid!, signal);
         if (target === "every process") process.kill(mounter, signal);
+        if (gate !== undefined) {
+          // The terminal sends Ctrl-C to the server itself, so the launcher forwards only this.
+          if (signal === "SIGINT") process.kill(child.pid!, "SIGTERM");
+          NodeFS.writeSync(gate, "\n");
+          // A launcher that exits here unmounts, and the server never hears of the stop.
+          const first = await events.until((line) => line === "stopping" || line === "unmounted");
+          expect(first).toBe("stopping");
+        }
         // The shell runs pending traps in ascending signal number, and WINCH outnumbers TERM and
         // HUP, so a mounter that also got the group signal unmounts before it answers this probe.
         process.kill(mounter, "SIGWINCH");
@@ -140,6 +167,7 @@ describe("renderCliShim", () => {
         expect(await exited).toBe(7);
         expect(events.seen.slice(-2)).toEqual(["stopped go", "unmounted"]);
       } finally {
+        if (gate !== undefined) NodeFS.closeSync(gate);
         for (const pid of [-child.pid!, mounter]) {
           if (pid === undefined) continue;
           try {
