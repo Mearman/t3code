@@ -1202,115 +1202,127 @@ describe("AgentAwarenessRelay", () => {
     ),
   );
 
-  it.effect("clears a live card instead of alerting a run read back from a transcript", () =>
-    Effect.gen(function* () {
-      const store = yield* ProjectionStore.ProjectionStoreV2;
-      const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
-      const pulls = yield* Queue.unbounded<void>();
-      const { relay, publications } = yield* makeTestRelay({
-        readShell: (threadId) => store.getThreadShell(threadId).pipe(Effect.orDie),
-        domainEvents: Stream.fromEffectRepeat(
-          Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(events))),
-        ),
-      });
-      yield* relay.start();
+  const transcriptHarness = Effect.fnUntraced(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+    const pulls = yield* Queue.unbounded<void>();
+    const { relay, publications } = yield* makeTestRelay({
+      readShell: (threadId) => store.getThreadShell(threadId).pipe(Effect.orDie),
+      domainEvents: Stream.fromEffectRepeat(
+        Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(events))),
+      ),
+    });
+    yield* relay.start();
+    yield* Queue.take(pulls);
+    const deliver = Effect.fnUntraced(function* (event: OrchestrationV2DomainEvent) {
+      yield* store.apply(event);
+      yield* Queue.offer(events, event);
       yield* Queue.take(pulls);
-      const deliver = Effect.fnUntraced(function* (event: OrchestrationV2DomainEvent) {
-        yield* store.apply(event);
-        yield* Queue.offer(events, event);
-        yield* Queue.take(pulls);
-        yield* relay.drain;
-      });
-
-      const now = yield* DateTime.now;
-      const run = (id: string, ordinal: number) => ({
-        id: RunId.make(id),
+      yield* relay.drain;
+    });
+    const now = yield* DateTime.now;
+    const run = (id: string, ordinal: number) => ({
+      id: RunId.make(id),
+      threadId: THREAD_ID,
+      ordinal,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+      providerThreadId: null,
+      userMessageId: MessageId.make(`message:${id}`),
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "running" as const,
+      requestedAt: now,
+      startedAt: now,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    });
+    const transcriptRun = (id: string, ordinal: number) => ({
+      ...run(id, ordinal),
+      status: "interrupted" as const,
+      completedAt: now,
+      nativeOrigin: {
+        kind: "claude_transcript" as const,
+        nativeSessionId: "session-1",
+        promptUuid: `prompt:${id}`,
+      },
+    });
+    const runEvent = (
+      type: "run.created" | "run.updated",
+      payload: ReturnType<typeof run> | ReturnType<typeof transcriptRun>,
+    ): OrchestrationV2DomainEvent => {
+      const base = {
+        id: EventId.make(`event:${type}:${payload.id}:${payload.status}`),
         threadId: THREAD_ID,
-        ordinal,
+        runId: payload.id,
+        occurredAt: now,
+        payload,
+      };
+      return type === "run.created"
+        ? { ...base, type: "run.created" }
+        : { ...base, type: "run.updated" };
+    };
+    yield* deliver({
+      id: EventId.make("event:transcript:thread"),
+      type: "thread.created",
+      threadId: THREAD_ID,
+      occurredAt: now,
+      payload: {
+        createdBy: "user",
+        creationSource: "web",
+        id: THREAD_ID,
+        projectId: PROJECT_ID,
+        title: "Thread",
         providerInstanceId: ProviderInstanceId.make("codex"),
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
-        providerThreadId: null,
-        userMessageId: MessageId.make(`message:${id}`),
-        rootNodeId: null,
-        activeAttemptId: null,
-        status: "running" as const,
-        requestedAt: now,
-        startedAt: now,
-        completedAt: null,
-        checkpointId: null,
-        contextHandoffId: null,
-      });
-      const appRun = run("run:app", 1);
-      const transcriptRun = {
-        ...run("run:transcript", 2),
-        status: "completed" as const,
-        completedAt: now,
-        nativeOrigin: {
-          kind: "claude_transcript" as const,
-          nativeSessionId: "session-1",
-          promptUuid: "prompt-1",
-        },
-      };
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: null,
+        lineage: { rootThreadId: THREAD_ID, parentThreadId: null, relationshipToParent: null },
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      },
+    });
+    return { relay, deliver, publications, run, transcriptRun, runEvent, now };
+  });
 
-      yield* deliver({
-        id: EventId.make("event:transcript:thread"),
-        type: "thread.created",
-        threadId: THREAD_ID,
-        occurredAt: now,
-        payload: {
-          createdBy: "user",
-          creationSource: "web",
-          id: THREAD_ID,
-          projectId: PROJECT_ID,
-          title: "Thread",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          activeProviderThreadId: null,
-          lineage: { rootThreadId: THREAD_ID, parentThreadId: null, relationshipToParent: null },
-          forkedFrom: null,
-          createdAt: now,
-          updatedAt: now,
-          archivedAt: null,
-          settledOverride: null,
-          settledAt: null,
-          lastVisitedAt: null,
-          deletedAt: null,
-        },
-      });
-      yield* deliver({
-        id: EventId.make("event:transcript:app-run"),
-        type: "run.created",
-        threadId: THREAD_ID,
-        runId: appRun.id,
-        occurredAt: now,
-        payload: appRun,
-      });
-      yield* deliver({
-        id: EventId.make("event:transcript:app-run-completed"),
-        type: "run.updated",
-        threadId: THREAD_ID,
-        runId: appRun.id,
-        occurredAt: now,
-        payload: { ...appRun, status: "completed", completedAt: now },
-      });
-      yield* deliver({
-        id: EventId.make("event:transcript:native-run"),
-        type: "run.created",
-        threadId: THREAD_ID,
-        runId: transcriptRun.id,
-        occurredAt: now,
-        payload: transcriptRun,
-      });
+  it.effect("publishes nothing for a thread whose only runs came from a transcript", () =>
+    Effect.gen(function* () {
+      const { relay, deliver, publications, transcriptRun, runEvent } = yield* transcriptHarness();
+      yield* deliver(runEvent("run.created", transcriptRun("run:transcript-only", 1)));
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+
+      assert.deepEqual(publications, []);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+    ),
+  );
+
+  it.effect("still alerts a T3 completion when a transcript run lands during its hold", () =>
+    Effect.gen(function* () {
+      const { relay, deliver, publications, run, transcriptRun, runEvent, now } =
+        yield* transcriptHarness();
+      const appRun = run("run:app", 1);
+      yield* deliver(runEvent("run.created", appRun));
+      yield* deliver(runEvent("run.updated", { ...appRun, status: "completed", completedAt: now }));
+      yield* deliver(runEvent("run.created", transcriptRun("run:transcript", 2)));
       yield* TestClock.adjust("5 seconds");
       yield* relay.drain;
 
       assert.deepEqual(
         publications.map((publication) => publication.state?.phase ?? null),
-        ["running", null],
+        ["running", "completed"],
       );
     }).pipe(
       Effect.scoped,

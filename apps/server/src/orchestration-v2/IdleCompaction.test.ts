@@ -223,17 +223,28 @@ describe("idleCompactionWindow", () => {
     expect(idleCompactionWindow(delegating, NOW_MS)?.runId).toBe(runId);
   });
 
-  it("never compacts after a run read back from the Claude transcript", () => {
+  it("never compacts once the session went on outside T3", () => {
     const native = records({ cacheExpiresInMs: 60 * MINUTE_MS });
     expect(idleCompactionWindow(native, NOW_MS)?.runId).toBe(runId);
-    native.runs = native.runs.map((run) => ({
-      ...run,
-      nativeOrigin: {
-        kind: "claude_transcript" as const,
-        nativeSessionId: "session-1",
-        promptUuid: "prompt-1",
+    // The T3 run stays the latest T3 run, but the session it would compact has moved past it.
+    native.runs = [
+      ...native.runs,
+      {
+        ...native.runs[0]!,
+        id: RunId.make("run-transcript"),
+        ordinal: 2,
+        userMessageId: MessageId.make("message-transcript"),
+        nativeOrigin: {
+          kind: "claude_transcript" as const,
+          nativeSessionId: "session-1",
+          promptUuid: "prompt-1",
+        },
       },
-    }));
+    ];
+    native.messages = [
+      ...native.messages,
+      { ...native.messages[0]!, id: MessageId.make("message-transcript"), runId: null },
+    ];
     expect(idleCompactionWindow(native, NOW_MS)).toBeNull();
   });
 });
