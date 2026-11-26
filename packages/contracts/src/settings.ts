@@ -1081,9 +1081,21 @@ const ClaudeSessionHydrateRecentDays = Schema.Int.check(Schema.isGreaterThanOrEq
 /** Showing every Claude Code session from the configured Claude homes as a thread. */
 export const ClaudeSessionSyncSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  /** Sessions changed within this many days get their full history at once; older ones on open. */
+  /**
+   * Reads the full history of sessions nobody has opened, newest first, while the machine is idle. Off, a session's history is read when it is opened, followed live while a terminal holds it, and followed in full once T3 Code drives it.
+   */
+  backgroundFill: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** With the background fill on, sessions changed within this many days are filled first. */
   hydrateRecentDays: ClaudeSessionHydrateRecentDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(7)),
+  ),
+  /** Further Claude homes whose sessions are shown, beside those of the Claude instances. */
+  additionalHomes: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** Sessions whose working directory matches one of these globs are not shown (`*`, `?`, `**`, `~`). */
+  excludedCwdGlobs: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
   ),
 });
 export type ClaudeSessionSyncSettings = typeof ClaudeSessionSyncSettings.Type;
@@ -2032,7 +2044,10 @@ export const ServerSettingsPatch = Schema.Struct({
   claudeSessionSync: Schema.optionalKey(
     Schema.Struct({
       enabled: Schema.optionalKey(Schema.Boolean),
+      backgroundFill: Schema.optionalKey(Schema.Boolean),
       hydrateRecentDays: Schema.optionalKey(ClaudeSessionHydrateRecentDays),
+      additionalHomes: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+      excludedCwdGlobs: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
     }),
   ),
   observability: Schema.optionalKey(

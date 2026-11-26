@@ -152,4 +152,85 @@ describe("ClaudeSessionSyncStateRepository", () => {
       );
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("finds a store's owner only among the instances that reach the store", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const repository = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
+      const payload = JSON.stringify({
+        nativeThreadRef: { driver: "claudeAgent", nativeId: "s-1", strength: "strong" },
+      });
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_provider_threads
+          (provider_thread_id, thread_id, provider, provider_instance_id, status, updated_at, payload_json)
+        VALUES ('provider-thread:elsewhere', 'thread:elsewhere', 'claudeAgent', 'claude-elsewhere', 'idle', '2026-11-26T12:00:00.000Z', ${payload})
+      `;
+
+      assert.isUndefined(
+        yield* repository.findProviderThreadInInstances({
+          nativeSessionId: "s-1",
+          providerInstanceIds: ["claudeAgent"],
+        }),
+      );
+      assert.deepStrictEqual(
+        yield* repository.findProviderThreadInInstances({
+          nativeSessionId: "s-1",
+          providerInstanceIds: ["claudeAgent", "claude-elsewhere"],
+        }),
+        {
+          providerThreadId: ProviderThreadId.make("provider-thread:elsewhere"),
+          threadId: ThreadId.make("thread:elsewhere"),
+        },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("finds a thread's session, and the newest entry to fill through its index", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const repository = yield* ClaudeSessionSyncState.ClaudeSessionSyncStateRepository;
+      const row = (
+        sessionId: string,
+        hydrationState: ClaudeSessionSyncState.ClaudeSessionHydrationState,
+        fileMtimeMs: number,
+        storeKey = key.storeKey,
+      ) =>
+        repository.upsert({
+          ...state,
+          storeKey,
+          sessionId,
+          threadId: ThreadId.make(`claude:${sessionId}`),
+          hydrationState,
+          fileMtimeMs,
+        });
+      yield* row("old-entry", "entry", 1);
+      yield* row("new-entry", "entry", 3);
+      yield* row("full", "full", 9);
+      yield* row("failed", "failed", 8);
+      yield* row("other-store", "entry", 7, "/other:/other");
+
+      assert.strictEqual(
+        (yield* repository.nextEntryToHydrate([key.storeKey]))?.sessionId,
+        "new-entry",
+      );
+      assert.isUndefined(yield* repository.nextEntryToHydrate([]));
+      assert.strictEqual(
+        (yield* repository.findByThreadId(ThreadId.make("claude:failed")))?.hydrationState,
+        "failed",
+      );
+
+      const plan = yield* sql<{ readonly detail: string }>`
+        EXPLAIN QUERY PLAN
+        SELECT session_id FROM fork_claude_session_sync_state
+        WHERE hydration_state = 'entry' AND store_key IN (${key.storeKey})
+        ORDER BY file_mtime_ms DESC LIMIT 1
+      `;
+      assert.isTrue(
+        plan.some((detail) =>
+          detail.detail.includes("fork_claude_session_sync_state_hydration_idx"),
+        ),
+        plan.map((detail) => detail.detail).join("\n"),
+      );
+    }).pipe(Effect.provide(layer)),
+  );
 });
