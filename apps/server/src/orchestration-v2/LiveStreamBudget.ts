@@ -16,6 +16,16 @@ export class LiveStreamBufferError extends Schema.TaggedError<LiveStreamBufferEr
 ) {}
 
 export const LIVE_STREAM_MAX_ITEMS = 1_000;
+
+// Every open subscriber's share of its item budget, so a bulk writer can wait for them.
+const openBudgetFullness = new Set<() => number>();
+
+/** The fullest open live subscriber's retained share of its item budget, from 0 to 1. */
+export const liveStreamFullness = (): number => {
+  let fullest = 0;
+  for (const fullness of openBudgetFullness) fullest = Math.max(fullest, fullness());
+  return fullest;
+};
 const LIVE_STREAM_MAX_SERIALIZED_BYTES = 8 * 1024 * 1024;
 
 export interface RetainedLiveItem<A> {
@@ -56,10 +66,13 @@ export const makeLiveStreamBudget = Effect.fn("makeLiveStreamBudget")(function* 
       retainedSerializedBytes -= item.serializedBytes;
     }
   };
+  const fullness = () => retained.size / maxItems;
+  openBudgetFullness.add(fullness);
   yield* Effect.addFinalizer(() =>
-    Effect.sync(() => release(retained)).pipe(
-      Effect.andThen(Deferred.succeed(cleanupComplete, undefined)),
-    ),
+    Effect.sync(() => {
+      openBudgetFullness.delete(fullness);
+      release(retained);
+    }).pipe(Effect.andThen(Deferred.succeed(cleanupComplete, undefined))),
   );
 
   const check = Effect.suspend(() => (failure ? Effect.fail(failure) : Effect.void));

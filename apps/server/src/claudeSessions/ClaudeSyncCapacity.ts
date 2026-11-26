@@ -1,25 +1,26 @@
-// @effect-diagnostics nodeBuiltinImport:off - node:os gives the load average, node:perf_hooks the event loop utilisation and node:fs the free disk the sync yields to.
+// @effect-diagnostics nodeBuiltinImport:off - node:os gives the load average and node:fs the free disk the sync yields to.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
-import * as NodePerfHooks from "node:perf_hooks";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ServerConfig from "../config.ts";
+import { liveStreamFullness } from "../orchestration-v2/LiveStreamBudget.ts";
 
-/** At most this many sync steps a second, so even an idle machine reads its backlog gradually. */
-const MIN_STEP_MS = 100;
-/** The server's own event loop busier than this, over the time since the last step, holds the sync back. */
-const MAX_EVENT_LOOP_UTILISATION = 0.5;
-const BUSY_BACKOFF = "5 seconds";
+/** A live subscriber holding more than this share of its buffer makes the sync wait before writing more. */
+const MAX_SUBSCRIBER_FULLNESS = 0.25;
+const SUBSCRIBER_BACKOFF = "50 millis";
+const HOST_BACKOFF = "5 seconds";
 
 export class ClaudeSyncCapacity extends Context.Service<
   ClaudeSyncCapacity,
   {
-    /** Returns once the machine and this server have room for one more bounded sync step. */
-    readonly wait: Effect.Effect<void>;
+    /** Returns once every live subscriber has caught up enough to take another bounded write. */
+    readonly subscribersReady: Effect.Effect<void>;
+    /** Returns once the machine's load allows background work; only the sweep and the fill wait on it. */
+    readonly hostIdle: Effect.Effect<void>;
     /** Free bytes on the disk holding T3 Code's data, or undefined when the platform cannot say. */
     readonly freeDiskBytes: Effect.Effect<number | undefined>;
   }
@@ -27,25 +28,18 @@ export class ClaudeSyncCapacity extends Context.Service<
 
 const make = Effect.gen(function* () {
   const { stateDir } = yield* ServerConfig.ServerConfig;
-  let since = NodePerfHooks.performance.eventLoopUtilization();
-  let sinceAt = NodePerfHooks.performance.now();
 
-  const busy = Effect.gen(function* () {
-    const elapsed = NodePerfHooks.performance.now() - sinceAt;
-    if (elapsed < MIN_STEP_MS) yield* Effect.sleep(`${Math.ceil(MIN_STEP_MS - elapsed)} millis`);
-    const utilisation = NodePerfHooks.performance.eventLoopUtilization(since).utilization;
-    since = NodePerfHooks.performance.eventLoopUtilization();
-    sinceAt = NodePerfHooks.performance.now();
-    // Windows reports a zero load average, so there only the event loop is read.
-    const [oneMinute] = NodeOS.loadavg();
-    return (
-      utilisation >= MAX_EVENT_LOOP_UTILISATION ||
-      (oneMinute !== undefined && oneMinute >= NodeOS.availableParallelism())
-    );
+  const subscribersReady = Effect.gen(function* () {
+    while (liveStreamFullness() > MAX_SUBSCRIBER_FULLNESS) yield* Effect.sleep(SUBSCRIBER_BACKOFF);
   });
 
-  const wait = Effect.gen(function* () {
-    while (yield* busy) yield* Effect.sleep(BUSY_BACKOFF);
+  // Windows reports a zero load average, so background work never waits there.
+  const hostIdle = Effect.gen(function* () {
+    for (;;) {
+      const [oneMinute] = NodeOS.loadavg();
+      if (oneMinute === undefined || oneMinute < NodeOS.availableParallelism()) return;
+      yield* Effect.sleep(HOST_BACKOFF);
+    }
   });
 
   // A platform that cannot report free space does not hold the sync back.
@@ -57,7 +51,7 @@ const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => undefined),
   );
 
-  return ClaudeSyncCapacity.of({ wait, freeDiskBytes });
+  return ClaudeSyncCapacity.of({ subscribersReady, hostIdle, freeDiskBytes });
 });
 
 export const layer = Layer.effect(ClaudeSyncCapacity, make);

@@ -58,6 +58,7 @@ describe("runForkMigrations", () => {
       assert.deepStrictEqual(yield* schemaNames, [
         "fork_claude_session_sync_state",
         "fork_claude_session_sync_state_hydration_idx",
+        "fork_claude_session_sync_state_thread_idx",
         "fork_migrations",
         forkIndex,
       ]);

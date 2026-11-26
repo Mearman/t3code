@@ -1,12 +1,16 @@
 /**
- * Whether a working directory matches an exclusion glob: `*` and `?` stay within one path segment, `**` spans segments, a leading `~` is the home directory, and `<dir>/**` also matches `<dir>` itself.
+ * Whether a working directory matches an exclusion glob: `*` and `?` stay within one path segment, `**` spans segments, a leading `~` or `~/` is the home directory, and `<dir>/**` also matches `<dir>` itself.
  */
 export function matchesCwdGlob(input: {
   readonly glob: string;
   readonly cwd: string;
   readonly home: string;
 }): boolean {
-  const glob = input.glob.startsWith("~") ? `${input.home}${input.glob.slice(1)}` : input.glob;
+  // Only `~` and `~/...` name the home; `~user` is another user's home, which is left literal.
+  const glob =
+    input.glob === "~" || input.glob.startsWith("~/")
+      ? `${input.home}${input.glob.slice(1)}`
+      : input.glob;
   let pattern = "";
   for (let index = 0; index < glob.length; index++) {
     const char = glob[index] ?? "";

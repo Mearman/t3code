@@ -23,6 +23,7 @@ const state: ClaudeSessionSyncState.ClaudeSessionSyncState = {
   accountUuids: [],
   hydrationState: "pending",
   filePath: "/home/me/.claude/projects/-work/s-1.jsonl",
+  cwd: "/work",
   parserState: null,
   fileSize: 0,
   fileMtimeMs: 0,
@@ -80,8 +81,16 @@ describe("ClaudeSessionSyncStateRepository", () => {
       yield* repository.upsert(advanced);
       assert.deepStrictEqual(comparable(yield* repository.get(key)), comparable(advanced));
       yield* repository.upsert({ ...state, sessionId: "s-2", storeKey: "/other:/other" });
-      assert.deepStrictEqual((yield* repository.listStore(key.storeKey)).map(comparable), [
-        comparable(advanced),
+      assert.deepStrictEqual(yield* repository.listStoreSummaries(key.storeKey), [
+        {
+          sessionId: advanced.sessionId,
+          threadId: advanced.threadId,
+          cwd: advanced.cwd,
+          hydrationState: advanced.hydrationState,
+          filePath: advanced.filePath,
+          fileSize: advanced.fileSize,
+          fileMtimeMs: advanced.fileMtimeMs,
+        },
       ]);
       assert.isUndefined(yield* repository.get({ ...key, sessionId: "s-2" }));
       assert.isUndefined(yield* repository.get({ ...key, storeKey: "/other:/other" }));

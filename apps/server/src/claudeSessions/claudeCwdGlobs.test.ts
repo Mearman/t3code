@@ -17,6 +17,7 @@ describe("matchesCwdGlob", () => {
     expect(matches("/work/**", "/work")).toBe(true);
     expect(matches("/work/**", "/workshop")).toBe(false);
     expect(matches("~/scratch/**", "/Users/me/scratch/a")).toBe(true);
+    expect(matches("~other/**", "/Users/meother/x")).toBe(false);
   });
 
   it("treats other pattern characters literally", () => {

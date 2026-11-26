@@ -150,9 +150,9 @@ const make = Effect.gen(function* () {
   )(
     function* ({ cwd, storeKey }) {
       if (cwd === undefined) return yield* shared(storeKey, null);
-      if (!(yield* exists(cwd)) || isTemporary(cwd) || isTooBroad(cwd)) {
-        return yield* shared(storeKey, cwd);
-      }
+      // A missing directory cannot be spawned in, so a send runs in the shared project's root.
+      if (!(yield* exists(cwd))) return yield* shared(storeKey, null);
+      if (isTemporary(cwd) || isTooBroad(cwd)) return yield* shared(storeKey, cwd);
       const checkout = yield* claudeLocalSettingsDirectory(cwd).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),

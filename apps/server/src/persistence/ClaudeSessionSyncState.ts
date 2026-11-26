@@ -13,7 +13,7 @@ import { NonNegativeInt, ProviderThreadId, ThreadId } from "@t3tools/contracts";
 import { PersistenceDecodeError, PersistenceSqlError } from "./Errors.ts";
 
 /**
- * How much of a session T3 holds: `pending` has no thread (no conversation yet, excluded, or no project to put it in), `entry` is its settled thread entry without history, `hydrating` is part-way through reading its history, `full` has every run read back from the transcript, `failed` could not be read and is tried again when its file changes, and `deleted` is a thread the user deleted, which is never recreated unless restored.
+ * How much of a session T3 holds: `pending` is not hydrated (no conversation yet, no project to put it in, or an old import), `entry` is its thread entry without history, `hydrating` is part-way through reading its history, `full` has every run read back from the transcript, `failed` could not be read and is tried again when its file changes, `excluded` matches an excluded directory and its thread is archived, and `deleted` is a thread the user deleted, which is never recreated unless restored.
  */
 const ClaudeSessionHydrationState = Schema.Literals([
   "pending",
@@ -21,6 +21,7 @@ const ClaudeSessionHydrationState = Schema.Literals([
   "hydrating",
   "full",
   "failed",
+  "excluded",
   "deleted",
 ]);
 export type ClaudeSessionHydrationState = typeof ClaudeSessionHydrationState.Type;
@@ -46,6 +47,8 @@ const ClaudeSessionSyncState = Schema.Struct({
   accountUuids: Schema.fromJsonString(Schema.Array(Schema.String)),
   hydrationState: ClaudeSessionHydrationState,
   filePath: Schema.String,
+  /** The session's working directory, which directory exclusions match. */
+  cwd: Schema.NullOr(Schema.String),
   /** The reader's own state at `byteOffset`, as JSON it encodes and decodes itself. */
   parserState: Schema.NullOr(Schema.String),
   /** The transcript's size and mtime when last read, so a sweep skips files that have not changed. */
@@ -60,6 +63,8 @@ const StoreLookup = Schema.Struct({ storeKey: Schema.String });
 /** What a sweep compares a transcript against, without the read position it does not need. */
 const ClaudeSessionSyncSummary = Schema.Struct({
   sessionId: Schema.String,
+  threadId: Schema.NullOr(ThreadId),
+  cwd: Schema.NullOr(Schema.String),
   hydrationState: ClaudeSessionHydrationState,
   filePath: Schema.String,
   fileSize: NonNegativeInt,
@@ -93,13 +98,6 @@ export class ClaudeSessionSyncStateRepository extends Context.Service<
       storeKey: string,
     ) => Effect.Effect<
       ReadonlyArray<ClaudeSessionSyncSummary>,
-      ClaudeSessionSyncStateRepositoryError
-    >;
-    /** Every session recorded for one store. */
-    readonly listStore: (
-      storeKey: string,
-    ) => Effect.Effect<
-      ReadonlyArray<ClaudeSessionSyncState>,
       ClaudeSessionSyncStateRepositoryError
     >;
     readonly findProviderThreadByNativeSessionId: (
@@ -148,6 +146,7 @@ const make = Effect.gen(function* () {
         account_uuids_json AS "accountUuids",
         hydration_state AS "hydrationState",
         file_path AS "filePath",
+        cwd,
         parser_state_json AS "parserState",
         file_size AS "fileSize",
         file_mtime_ms AS "fileMtimeMs",
@@ -163,17 +162,12 @@ const make = Effect.gen(function* () {
       selectRows(sql`store_key = ${storeKey} AND session_id = ${sessionId}`),
   });
 
-  const listRows = SqlSchema.findAll({
-    Request: StoreLookup,
-    Result: ClaudeSessionSyncState,
-    execute: ({ storeKey }) => selectRows(sql`store_key = ${storeKey}`),
-  });
-
   const summaryRows = SqlSchema.findAll({
     Request: StoreLookup,
     Result: ClaudeSessionSyncSummary,
     execute: ({ storeKey }) => sql`
-      SELECT session_id AS "sessionId", hydration_state AS "hydrationState",
+      SELECT session_id AS "sessionId", thread_id AS "threadId", cwd,
+        hydration_state AS "hydrationState",
         file_path AS "filePath", file_size AS "fileSize", file_mtime_ms AS "fileMtimeMs"
       FROM fork_claude_session_sync_state
       WHERE store_key = ${storeKey}
@@ -211,6 +205,7 @@ const make = Effect.gen(function* () {
         account_uuids_json,
         hydration_state,
         file_path,
+        cwd,
         parser_state_json,
         file_size,
         file_mtime_ms,
@@ -228,6 +223,7 @@ const make = Effect.gen(function* () {
         ${state.accountUuids},
         ${state.hydrationState},
         ${state.filePath},
+        ${state.cwd},
         ${state.parserState},
         ${state.fileSize},
         ${state.fileMtimeMs},
@@ -243,6 +239,7 @@ const make = Effect.gen(function* () {
         account_uuids_json = excluded.account_uuids_json,
         hydration_state = excluded.hydration_state,
         file_path = excluded.file_path,
+        cwd = excluded.cwd,
         parser_state_json = excluded.parser_state_json,
         file_size = excluded.file_size,
         file_mtime_ms = excluded.file_mtime_ms,
@@ -304,12 +301,6 @@ const make = Effect.gen(function* () {
         );
       },
     ),
-    listStore: Effect.fn("ClaudeSessionSyncStateRepository.listStore")(function (storeKey) {
-      return listRows({ storeKey }).pipe(
-        NodeSqliteClient.readOnly,
-        Effect.mapError(toRepositoryError("listClaudeSessionSyncStates")),
-      );
-    }),
     findProviderThreadByNativeSessionId: Effect.fn(
       "ClaudeSessionSyncStateRepository.findProviderThreadByNativeSessionId",
     )(function (nativeSessionId) {

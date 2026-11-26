@@ -190,7 +190,7 @@ describe("ClaudeSessionProjects", () => {
             const atHome = yield* resolver.resolve({ cwd: home, storeKey: STORE });
             const atRoot = yield* resolver.resolve({ cwd: path.parse(root).root, storeKey: STORE });
             const atScratch = yield* resolver.resolve({ cwd: scratch, storeKey: STORE });
-            expect(atMissing?.worktreePath).toBe(missing);
+            expect(atMissing?.worktreePath).toBeNull();
             expect(atHome?.worktreePath).toBe(home);
             expect(atScratch?.worktreePath).toBe(scratch);
             expect(

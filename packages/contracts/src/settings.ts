@@ -1095,8 +1095,12 @@ export const ClaudeSessionSyncSettings = Schema.Struct({
   additionalHomes: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
-  /** Sessions whose working directory matches one of these globs are not shown (`*`, `?`, `**`, `~`). */
+  /** Sessions whose working directory matches one of these globs have their threads archived and are not followed (`*`, `?`, `**`, `~`). */
   excludedCwdGlobs: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** Session ids of deleted Claude session threads to show again; each is cleared once restored. */
+  restoreSessionIds: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
 });
@@ -2051,6 +2055,7 @@ export const ServerSettingsPatch = Schema.Struct({
       minFreeDiskGiB: Schema.optionalKey(ClaudeSessionNonNegativeInt),
       additionalHomes: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
       excludedCwdGlobs: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+      restoreSessionIds: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
     }),
   ),
   observability: Schema.optionalKey(
