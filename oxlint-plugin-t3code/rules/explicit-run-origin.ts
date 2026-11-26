@@ -240,7 +240,7 @@ const RUN_ID_KEY = /^(?:runId|runIds|\w+RunId|\w+RunIds)$/u;
  * through the nullable-id idioms, `x === null ? [] : [x]` and `x ?? undefined`, to where it lands.
  */
 function selectsRunById(read: Node): boolean {
-  const parentOf = (node: Node) => (node as { parent?: Node }).parent;
+  const parentOf = (node: Node) => (node as { parent?: Node | null }).parent ?? undefined;
   let node: Node = read;
   let parent = parentOf(node);
   while (parent !== undefined) {
@@ -286,10 +286,11 @@ export default defineRule({
     const decided: Decided = {
       functions,
       variable: (identifier) => {
+        // The root's parent is null.
         for (
-          let ancestor = (identifier as { parent?: Node }).parent;
-          ancestor !== undefined;
-          ancestor = (ancestor as { parent?: Node }).parent
+          let ancestor = (identifier as { parent?: Node | null }).parent;
+          ancestor != null;
+          ancestor = (ancestor as { parent?: Node | null }).parent
         ) {
           if (scopes.get(ancestor)?.has(identifier.name) === true) return true;
         }
