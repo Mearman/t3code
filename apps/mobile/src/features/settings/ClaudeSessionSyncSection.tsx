@@ -71,6 +71,9 @@ export function ClaudeSessionSyncSection(props: {
   const { options, disabled } = props;
   const update = (patch: NonNullable<ServerSettingsPatch["claudeSessionSync"]>) =>
     props.write({ claudeSessionSync: patch });
+  const updateReplication = (
+    patch: NonNullable<NonNullable<ServerSettingsPatch["claudeSessionSync"]>["replication"]>,
+  ) => update({ replication: patch });
 
   return (
     <SettingsSection title={gt("Claude Code sessions")}>
@@ -156,6 +159,46 @@ export function ClaudeSessionSyncSection(props: {
             disabled={disabled}
             onCommit={(text) => update({ excludedCwdGlobs: parseSettingList(text) })}
           />
+          <SettingsSwitchRow
+            icon="pin"
+            label={gt("Keep pinned sessions from linked machines")}
+            subtitle={gt(
+              "Keep a copy of every session whose thread or project is pinned on a machine linked here with full access. A copy resumes with plain claude --resume on this machine.",
+            )}
+            value={options.replication.pinned}
+            disabled={disabled}
+            onValueChange={(value) => updateReplication({ pinned: value })}
+          />
+          <View className="px-4 py-3">
+            <NumberField
+              label={gt("Copy sessions active within (days)")}
+              min={0}
+              max={MAX_DAYS}
+              value={Math.min(options.replication.activeWithinDays, MAX_DAYS)}
+              disabled={disabled}
+              onValueChange={(value) => updateReplication({ activeWithinDays: value })}
+            />
+          </View>
+          <SettingsSwitchRow
+            icon="doc.on.doc"
+            label={gt("Keep every session from linked machines")}
+            subtitle={gt(
+              "Copy every session linked machines own. Copies hold whatever their conversations did, secrets and client material included.",
+            )}
+            value={options.replication.everything}
+            disabled={disabled}
+            onValueChange={(value) => updateReplication({ everything: value })}
+          />
+          <View className="px-4 py-3">
+            <NumberField
+              label={gt("Keep free for copies (GB)")}
+              min={0}
+              max={MAX_FREE_DISK_GIB}
+              value={Math.min(options.replication.reserveGiB, MAX_FREE_DISK_GIB)}
+              disabled={disabled}
+              onValueChange={(value) => updateReplication({ reserveGiB: value })}
+            />
+          </View>
           <ListField
             label={gt("Restore a deleted session")}
             description={gt(

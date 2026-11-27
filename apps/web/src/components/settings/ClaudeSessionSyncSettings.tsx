@@ -6,6 +6,9 @@ import { useGT, useMessages } from "gt-react";
 
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { ClaudeSessionReplicationSettings } from "./ClaudeSessionReplicationSettings";
+import { useEnvironment } from "../../state/environments";
+import { useSettingsScope } from "./SettingsScopeContext";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
@@ -38,6 +41,11 @@ export function ClaudeSessionSyncSettings() {
   const options = useScopedSettings((settings) => settings.claudeSessionSync);
   const updateSettings = useUpdateScopedSettings();
   const update = (patch: Partial<typeof options>) => updateSettings({ claudeSessionSync: patch });
+  const { target } = useSettingsScope();
+  // Older servers neither copy sessions nor serve theirs, so the rules would do nothing there.
+  const environment = useEnvironment(target?.environmentId ?? null);
+  const replicates =
+    environment?.serverConfig?.environment.capabilities.claudeSessionReplication === true;
 
   return (
     <SettingsSection id="claude-sessions" title={gt("Claude Code sessions")}>
@@ -228,6 +236,13 @@ export function ClaudeSessionSyncSettings() {
               />
             }
           />
+          {replicates && target !== null ? (
+            <ClaudeSessionReplicationSettings
+              environmentId={target.environmentId}
+              rules={options.replication}
+              update={(patch) => update({ replication: { ...options.replication, ...patch } })}
+            />
+          ) : null}
         </>
       ) : null}
     </SettingsSection>

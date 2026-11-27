@@ -45,6 +45,7 @@ import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
 import { GuestShareIndicator } from "./GuestShareControls";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import { ClaudeReplicaBadge } from "./ClaudeReplicaBadge";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -423,6 +424,12 @@ export const ChatHeader = memo(function ChatHeader({
                 <T>Terminal</T>
               </span>
             </SharedTooltipTrigger>
+          ) : null}
+          {renamingTitle === null && isServerThread ? (
+            <ClaudeReplicaBadge
+              environmentId={activeThreadEnvironmentId}
+              threadId={activeThreadId}
+            />
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>

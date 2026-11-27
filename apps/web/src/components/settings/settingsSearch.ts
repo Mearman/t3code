@@ -543,6 +543,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("claude code sessions undelete restore deleted thread")],
   },
   {
+    id: "claude-session-replicate-pinned",
+    title: msg("Keep pinned sessions from linked machines"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code sessions replicate replica sync machines pinned resume")],
+  },
+  {
+    id: "claude-session-replicate-everything",
+    title: msg("Keep every session from linked machines"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code sessions replicate replica sync machines all")],
+  },
+  {
     id: "working-shelf",
     title: msg("Working section"),
     to: "/settings/general",
