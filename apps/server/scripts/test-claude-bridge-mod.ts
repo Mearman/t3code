@@ -143,7 +143,10 @@ try {
   const plugin = NodePath.join(root, CLAUDE_BRIDGE_MOD_NAME);
   NodeFS.writeFileSync(NodePath.join(plugin, "hooks", "register.test.ts"), MOD_TEST);
   const claude = process.env.CLAUDE_BIN ?? "claude";
-  for (const args of [["plugin", "validate", plugin], ["plugin", "test", plugin]]) {
+  for (const args of [
+    ["plugin", "validate", plugin],
+    ["plugin", "test", plugin],
+  ]) {
     const run = NodeChildProcess.spawnSync(claude, args, { stdio: "inherit" });
     if (run.status !== 0) process.exit(run.status ?? 1);
   }

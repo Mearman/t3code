@@ -197,7 +197,11 @@ describe("isDirectSameHostRequest", () => {
     );
     expect(
       isDirectSameHostRequest(
-        request({ peer: "192.168.1.5", local: "192.168.1.5", headers: { host: "192.168.1.5:3774" } }),
+        request({
+          peer: "192.168.1.5",
+          local: "192.168.1.5",
+          headers: { host: "192.168.1.5:3774" },
+        }),
       ),
     ).toBe(true);
   });
@@ -205,7 +209,11 @@ describe("isDirectSameHostRequest", () => {
   it("refuses another host, a proxied request, a browser and a foreign Host", () => {
     expect(
       isDirectSameHostRequest(
-        request({ peer: "192.168.1.9", local: "192.168.1.5", headers: { host: "192.168.1.5:3774" } }),
+        request({
+          peer: "192.168.1.9",
+          local: "192.168.1.5",
+          headers: { host: "192.168.1.5:3774" },
+        }),
       ),
     ).toBe(false);
     for (const headers of [

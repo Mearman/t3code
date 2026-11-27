@@ -452,7 +452,10 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   // Hands the prompt to a holder running the bridge mod; Claude writes it, so nothing branches.
   // Anything it cannot hand over refuses as `ask` does, saying why, so no message is lost.
   const adoptHeld = (
-    input: Pick<ProviderAdapter.ProviderAdapterV2TurnInput, "threadId" | "runId" | "providerThread">,
+    input: Pick<
+      ProviderAdapter.ProviderAdapterV2TurnInput,
+      "threadId" | "runId" | "providerThread"
+    >,
     message: Pick<
       ProviderAdapter.ProviderAdapterV2TurnMessage,
       "text" | "adoptAsUser" | "heldSessionTerminalAccess"
@@ -479,7 +482,9 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
       if (hold === undefined) return Effect.void;
       if (hold._tag !== "held") return refuseHeld(providerThread, "ask");
       if (message.heldSessionTerminalAccess !== true) {
-        return refuseNaming("Handing it to the terminal needs a connection allowed to use terminals.");
+        return refuseNaming(
+          "Handing it to the terminal needs a connection allowed to use terminals.",
+        );
       }
       // Claude Code refuses a slash command a mod submits, so it is refused here, not lost there.
       if (message.adoptAsUser === true && claudeBridgeIsCommandText(message.text)) {
@@ -527,7 +532,11 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     > & {
       readonly message?: Pick<
         ProviderAdapter.ProviderAdapterV2TurnMessage,
-        "heldSessionSend" | "resendsHeldRefusal" | "text" | "adoptAsUser" | "heldSessionTerminalAccess"
+        | "heldSessionSend"
+        | "resendsHeldRefusal"
+        | "text"
+        | "adoptAsUser"
+        | "heldSessionTerminalAccess"
       >;
     },
   ) => {

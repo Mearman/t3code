@@ -63,6 +63,21 @@ export class ClaudeBridgeSubmitError extends Schema.TaggedError<ClaudeBridgeSubm
 /** Why a poll was turned away: another process polls that session, or too many sessions do. */
 export type ClaudeBridgePollRefusal = "claimed" | "full";
 
+/** A poll's answer: the commands to hand out, or why it was turned away. */
+export type ClaudeBridgePollAnswer =
+  | {
+      readonly _tag: "accepted";
+      readonly pollerKey: string;
+      readonly commands: ReadonlyArray<ClaudeBridgeCommand>;
+    }
+  | { readonly _tag: "refused"; readonly reason: ClaudeBridgePollRefusal };
+
+type PollOutcome =
+  | (Extract<ClaudeBridgePollAnswer, { readonly _tag: "accepted" }> & {
+      readonly refused: ReadonlyArray<{ readonly item: Pending; readonly reason: string | undefined }>;
+    })
+  | Extract<ClaudeBridgePollAnswer, { readonly _tag: "refused" }>;
+
 /**
  * Sessions whose `claude` runs the T3 bridge mod and the prompts waiting for each. Only a mod
  * holding the token from this server's connection file reaches it; see `ClaudeBridgeHttp`.
@@ -90,10 +105,7 @@ export class ClaudeBridge extends Context.Service<
     /** A mod's poll: records its acknowledgements and hands out what it has not yet taken. */
     readonly poll: (
       poll: ClaudeBridgePoll,
-    ) => Effect.Effect<
-      | { readonly _tag: "accepted"; readonly pollerKey: string; readonly commands: ReadonlyArray<ClaudeBridgeCommand> }
-      | { readonly _tag: "refused"; readonly reason: ClaudeBridgePollRefusal }
-    >;
+    ) => Effect.Effect<ClaudeBridgePollAnswer>;
     /** Prompts that did not reach the terminal: refused by the mod, or never taken. */
     readonly failures: Queue.Dequeue<ClaudeBridgeFailure>;
     /** A Claude home whose sessions may load the mod; it gets a connection file. */
@@ -180,10 +192,18 @@ const make = Effect.gen(function* () {
         if (session.pending.some((item) => item.command.commandId === input.runId)) {
           return [undefined, current] as const;
         }
-        const pending: Pending = { command, threadId: input.threadId, queuedAt: now, handedOutAt: undefined };
+        const pending: Pending = {
+          command,
+          threadId: input.threadId,
+          queuedAt: now,
+          handedOutAt: undefined,
+        };
         return [
           undefined,
-          new Map(current).set(input.sessionId, { ...session, pending: [...session.pending, pending] }),
+          new Map(current).set(input.sessionId, {
+            ...session,
+            pending: [...session.pending, pending],
+          }),
         ] as const;
       });
       if (refusal !== undefined) return yield* new ClaudeBridgeSubmitError({ reason: refusal });
@@ -194,15 +214,17 @@ const make = Effect.gen(function* () {
     yield* sweep();
     const now = yield* Clock.currentTimeMillis;
     const freshKey = yield* hex(16);
-    const outcome = yield* Ref.modify(sessions, (current) => {
+    const outcome = yield* Ref.modify(sessions, (current): readonly [PollOutcome, Map<string, Session>] => {
       const session = current.get(request.sessionId);
       const claimedElsewhere =
-        session !== undefined && isAttached(session, now) && session.pollerKey !== request.pollerKey;
+        session !== undefined &&
+        isAttached(session, now) &&
+        session.pollerKey !== request.pollerKey;
       if (claimedElsewhere) {
-        return [{ _tag: "refused" as const, reason: "claimed" as const, refused: [] }, current] as const;
+        return [{ _tag: "refused", reason: "claimed" }, current];
       }
       if (session === undefined && current.size >= CLAUDE_BRIDGE_MAX_SESSIONS) {
-        return [{ _tag: "refused" as const, reason: "full" as const, refused: [] }, current] as const;
+        return [{ _tag: "refused", reason: "full" }, current];
       }
       const acks = new Map(request.acks.map((ack) => [ack.commandId, ack]));
       const kept = (session?.pending ?? []).filter((item) => !acks.has(item.command.commandId));
@@ -211,20 +233,24 @@ const make = Effect.gen(function* () {
         return ack === undefined || ack.submitted ? [] : [{ item, reason: ack.reason }];
       });
       const lease = Duration.toMillis(DELIVERY_LEASE);
-      const due = (item: Pending) => item.handedOutAt === undefined || now - item.handedOutAt >= lease;
+      const due = (item: Pending) =>
+        item.handedOutAt === undefined || now - item.handedOutAt >= lease;
       const handed = kept.map((item) => (due(item) ? { ...item, handedOutAt: now } : item));
       const pollerKey =
-        session !== undefined && session.pollerKey === request.pollerKey ? session.pollerKey : freshKey;
+        session !== undefined && session.pollerKey === request.pollerKey
+          ? session.pollerKey
+          : freshKey;
       return [
         {
-          _tag: "accepted" as const,
+          _tag: "accepted",
           pollerKey,
           commands: kept.filter(due).map((item) => item.command),
           refused,
         },
         new Map(current).set(request.sessionId, { pollerKey, lastPollAt: now, pending: handed }),
-      ] as const;
+      ];
     });
+    if (outcome._tag === "refused") return outcome;
     yield* Queue.offerAll(
       failures,
       outcome.refused.map(({ item, reason }) => ({
@@ -233,9 +259,7 @@ const make = Effect.gen(function* () {
         reason: reason ?? "the terminal's claude refused it",
       })),
     );
-    return outcome._tag === "refused"
-      ? { _tag: "refused" as const, reason: outcome.reason }
-      : { _tag: "accepted" as const, pollerKey: outcome.pollerKey, commands: outcome.commands };
+    return { _tag: "accepted", pollerKey: outcome.pollerKey, commands: outcome.commands };
   });
 
   const directoryOf = (home: string) => path.join(home, CLAUDE_BRIDGE_CONNECTION_DIRECTORY);
@@ -281,11 +305,9 @@ const make = Effect.gen(function* () {
   // A stopped server leaves no file pointing the mod at a port another process could take.
   yield* Effect.addFinalizer(() =>
     Effect.flatMap(Ref.get(published), ({ homes }) =>
-      Effect.forEach(
-        homes,
-        (home) => fileSystem.remove(fileOf(home)).pipe(Effect.ignore),
-        { discard: true },
-      ),
+      Effect.forEach(homes, (home) => fileSystem.remove(fileOf(home)).pipe(Effect.ignore), {
+        discard: true,
+      }),
     ),
   );
   yield* Effect.forkScoped(Effect.repeat(sweep(), Schedule.spaced(Duration.seconds(30))));

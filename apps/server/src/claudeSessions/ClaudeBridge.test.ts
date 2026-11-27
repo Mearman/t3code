@@ -74,31 +74,37 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("keeps a prompt until the mod acknowledges it, handing it out again after a lease", () =>
-    Effect.gen(function* () {
-      const bridge = yield* ClaudeBridge;
-      const key = yield* attach;
-      yield* bridge.submit(prompt("run-1", "/clear"));
+  it.effect(
+    "keeps a prompt until the mod acknowledges it, handing it out again after a lease",
+    () =>
+      Effect.gen(function* () {
+        const bridge = yield* ClaudeBridge;
+        const key = yield* attach;
+        yield* bridge.submit(prompt("run-1", "/clear"));
 
-      const first = yield* bridge.poll(poll("a", key));
-      const leased = yield* bridge.poll(poll("a", key));
-      yield* TestClock.adjust("16 seconds");
-      const again = yield* bridge.poll(poll("a", key));
-      const acked = yield* bridge.poll(poll("a", key, [{ commandId: "run-1", submitted: true }]));
-      yield* TestClock.adjust("16 seconds");
-      const after = yield* bridge.poll(poll("a", key));
+        const first = yield* bridge.poll(poll("a", key));
+        const leased = yield* bridge.poll(poll("a", key));
+        yield* TestClock.adjust("16 seconds");
+        const again = yield* bridge.poll(poll("a", key));
+        const acked = yield* bridge.poll(poll("a", key, [{ commandId: "run-1", submitted: true }]));
+        yield* TestClock.adjust("16 seconds");
+        const after = yield* bridge.poll(poll("a", key));
 
-      const commandsOf = (answer: typeof first) =>
-        answer._tag === "accepted" ? answer.commands.map((command) => command.commandId) : [];
-      assert.deepStrictEqual(
-        [first, leased, again, acked, after].map(commandsOf),
-        [["run-1"], [], ["run-1"], [], []],
-      );
-      // Text that is not a person's never reads as a slash command.
-      assert.isFalse(
-        first._tag === "accepted" && (first.commands[0]?.text.trimStart().startsWith("/") ?? true),
-      );
-    }).pipe(Effect.provide(layer)),
+        const commandsOf = (answer: typeof first) =>
+          answer._tag === "accepted" ? answer.commands.map((command) => command.commandId) : [];
+        assert.deepStrictEqual([first, leased, again, acked, after].map(commandsOf), [
+          ["run-1"],
+          [],
+          ["run-1"],
+          [],
+          [],
+        ]);
+        // Text that is not a person's never reads as a slash command.
+        assert.isFalse(
+          first._tag === "accepted" &&
+            (first.commands[0]?.text.trimStart().startsWith("/") ?? true),
+        );
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("reports a prompt the mod refused, and one no mod took in time", () =>
