@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import { decodeOptions, gtFallback } from "gt-i18n";
 import { hashMessage } from "gt-i18n/internal";
 
+import { brandText } from "../app/DesktopAppName.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 
 type Catalog = Readonly<Record<string, string>>;
@@ -42,9 +43,11 @@ export function m(message: string, variables: Readonly<Record<string, string>> =
       ? undefined
       : activeCatalog[hashMessage(source, { ...options, $format: "ICU" })];
   // Untranslated text is English, so it takes English plural rules.
-  return target === undefined
-    ? gtFallback(source, { ...options, $locale: DEFAULT_LOCALE })
-    : gtFallback(target, { ...options, $locale: activeLocale, $_fallback: source });
+  return brandText(
+    target === undefined
+      ? gtFallback(source, { ...options, $locale: DEFAULT_LOCALE })
+      : gtFallback(target, { ...options, $locale: activeLocale, $_fallback: source }),
+  );
 }
 
 /** Runs `listener` after each switch to a different UI language. */

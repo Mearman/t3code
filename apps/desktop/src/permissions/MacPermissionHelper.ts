@@ -12,6 +12,7 @@ import {
 } from "./MacSettingsWindow.ts";
 
 import { MAC_PERMISSION_SETUP_TITLES, type MacPermission } from "./MacPermission.ts";
+import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
 
 const permissionGranted = (permission: MacPermission) => {
   if (permission === "screen-recording")
@@ -95,7 +96,7 @@ export class MacPermissionHelper {
     const appIcon = iconPaths
       .map((iconPath) => Electron.nativeImage.createFromPath(iconPath))
       .find((image) => !image.isEmpty());
-    if (!appIcon) throw new Error("The packaged T3 Code icon is missing.");
+    if (!appIcon) throw new Error(`The packaged ${APP_BASE_NAME} icon is missing.`);
     const icon = appIcon.resize({ width: 64, height: 64 });
     const window = new Electron.BrowserWindow({
       width: 560,

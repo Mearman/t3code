@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopAssets from "./DesktopAssets.ts";
+import { UPSTREAM_APP_BASE_NAME } from "./DesktopAppName.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 
@@ -102,7 +103,7 @@ export const make = Effect.gen(function* () {
       applicationName: environment.displayName,
       applicationVersion: environment.appVersion,
       version: Option.getOrElse(commitHash, () => "unknown"),
-      ...(environment.branding.baseName === DesktopEnvironment.UPSTREAM_APP_BASE_NAME
+      ...(environment.branding.baseName === UPSTREAM_APP_BASE_NAME
         ? {}
         : { credits: UNOFFICIAL_FORK_NOTICE }),
     });
