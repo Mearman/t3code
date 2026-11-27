@@ -1,4 +1,5 @@
 import {
+  type OrchestrationV2Command,
   CommandId,
   isDeliveredProviderTurn,
   MessageId,
@@ -110,6 +111,31 @@ export function wentBesideHolder(
   );
 }
 
+/**
+ * The resend of a send refused so its warning shows first. Its ids follow the refused run, so a
+ * replayed event repeats a command the engine already has, and it carries the access the person's
+ * own send had, since the server, not the person, dispatches it.
+ */
+export function heldSessionSendResend(run: OrchestrationV2Run) {
+  const key = `${run.threadId}:${run.id}`;
+  return {
+    type: "message.dispatch",
+    commandId: CommandId.make(`server:held-session-send:${key}`),
+    threadId: run.threadId,
+    messageId: MessageId.make(`message:held-session-send:${key}`),
+    manualContinuationOfRunId: run.id,
+    heldSessionSend: "send",
+    ...(run.heldSessionTerminalAccess === true
+      ? { heldSessionTerminalAccess: true as const }
+      : {}),
+    text: "",
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+    createdBy: "user",
+    creationSource: "server",
+  } satisfies OrchestrationV2Command;
+}
+
 // The note follows every item a run's reply adds, whose ordinals count up from zero.
 const AFTER_THE_REPLY_ORDINAL = 1_000_000_000;
 
@@ -194,23 +220,7 @@ const make = Effect.gen(function* () {
         latestRootProviderFailure(run, projection.turnItems)?.code ===
         PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE
       ) {
-        yield* engine.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make(`server:held-session-send:${key}`),
-          threadId: event.threadId,
-          messageId: MessageId.make(`message:held-session-send:${key}`),
-          manualContinuationOfRunId: run.id,
-          heldSessionSend: "send",
-          // The resend acts for the person who chose it, with the access their send had.
-          ...(run.heldSessionTerminalAccess === true
-            ? { heldSessionTerminalAccess: true as const }
-            : {}),
-          text: "",
-          attachments: [],
-          dispatchMode: { type: "start_immediately" },
-          createdBy: "user",
-          creationSource: "server",
-        });
+        yield* engine.dispatch(heldSessionSendResend(run));
         return;
       }
       const plan = planHeldSessionFork(projection, run);
