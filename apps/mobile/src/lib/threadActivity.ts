@@ -22,6 +22,7 @@ import {
 import {
   commandlessCommandLabel,
   contextCompactionLabel,
+  systemNoticeLabel,
   liveThoughtLine,
   toolItemForDisplay,
   workEntryDisplayIndicatesToolFailure,
@@ -656,7 +657,7 @@ function itemSummary(
   resolve: MessageResolver,
 ): string {
   if (item.type === "notification") return item.summary;
-  if (item.type === "system_notice") return item.message;
+  if (item.type === "system_notice") return systemNoticeLabel(item, resolve);
   if (item.type === "compaction") return contextCompactionLabel(item, resolve);
   const title =
     (item.type === "dynamic_tool"

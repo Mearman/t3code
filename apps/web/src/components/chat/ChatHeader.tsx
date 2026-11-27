@@ -51,6 +51,7 @@ interface ChatHeaderProps {
   activeThreadId: ThreadId;
   activeThreadTitle: string;
   activeThreadLinkOrigin?: string | null | undefined;
+  activeThreadFromTerminal?: boolean | undefined;
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
   parentThreadLink: { threadId: ThreadId; title: string } | null;
@@ -76,6 +77,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadId,
   activeThreadTitle,
   activeThreadLinkOrigin,
+  activeThreadFromTerminal,
   isServerThread,
   activeProject,
   parentThreadLink,
@@ -405,6 +407,18 @@ export const ChatHeader = memo(function ChatHeader({
               <T>
                 From <Var>{activeThreadLinkOrigin}</Var>
               </T>
+            </SharedTooltipTrigger>
+          ) : null}
+          {renamingTitle === null && activeThreadFromTerminal === true ? (
+            <SharedTooltipTrigger
+              render={<Badge variant="outline" size="sm" />}
+              label={
+                <>
+                  <T>The latest activity in this thread came from Claude Code in a terminal.</T>
+                </>
+              }
+            >
+              <T>Terminal</T>
             </SharedTooltipTrigger>
           ) : null}
         </WorkspaceBreadcrumbItem>

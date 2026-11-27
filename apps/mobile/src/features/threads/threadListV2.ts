@@ -319,6 +319,7 @@ export function threadListV2RowAccessibilityLabel(
     readonly timeLabel: string;
     readonly snoozeWakeLabel: string | undefined;
     readonly providerNameLabel: string | null;
+    readonly fromTerminal: boolean;
     readonly hasQueuedMessages: boolean;
     readonly regeneratingTitle: boolean;
   },
@@ -335,6 +336,7 @@ export function threadListV2RowAccessibilityLabel(
     input.title,
     meta,
     input.providerNameLabel,
+    input.fromTerminal ? resolve(msg("from a terminal")) : null,
     input.hasQueuedMessages ? resolve(msg("messages queued to send")) : null,
     input.regeneratingTitle ? resolve(msg("regenerating title")) : null,
   ]

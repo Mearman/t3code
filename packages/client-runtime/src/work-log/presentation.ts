@@ -23,6 +23,7 @@ import { isWorkspaceImagePreviewPath } from "@t3tools/shared/mediaPreview";
 import { formatTokens } from "@t3tools/shared/usageFormat";
 import { classifyToolActivity } from "@t3tools/shared/toolActivity";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
+import { isClaudeHistoryNoticeId } from "@t3tools/shared/claudeSyncNotice";
 
 import {
   summarizeT3ToolCalls,
@@ -85,6 +86,26 @@ export function contextCompactionLabel(
   return tokens
     ? resolve(msg("Context compacted {before} → {after} tokens", tokens))
     : resolve(msg("Context compacted"));
+}
+
+type SystemNoticeLabelItem = Pick<
+  Extract<OrchestrationV2TurnItem, { type: "system_notice" }>,
+  "id" | "status" | "message"
+>;
+
+/**
+ * The text a system notice shows. The Claude session sync words its history notice in English
+ * on the server, so clients show their own wording for the two states it reports; a failed load
+ * keeps the server's reason, which names the disk floor.
+ */
+export function systemNoticeLabel(
+  item: SystemNoticeLabelItem,
+  resolve: MFunctionType = mFallback,
+): string {
+  if (!isClaudeHistoryNoticeId(item.id)) return item.message;
+  if (item.status === "running") return resolve(msg("Loading this session's history"));
+  if (item.status === "completed") return resolve(msg("History loaded"));
+  return item.message;
 }
 
 export interface WorkLogPresentationEntry {

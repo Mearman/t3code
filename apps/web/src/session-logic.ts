@@ -30,6 +30,7 @@ import {
 } from "@t3tools/shared/toolOutput";
 import {
   contextCompactionLabel,
+  systemNoticeLabel,
   workEntryIndicatesToolFailure,
 } from "@t3tools/client-runtime/work-log/presentation";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
@@ -457,7 +458,7 @@ function projectedWorkEntry(
     case "system_notice":
       return {
         ...common,
-        label: item.message,
+        label: systemNoticeLabel(item, resolve),
         ...(item.level === "info" ? {} : { sourceActivityKind: "runtime.warning" }),
       };
     case "error": {

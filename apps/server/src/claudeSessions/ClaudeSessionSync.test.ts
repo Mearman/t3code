@@ -16,6 +16,7 @@ import {
   type ServerSettings,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { isClaudeHistoryNoticeId } from "@t3tools/shared/claudeSyncNotice";
 import type { DeepPartial } from "@t3tools/shared/Struct";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
@@ -1072,6 +1073,8 @@ describe("ClaudeSessionSync", () => {
               itemId: TurnItemId.make(`x:${SESSION}:history`),
             }),
           ).toMatchObject({ type: "system_notice", status: "completed" });
+          // Clients translate the notice by recognising its id.
+          expect(isClaudeHistoryNoticeId(`x:${SESSION}:history`)).toBe(true);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
       }),
     ),

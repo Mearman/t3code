@@ -51,6 +51,25 @@ it.each(["info", "warning", "error", undefined] as const)(
   },
 );
 
+it.each([
+  ["running", "Loading this session's history"],
+  ["completed", "History loaded"],
+] as const)(
+  "words a %s Claude session history notice in the client's own text",
+  (status, label) => {
+    const item = {
+      ...base("x:session:history", "2026-08-29T00:00:00.000Z", 1),
+      status,
+      type: "system_notice" as const,
+      message: "English from the server.",
+    };
+    const activity = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    )[0];
+    expect(activity?.summary).toBe(label);
+  },
+);
+
 it("shows a captured MCP app for a failed deferred write", () => {
   const mcpApp = {
     attachmentId: "deferred-app-html",
