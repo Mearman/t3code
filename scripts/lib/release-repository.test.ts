@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off - Bundles packages/shared the way the build configs do.
+import * as NodeBuffer from "node:buffer";
+import * as NodePath from "node:path";
+import { Rolldown } from "vite-plus/pack";
 import { expect, it } from "vite-plus/test";
 
 import { releaseRepositoryDefine, resolveReleaseRepository } from "./release-repository.ts";
@@ -31,4 +35,23 @@ it("defines the repository as a string literal for the bundle", () => {
   expect(releaseRepositoryDefine({ GITHUB_REPOSITORY: "owner/fork" })).toEqual({
     __T3CODE_RELEASE_REPOSITORY__: '"owner/fork"',
   });
+});
+
+it("points a bundle's release URLs at the repository its build defines", async () => {
+  const bundle = await Rolldown.rolldown({
+    input: NodePath.resolve(import.meta.dirname, "../../packages/shared/src/cliRelease.ts"),
+    platform: "node",
+    transform: { define: releaseRepositoryDefine({ GITHUB_REPOSITORY: "owner/fork" }) },
+  });
+  try {
+    const { output } = await bundle.generate({ format: "esm", codeSplitting: false });
+    const source = NodeBuffer.Buffer.from(output[0].code).toString("base64");
+    const loaded: unknown = await import(`data:text/javascript;base64,${source}`);
+    expect(loaded).toMatchObject({
+      CLI_RELEASE_REPOSITORY: "owner/fork",
+      CLI_RELEASES_PAGE_URL: "https://github.com/owner/fork/releases",
+    });
+  } finally {
+    await bundle.close();
+  }
 });
