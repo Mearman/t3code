@@ -314,7 +314,6 @@ describe("readUserPath", () => {
         signals,
 
         { UV_THREADPOOL_SIZE: "2" },
-
       );
     }),
   );
@@ -349,7 +348,6 @@ describe("readUserPath", () => {
         signals,
 
         { UV_THREADPOOL_SIZE: "2" },
-
       );
     }),
   );

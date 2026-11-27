@@ -3679,9 +3679,7 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
 
   // Lanes are classified by spelling, so these pin the platform instead of the host.
   describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("on a Linux layout", () => {
-  it.effect(
-    "closes only the blocked path of an ordinary folder, not its neighbours",
-    () =>
+    it.effect("closes only the blocked path of an ordinary folder, not its neighbours", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -3715,73 +3713,78 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
           Effect.provideService(HostProcess.HomeDirectory, homeDir),
         );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  );
+    );
 
-  it.effect(
-    "marks recent threads unanswered, and collects candidates again once the folder answers",
-    () =>
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const nowMs = Date.parse("2026-11-08T12:00:00.000Z");
-        yield* TestClock.setTime(nowMs);
-        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
-        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
-        const homeDir = yield* makeTempDir("t3code-home-");
-        const documentsProject = path.join(homeDir, "Documents", "my-project");
-        const otherProject = path.join(homeDir, "code", "other-project");
-        for (const [index, cwd] of [documentsProject, otherProject].entries()) {
-          const sessionId = `00000000-0000-4000-8000-00000000030${index}`;
-          yield* fileSystem.makeDirectory(cwd, { recursive: true });
-          yield* writeTranscript({
-            filePath: path.join(claudeHomePath, "projects", `-slug-${index}`, `${sessionId}.jsonl`),
-            contents: `${encodeTranscriptRecord({
-              type: "user",
-              cwd,
-              sessionId,
-              message: { role: "user", content: `Prompt ${index}` },
-            })}\n`,
-            mtimeMs: nowMs - 60_000,
-          });
-        }
-        const { blocked, answered, scannerFileSystem, withLanes } =
-          yield* blockedUnder(documentsProject);
-        const reopened = yield* Deferred.make<void>();
-        const reopenedLogger = Logger.make(({ message }) => {
-          if (Array.isArray(message) && String(message[0]).startsWith("A folder read returned")) {
-            Deferred.doneUnsafe(reopened, Effect.void);
+    it.effect(
+      "marks recent threads unanswered, and collects candidates again once the folder answers",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const nowMs = Date.parse("2026-11-08T12:00:00.000Z");
+          yield* TestClock.setTime(nowMs);
+          const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+          const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+          const homeDir = yield* makeTempDir("t3code-home-");
+          const documentsProject = path.join(homeDir, "Documents", "my-project");
+          const otherProject = path.join(homeDir, "code", "other-project");
+          for (const [index, cwd] of [documentsProject, otherProject].entries()) {
+            const sessionId = `00000000-0000-4000-8000-00000000030${index}`;
+            yield* fileSystem.makeDirectory(cwd, { recursive: true });
+            yield* writeTranscript({
+              filePath: path.join(
+                claudeHomePath,
+                "projects",
+                `-slug-${index}`,
+                `${sessionId}.jsonl`,
+              ),
+              contents: `${encodeTranscriptRecord({
+                type: "user",
+                cwd,
+                sessionId,
+                message: { role: "user", content: `Prompt ${index}` },
+              })}\n`,
+              mtimeMs: nowMs - 60_000,
+            });
           }
-        });
-        const importable = (outcomes: Iterable<AgentSessionScanner.AgentSessionRecentThread>) =>
-          Array.from(outcomes).filter((outcome) => outcome._tag === "Importable");
+          const { blocked, answered, scannerFileSystem, withLanes } =
+            yield* blockedUnder(documentsProject);
+          const reopened = yield* Deferred.make<void>();
+          const reopenedLogger = Logger.make(({ message }) => {
+            if (Array.isArray(message) && String(message[0]).startsWith("A folder read returned")) {
+              Deferred.doneUnsafe(reopened, Effect.void);
+            }
+          });
+          const importable = (outcomes: Iterable<AgentSessionScanner.AgentSessionRecentThread>) =>
+            Array.from(outcomes).filter((outcome) => outcome._tag === "Importable");
 
-        yield* Effect.gen(function* () {
-          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
-          const partial = yield* Effect.forkChild(
-            scanner.recentThreads(otherProject).pipe(Stream.runCollect),
-          );
-          expect(yield* Queue.take(blocked)).toBe(documentsProject);
-          yield* TestClock.adjust("2 seconds");
-          const outcomes = Array.from(yield* Fiber.join(partial));
-          expect(outcomes.at(-1)).toEqual({ _tag: "Unanswered" });
-          expect(importable(outcomes)).toHaveLength(1);
+          yield* Effect.gen(function* () {
+            const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+            const partial = yield* Effect.forkChild(
+              scanner.recentThreads(otherProject).pipe(Stream.runCollect),
+            );
+            expect(yield* Queue.take(blocked)).toBe(documentsProject);
+            yield* TestClock.adjust("2 seconds");
+            const outcomes = Array.from(yield* Fiber.join(partial));
+            expect(outcomes.at(-1)).toEqual({ _tag: "Unanswered" });
+            expect(importable(outcomes)).toHaveLength(1);
 
-          yield* Deferred.succeed(answered, undefined);
-          yield* Deferred.await(reopened);
-          const complete = Array.from(
-            yield* scanner.recentThreads(documentsProject).pipe(Stream.runCollect),
+            yield* Deferred.succeed(answered, undefined);
+            yield* Deferred.await(reopened);
+            const complete = Array.from(
+              yield* scanner.recentThreads(documentsProject).pipe(Stream.runCollect),
+            );
+            expect(complete.some((outcome) => outcome._tag === "Unanswered")).toBe(false);
+            expect(importable(complete)).toHaveLength(1);
+          }).pipe(
+            Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, scannerFileSystem })),
+            withLanes,
+            Effect.provideService(HostProcess.Platform, "linux"),
+            Effect.provideService(HostProcess.HomeDirectory, homeDir),
+            Effect.provide(Logger.layer([reopenedLogger], { mergeWithExisting: true })),
           );
-          expect(complete.some((outcome) => outcome._tag === "Unanswered")).toBe(false);
-          expect(importable(complete)).toHaveLength(1);
-        }).pipe(
-          Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, scannerFileSystem })),
-          withLanes,
-          Effect.provideService(HostProcess.Platform, "linux"),
-          Effect.provideService(HostProcess.HomeDirectory, homeDir),
-          Effect.provide(Logger.layer([reopenedLogger], { mergeWithExisting: true })),
-        );
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  );
+        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
   });
 });
 
