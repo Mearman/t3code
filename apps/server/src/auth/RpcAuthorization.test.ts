@@ -1069,7 +1069,7 @@ it.effect("requires the terminal scope for a send that acts on a terminal's clau
     yield* dispatch(message("plain"));
     yield* dispatch(message("ask", "ask"));
     yield* dispatch(message("fork", "fork"));
-    for (const choice of ["takeOver"] as const) {
+    for (const choice of ["send", "takeOver"] as const) {
       expect(yield* dispatch(message(choice, choice)).pipe(Effect.flip)).toMatchObject({
         requiredPermission: AuthTerminalOperateScope,
       });
