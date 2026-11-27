@@ -201,6 +201,10 @@ const make = Effect.gen(function* () {
           messageId: MessageId.make(`message:held-session-send:${key}`),
           manualContinuationOfRunId: run.id,
           heldSessionSend: "send",
+          // The resend acts for the person who chose it, with the access their send had.
+          ...(run.heldSessionTerminalAccess === true
+            ? { heldSessionTerminalAccess: true as const }
+            : {}),
           text: "",
           attachments: [],
           dispatchMode: { type: "start_immediately" },
