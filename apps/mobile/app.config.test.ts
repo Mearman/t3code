@@ -6,7 +6,11 @@ import assetLinks from "../web/public/.well-known/assetlinks.json";
 
 // Keep config parsing independent of local env files and build credentials.
 vi.mock("../../scripts/lib/public-config.ts", () => ({
-  loadRepoEnv: () => ({ APP_VARIANT: process.env.APP_VARIANT }),
+  loadRepoEnv: () => ({
+    APP_VARIANT: process.env.APP_VARIANT,
+    GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
+    T3CODE_DESKTOP_PRODUCT_NAME: process.env.T3CODE_DESKTOP_PRODUCT_NAME,
+  }),
 }));
 
 afterEach(() => {
@@ -45,3 +49,18 @@ it.each([
   ]);
   expect(assetLinks.map((link) => link.target.package_name)).toContain(identifier);
 });
+
+it.each([
+  ["pingdotgg/t3code", undefined, true],
+  ["owner/fork", undefined, false],
+  [undefined, undefined, false],
+  ["pingdotgg/t3code", "ExaCode", false],
+])(
+  "checks upstream's update channel only for a build provably upstream's (%j, %j)",
+  async (repository, productName, checks) => {
+    vi.stubEnv("GITHUB_REPOSITORY", repository);
+    vi.stubEnv("T3CODE_DESKTOP_PRODUCT_NAME", productName);
+    const config = await loadConfig("production");
+    expect(config.updates?.enabled).toBe(checks);
+  },
+);

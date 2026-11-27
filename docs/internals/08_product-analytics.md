@@ -42,10 +42,14 @@ count as product use.
 - Delivery ([`AnalyticsService.ts`](../../apps/server/src/telemetry/AnalyticsService.ts)) attaches a
   UUID per event, backs off on failure, and drops batches after bounded retries so a stuck batch
   cannot loop forever.
-- The collector comes from `T3CODE_TELEMETRY_KEY` and `T3CODE_TELEMETRY_HOST`. Only a build of
-  upstream's repository defaults them to T3's ingest (`resolveIngestEndpoint`); a fork's build has
-  no endpoint, so it records nothing until both are set, and `T3CODE_TELEMETRY_ENABLED=true`
-  cannot change that.
+- The collector is resolved by `resolveIngestEndpoint`: run-time `T3CODE_TELEMETRY_KEY` and
+  `T3CODE_TELEMETRY_HOST`, else the pair baked in at build time (`telemetryEndpointDefine`), else
+  T3's ingest, and the last only when `IS_PROVABLY_UPSTREAM_BUILD` is true. That fact is defined by
+  every bundler config (`buildKindDefine`) and is true only for upstream's release repository with
+  no product name; a bundle with no such define reads false, so the default fails closed. The web
+  client reads the same fact for its usage-data notice. An invalid pair is `Invalid`, logged once
+  at start; none is `None`; neither records anything, and `T3CODE_TELEMETRY_ENABLED=true` cannot
+  change that.
 - Dev-runner servers and servers on CI runners disable telemetry (and relay tracing) by default so
   they do not inflate install counts. CI detection is `isCiEnvironment` in
   [`otelEnvironment.ts`](../../packages/shared/src/otelEnvironment.ts). An explicit

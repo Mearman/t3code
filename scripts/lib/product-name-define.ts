@@ -54,3 +54,47 @@ export function forkProductName(
   const productName = env.T3CODE_DESKTOP_PRODUCT_NAME?.trim();
   return productName === undefined || productName === "" ? undefined : productName;
 }
+
+/** Whether a build with this environment is provably upstream's (no product name of its own). */
+export function provablyUpstream(env: Readonly<Record<string, string | undefined>>): boolean {
+  const repository = resolveReleaseRepository(env);
+  return (
+    forkProductName(env) === undefined &&
+    repository !== undefined &&
+    isUpstreamReleaseRepository(repository)
+  );
+}
+
+const isValidEndpointHost = (value: string): boolean => {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+};
+
+/** The bundler `define` for the build kind, always present so a bundle never has to guess it. */
+export function buildKindDefine(
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  return { __T3CODE_BUILD_PROVABLY_UPSTREAM__: JSON.stringify(provablyUpstream(env)) };
+}
+
+/**
+ * The bundler `define`s that bake a collector into the server when the build sets both
+ * `T3CODE_TELEMETRY_KEY` and `T3CODE_TELEMETRY_HOST` (a host with a scheme), so desktop and WSL
+ * servers need no run-time environment to send there. Empty when the build sets no valid pair.
+ */
+export function telemetryEndpointDefine(
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const key = env.T3CODE_TELEMETRY_KEY?.trim() ?? "";
+  const host = env.T3CODE_TELEMETRY_HOST?.trim() ?? "";
+  return key !== "" && isValidEndpointHost(host)
+    ? {
+        __T3CODE_BUILD_TELEMETRY_KEY__: JSON.stringify(key),
+        __T3CODE_BUILD_TELEMETRY_HOST__: JSON.stringify(host),
+      }
+    : {};
+}

@@ -1,6 +1,7 @@
 import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
+import { provablyUpstream } from "../../scripts/lib/product-name-define.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import { resolveReleaseRepository } from "../../scripts/lib/release-repository.ts";
 
@@ -249,7 +250,8 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+    // The update URL is upstream's EAS project: only a build provably upstream's checks it.
+    enabled: provablyUpstream(repoEnv) && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
     url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,

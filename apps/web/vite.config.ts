@@ -15,7 +15,11 @@ import pdfjsPkg from "pdfjs-dist/package.json" with { type: "json" };
 import { DEV_PROXIED_PATH_PREFIXES } from "@t3tools/shared/devProxy";
 
 import { loadGtHashSource } from "../../scripts/lib/gt-hash";
-import { forkIdentity, productNameDefine } from "../../scripts/lib/product-name-define";
+import {
+  buildKindDefine,
+  forkIdentity,
+  productNameDefine,
+} from "../../scripts/lib/product-name-define";
 import { productNameTransformPlugin } from "../../scripts/lib/product-name-transform";
 import { loadRepoEnv } from "../../scripts/lib/public-config";
 import { releaseRepositoryDefine } from "../../scripts/lib/release-repository";
@@ -342,6 +346,7 @@ export default defineConfig(({ command }) => {
     },
     define: {
       ...productNameDefine(repoEnv),
+      ...buildKindDefine(repoEnv),
       // Only a fork build points its links at its own repository; tests and upstream keep T3's.
       ...(productName === undefined ? {} : releaseRepositoryDefine(repoEnv)),
       "import.meta.env.VITE_WS_URL": JSON.stringify(configuredWsUrl ?? ""),

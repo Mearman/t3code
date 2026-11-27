@@ -506,33 +506,192 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AnalyticsService
   );
 });
 
-it("sends to upstream's collector by default only from an upstream build", () => {
-  const none = { key: Option.none<string>(), host: Option.none<string>() };
-  assert.deepEqual(AnalyticsService.resolveIngestEndpoint({ ...none, upstreamBuild: true }), {
+const NO_ENDPOINT = { key: Option.none<string>(), host: Option.none<string>() };
+const build = (upstreamBuild: boolean, baked?: { key: string; host: string }) =>
+  ({
+    upstreamBuild,
+    bakedKey: Option.fromNullishOr(baked?.key),
+    bakedHost: Option.fromNullishOr(baked?.host),
+  }) satisfies AnalyticsService.AnalyticsBuild;
+
+it("defaults to upstream's collector only in a build that is provably upstream's", () => {
+  assert.deepEqual(AnalyticsService.resolveIngestEndpoint({ ...NO_ENDPOINT, build: build(true) }), {
+    _tag: "Endpoint",
     key: "phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m",
     host: "https://ingest.t3.codes",
   });
-  assert.isUndefined(AnalyticsService.resolveIngestEndpoint({ ...none, upstreamBuild: false }));
+  assert.deepEqual(
+    AnalyticsService.resolveIngestEndpoint({ ...NO_ENDPOINT, build: build(false) }),
+    {
+      _tag: "None",
+    },
+  );
 });
 
-it("lets a build of another repository opt in with both a key and a host of its own", () => {
-  const own = { key: Option.some("phc_own"), host: Option.some("https://ingest.example.com") };
-  assert.deepEqual(AnalyticsService.resolveIngestEndpoint({ ...own, upstreamBuild: false }), {
-    key: "phc_own",
-    host: "https://ingest.example.com",
-  });
-  assert.isUndefined(
-    AnalyticsService.resolveIngestEndpoint({
-      key: own.key,
-      host: Option.none(),
-      upstreamBuild: false,
-    }),
+it("prefers the run-time environment, then the build's own collector, over any default", () => {
+  const baked = { key: "phc_baked", host: "https://baked.example.com" };
+  assert.deepEqual(
+    AnalyticsService.resolveIngestEndpoint({ ...NO_ENDPOINT, build: build(false, baked) }),
+    { _tag: "Endpoint", ...baked },
   );
-  assert.isUndefined(
+  assert.deepEqual(
+    AnalyticsService.resolveIngestEndpoint({
+      key: Option.some("phc_env"),
+      host: Option.none(),
+      build: build(true, baked),
+    }),
+    { _tag: "Endpoint", key: "phc_env", host: "https://baked.example.com" },
+  );
+});
+
+it("has no endpoint from a key without a host or a host without a key outside upstream", () => {
+  assert.deepEqual(
+    AnalyticsService.resolveIngestEndpoint({
+      key: Option.some("phc_own"),
+      host: Option.none(),
+      build: build(false),
+    }),
+    { _tag: "None" },
+  );
+  assert.deepEqual(
     AnalyticsService.resolveIngestEndpoint({
       key: Option.none(),
-      host: own.host,
-      upstreamBuild: false,
+      host: Option.some("https://ingest.example.com"),
+      build: build(false),
+    }),
+    { _tag: "None" },
+  );
+});
+
+it("treats an empty key or a host without a scheme as unusable, not as an endpoint", () => {
+  const resolve = (key: string, host: string) =>
+    AnalyticsService.resolveIngestEndpoint({
+      key: Option.some(key),
+      host: Option.some(host),
+      build: build(false),
+    })._tag;
+  assert.equal(resolve("", "https://ingest.example.com"), "Invalid");
+  assert.equal(resolve("  ", "https://ingest.example.com"), "Invalid");
+  assert.equal(resolve("phc_own", "ingest.example.com"), "Invalid");
+  assert.equal(resolve("phc_own", "ftp://ingest.example.com"), "Invalid");
+  assert.equal(resolve("phc_own", "https://ingest.example.com"), "Endpoint");
+});
+
+/** Every request a service for `buildKind` makes, with `env` as its only configuration. */
+const requestsFor = (
+  buildKind: AnalyticsService.AnalyticsBuild,
+  env: Readonly<Record<string, unknown>>,
+) =>
+  Effect.gen(function* () {
+    const requests: Array<{ readonly url: string; readonly apiKey: string }> = [];
+    const client = HttpClient.make((request) =>
+      Effect.gen(function* () {
+        const body =
+          request.body._tag === "Uint8Array"
+            ? (JSON.parse(new TextDecoder().decode(request.body.body)) as { api_key?: string })
+            : {};
+        requests.push({ url: request.url, apiKey: body.api_key ?? "" });
+        return yield* respondWithStatus(204)(request);
+      }),
+    );
+    const layer = AnalyticsService.layerFor(buildKind).pipe(
+      Layer.provideMerge(
+        ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-telemetry-build-" }),
+      ),
+      Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(HostProcess.Platform, "win32"),
+          Layer.succeed(HostProcess.Architecture, "x64"),
+          Layer.succeed(HttpClient.HttpClient, client),
+          ManagedPolicy.layerTest(undefined),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      yield* recordTwentyEvents;
+      for (let second = 0; second < 60; second += 1) yield* TestClock.adjust("1 second");
+    }).pipe(Effect.provide(layer));
+    return requests;
+  });
+
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("usage data by build kind", (it) => {
+  const enabled = { T3CODE_TELEMETRY_ENABLED: true };
+
+  it.effect("sends upstream's builds to T3's collector with no key or host set", () =>
+    Effect.gen(function* () {
+      const requests = yield* requestsFor(build(true), enabled);
+      assert.isAbove(requests.length, 0);
+      for (const request of requests) {
+        assert.equal(request.url, "https://ingest.t3.codes/batch/");
+        assert.equal(request.apiKey, "phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m");
+      }
+    }),
+  );
+
+  it.effect("sends nothing from any other build, even when enabled and with no endpoint", () =>
+    Effect.gen(function* () {
+      assert.deepEqual(yield* requestsFor(build(false), enabled), []);
+    }),
+  );
+
+  it.effect("sends nothing from another build with only half a collector", () =>
+    Effect.gen(function* () {
+      assert.deepEqual(
+        yield* requestsFor(build(false), { ...enabled, T3CODE_TELEMETRY_KEY: "phc_own" }),
+        [],
+      );
+      assert.deepEqual(
+        yield* requestsFor(build(false), {
+          ...enabled,
+          T3CODE_TELEMETRY_HOST: "https://ingest.example.com",
+        }),
+        [],
+      );
+    }),
+  );
+
+  it.effect("sends nothing to an unusable collector", () =>
+    Effect.gen(function* () {
+      assert.deepEqual(
+        yield* requestsFor(build(false), {
+          ...enabled,
+          T3CODE_TELEMETRY_KEY: "phc_own",
+          T3CODE_TELEMETRY_HOST: "ingest.example.com",
+        }),
+        [],
+      );
+    }),
+  );
+
+  it.effect("sends another build's events only to the collector it names, never to T3's", () =>
+    Effect.gen(function* () {
+      const baked = { key: "phc_baked", host: "https://baked.example.com" };
+      const requests = yield* requestsFor(build(false, baked), enabled);
+      assert.isAbove(requests.length, 0);
+      for (const request of requests) {
+        assert.equal(request.url, "https://baked.example.com/batch/");
+        assert.equal(request.apiKey, "phc_baked");
+      }
+      const overridden = yield* requestsFor(build(false, baked), {
+        ...enabled,
+        T3CODE_TELEMETRY_KEY: "phc_env",
+        T3CODE_TELEMETRY_HOST: "https://env.example.com",
+      });
+      assert.deepEqual(
+        [...new Set(overridden.map((request) => request.url))],
+        ["https://env.example.com/batch/"],
+      );
+    }),
+  );
+
+  it.effect("still honours an opt-out and a managed policy in a build with a collector", () =>
+    Effect.gen(function* () {
+      const baked = { key: "phc_baked", host: "https://baked.example.com" };
+      assert.deepEqual(
+        yield* requestsFor(build(false, baked), { T3CODE_TELEMETRY_ENABLED: false }),
+        [],
+      );
     }),
   );
 });

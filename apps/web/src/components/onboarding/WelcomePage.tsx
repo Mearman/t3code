@@ -1,4 +1,4 @@
-import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
+import { IS_FORK_PRODUCT, IS_PROVABLY_UPSTREAM_BUILD } from "@t3tools/shared/productName";
 import { useAuth } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
@@ -351,7 +351,21 @@ function TelemetryNotice({ environmentId }: { readonly environmentId: Environmen
   const telemetryOff = managedTelemetryOffMessage(useManagedPolicy(environmentId), messages);
   return (
     <p className="mt-auto pt-12 text-2xs leading-relaxed text-muted-foreground/70">
-      {telemetryOff === undefined ? (
+      {telemetryOff === undefined && !IS_PROVABLY_UPSTREAM_BUILD ? (
+        <T>
+          T3 Code sends no usage data unless a build is set up with its own collection endpoint. See
+          the{" "}
+          <a
+            className="underline decoration-current/40 underline-offset-2 hover:text-muted-foreground"
+            href={PRIVACY_POLICY_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            telemetry notes
+          </a>
+          .
+        </T>
+      ) : telemetryOff === undefined ? (
         <T>
           T3 Code collects anonymous usage data to improve the app. To opt out, see the{" "}
           <a

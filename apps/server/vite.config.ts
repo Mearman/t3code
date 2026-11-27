@@ -5,7 +5,12 @@ import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
-import { forkIdentity, productNameDefine } from "../../scripts/lib/product-name-define.ts";
+import {
+  buildKindDefine,
+  forkIdentity,
+  productNameDefine,
+  telemetryEndpointDefine,
+} from "../../scripts/lib/product-name-define.ts";
 import { productNameTransformPlugin } from "../../scripts/lib/product-name-transform.ts";
 import { releaseRepositoryDefine } from "../../scripts/lib/release-repository.ts";
 import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version.ts";
@@ -166,6 +171,8 @@ export default mergeConfig(
         __T3CODE_TELEMETRY_CHANNEL__: JSON.stringify(telemetryChannel),
         ...releaseRepositoryDefine(repoEnv),
         ...productNameDefine(repoEnv),
+        ...buildKindDefine(repoEnv),
+        ...telemetryEndpointDefine(repoEnv),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),
         __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
           repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
