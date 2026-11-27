@@ -318,21 +318,6 @@ const sendsProviderSignOutPrompt = (method: string, payload: unknown): boolean =
   }
 };
 
-/**
- * A send that stops, writes beside or types into a `claude` another process runs acts on that
- * terminal, so it needs the terminal scope as well as the orchestration one.
- */
-const drivesHeldTerminal = (method: string, payload: unknown): boolean => {
-  if (method !== ORCHESTRATION_V2_WS_METHODS.dispatchCommand) return false;
-  const command = payload as OrchestrationV2Command;
-  return (
-    command.type === "message.dispatch" &&
-    (command.heldSessionSend === "adopt" ||
-      command.heldSessionSend === "send" ||
-      command.heldSessionSend === "takeOver")
-  );
-};
-
 const requiredScopesForRpcCall = (
   method: string,
   payload: unknown,
@@ -374,12 +359,9 @@ const requiredScopesForRpcCall = (
   }
   const guarded = clientRpcRequiredScopes(method, payload);
   const scopes = guarded.length > 0 ? guarded : [requiredScopeForRpcMethod(method)];
-  const withSignOut = sendsProviderSignOutPrompt(method, payload)
+  return sendsProviderSignOutPrompt(method, payload)
     ? [...scopes, AuthProvidersManageScope]
     : scopes;
-  return drivesHeldTerminal(method, payload)
-    ? [...withSignOut, AuthTerminalOperateScope]
-    : withSignOut;
 };
 
 /**
