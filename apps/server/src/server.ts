@@ -31,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -238,6 +239,7 @@ import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
 import * as ClaudeSessionProjects from "./claudeSessions/ClaudeSessionProjects.ts";
 import * as ClaudeSessionSync from "./claudeSessions/ClaudeSessionSync.ts";
+import * as ClaudeThreadAccounts from "./claudeSessions/ClaudeThreadAccounts.ts";
 import * as ClaudeSyncCapacity from "./claudeSessions/ClaudeSyncCapacity.ts";
 import * as ClaudeLiveSessions from "./claudeSessions/ClaudeLiveSessions.ts";
 import * as ClaudeSessionSyncState from "./persistence/ClaudeSessionSyncState.ts";
@@ -268,6 +270,7 @@ import {
   readTailscaleStatus,
 } from "@t3tools/tailscale";
 import * as ServerActivation from "./serverActivation.ts";
+import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 
 // Escaped MCP handoff provenance can exceed find-my-way's 100-character segment default.
 const HTTP_ROUTER_CONFIG = {
@@ -720,6 +723,26 @@ const layerIdleCompactionWorker = Layer.effectDiscard(
   IdleCompactionService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(ProjectionStoreV2.layer));
 
+const layerClaudeThreadAccountPruner = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const path = yield* Path.Path;
+    const store = yield* ClaudeThreadAccounts.makeClaudeThreadAccountStore(
+      ClaudeThreadAccounts.claudeThreadAccountsFile(path, stateDir),
+    );
+    yield* ServerActivation.forkParked(
+      ClaudeThreadAccounts.pruneDeletedClaudeThreadAccounts({
+        store,
+        deletedThreads: orchestrator.streamDomainEvents.pipe(
+          Stream.filter((event) => event.type === "thread.deleted"),
+          Stream.map((event) => event.threadId),
+        ),
+      }),
+    );
+  }),
+);
+
 const layerThreadPullRequestWorker = Layer.effectDiscard(
   ThreadPullRequestService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(layerPullRequestService));
@@ -777,6 +800,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
   layerClaudeSessionSyncWorker,
+  layerClaudeThreadAccountPruner,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),

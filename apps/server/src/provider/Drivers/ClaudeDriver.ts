@@ -29,6 +29,7 @@ import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import {
+  ClaudeQueryAccountRefusal,
   createClaudeAdapterV2,
   resolveClaudeModeAvailability,
   type ClaudeAdapterV2DriverEnv,
@@ -52,7 +53,6 @@ import { makeClaudeAuth, makeClaudeQueryLoginSession } from "../ClaudeAuth.ts";
 import {
   claudeAccountIdentity,
   claudeThreadAccountsFile,
-  gateClaudeThreadAccounts,
   makeClaudeThreadAccountStore,
 } from "../../claudeSessions/ClaudeThreadAccounts.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
@@ -206,6 +206,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     // Retain reports until the registry subscribes; end its listener on teardown.
     const workspaceRescans = yield* Queue.unbounded<string, Cause.Done>();
     yield* Effect.addFinalizer(() => Queue.end(workspaceRescans));
+    const threadAccounts = yield* makeClaudeThreadAccountStore(
+      claudeThreadAccountsFile(path, stateDir),
+    ).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -218,6 +224,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       {
         scopedLimitNames,
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        // The account comes from the process that sends, before its first prompt.
+        checkQueryAccount: ({ threadId, account }) =>
+          threadAccounts
+            .check(threadId, claudeAccountIdentity(account))
+            .pipe(Effect.mapError((cause) => new ClaudeQueryAccountRefusal({ cause }))),
         onSessionInit: (cwd) => Queue.offer(workspaceRescans, cwd).pipe(Effect.asVoid),
         modelCatalog,
         routeModelCatalog: modelRoutes.route,
@@ -446,28 +457,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     });
 
-    const probeAccount = Effect.scoped(
-      Effect.gen(function* () {
-        const prepared = yield* prepareClaudeIdleQuery(effectiveConfig, processEnv, stateDir);
-        const query = yield* acquireClaudeIdleQuery(prepared.open);
-        return claudeAccountIdentity(
-          yield* Effect.tryPromise({
-            try: () => query.accountInfo(),
-            catch: setupFailure("verify", "Claude Code did not report its account."),
-          }),
-        );
-      }),
-    ).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
-    const threadAccounts = yield* makeClaudeThreadAccountStore(
-      claudeThreadAccountsFile(path, stateDir),
-    ).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
-
     // Same rules as Codex: serialised on the config directory that holds the
     // login, one request id kept until Claude answers (a cooldown or rate
     // limit is an answer), then a re-probe.
@@ -574,11 +563,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
         ),
-      orchestrationAdapter: gateClaudeThreadAccounts(
-        sendGatedAdapter,
-        probeAccount,
-        threadAccounts,
-      ),
+      orchestrationAdapter: sendGatedAdapter,
       textGeneration,
       consumeResetCredit,
       auth,

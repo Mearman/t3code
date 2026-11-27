@@ -10,7 +10,7 @@ T3 Code drives your Claude Code installation, login, skills, and plugins. See [p
 
 **Add Claude account** (in **Settings → Providers → Add provider → Claude**, or **Providers** on mobile) creates a new account with its own config folder on the environment's machine, then signs it in. By default it shares projects, sessions, file history and tasks with an existing Claude account, so `claude --resume` finds the same sessions from either account; choose **Keep history separate** to give it its own.
 
-Each thread remembers the account it sends as. If Claude is later signed in as a different account (on that instance, or after switching the thread to another one), the next message is not sent; the thread names both accounts and **Send as this account** lets it continue with the new one.
+Each thread remembers the account it sends as, read from the Claude process that sends it. If Claude is later signed in as a different account (on that instance, or after switching the thread to another one), the next message is not sent and the thread names both accounts. Send again to continue as the new account, or use **Send as this account**.
 
 To use a config folder you already have, such as `~/.claude_personal`, add a Claude instance and point **CLAUDE_CONFIG_DIR path** at it (leave empty for the default directory), then sign in to it as above. Always use `CLAUDE_CONFIG_DIR` rather than `HOME` so system keychain paths stay intact.
 

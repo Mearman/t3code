@@ -44,6 +44,7 @@ import {
   forkSession as forkClaudeSession,
   type EffortLevel,
   type ForkSessionOptions,
+  type AccountInfo as ClaudeAccountInfo,
   type ForkSessionResult,
   getSessionMessages,
   type HookCallback,
@@ -808,6 +809,8 @@ export interface ClaudeAgentSdkQuerySession {
     ClaudeAgentSdkQueryRunnerError
   >;
   readonly interrupt: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
+  /** The account this process signed in as, from its own initialisation. */
+  readonly accountInfo: Effect.Effect<ClaudeAccountInfo, ClaudeAgentSdkQueryRunnerError>;
   readonly close: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
 }
 
@@ -2196,6 +2199,10 @@ export const layerQueryRunner: Layer.Layer<
             }),
           ),
         ),
+        accountInfo: Effect.tryPromise({
+          try: () => queryRuntime.accountInfo(),
+          catch: (cause) => queryRunnerError(cause, "accountInfo"),
+        }),
         // A job started since the last poll is recorded before the CLI is told to exit.
         close: Effect.suspend(() =>
           processExited || descendants === undefined ? Effect.void : descendants.refresh,
@@ -6174,7 +6181,27 @@ export interface ClaudeAdapterV2Options {
     ) => Effect.Effect<void>;
   };
   readonly installationGate?: ProviderInstallationGate.ProviderInstallationGate["Service"];
+  /**
+   * Runs on each Claude process before its first prompt, with the account that process reports.
+   * A failure refuses the turn before any prompt is sent and closes the process.
+   */
+  readonly checkQueryAccount?: (input: {
+    readonly threadId: ThreadId;
+    readonly account: ClaudeAccountInfo;
+  }) => Effect.Effect<void, ClaudeQueryAccountRefusal>;
 }
+
+/** The process's account cannot be used for this thread's turn; nothing was sent. */
+export class ClaudeQueryAccountRefusal extends Schema.TaggedError<ClaudeQueryAccountRefusal>()(
+  "ClaudeQueryAccountRefusal",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause);
+  }
+}
+
+const isClaudeQueryAccountRefusal = Schema.is(ClaudeQueryAccountRefusal);
 
 export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   adapterOptions: ClaudeAdapterV2Options,
@@ -14552,6 +14579,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       Effect.provideService(Path.Path, path),
                     );
             const querySession = yield* openQuery(turnInput, nativeThreadId, queryPolicy);
+            const checkQueryAccount = adapterOptions.checkQueryAccount;
+            if (checkQueryAccount !== undefined)
+              yield* querySession.query.accountInfo.pipe(
+                Effect.mapError((cause) => new ClaudeQueryAccountRefusal({ cause })),
+                Effect.flatMap((account) =>
+                  checkQueryAccount({ threadId: turnInput.threadId, account }),
+                ),
+                Effect.tapError(() => closeLiveQueryForNativeThread(nativeThreadId)),
+              );
             yield* applySessionTitle(querySession.query, nativeThreadId, turnInput.appThread.title);
             const autoCompactWindow = yield* resolveAutoCompactWindow(
               querySession.settingsCwd,
@@ -14871,6 +14907,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     providerThreadId: turnInput.providerThread.id,
                     runId: turnInput.runId,
                     cause,
+                    ...(isClaudeQueryAccountRefusal(cause) ? { refusedBeforePrompt: true } : {}),
                   }),
               ),
             ),
@@ -16020,7 +16057,12 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     input: ProviderAdapterDriverCreateInput<ClaudeSettings>,
     hooks: Pick<
       ClaudeAdapterV2Options,
-      "scopedLimitNames" | "onUsageLimits" | "onSessionInit" | "modelCatalog" | "routeModelCatalog"
+      | "scopedLimitNames"
+      | "onUsageLimits"
+      | "onSessionInit"
+      | "modelCatalog"
+      | "routeModelCatalog"
+      | "checkQueryAccount"
     > = {},
   ) {
     const { instanceId, environment, enabled, config } = input;
