@@ -19,7 +19,21 @@ const hostedAppChannel = import.meta.env.VITE_HOSTED_APP_CHANNEL?.trim().toLower
 export const HOSTED_APP_CHANNEL =
   hostedAppChannel === "latest" || hostedAppChannel === "nightly" ? hostedAppChannel : null;
 export const HOSTED_APP_CHANNEL_LABEL = resolveHostedAppChannelLabel(HOSTED_APP_CHANNEL);
-export const APP_BASE_NAME = injectedDesktopAppBranding?.baseName ?? "T3 Code";
+// Bundles define this from the build's product name (scripts/lib/desktop-product-name.ts).
+declare const __T3CODE_DESKTOP_PRODUCT_NAME__: string | undefined;
+const UPSTREAM_APP_BASE_NAME = "T3 Code";
+export const APP_BASE_NAME =
+  injectedDesktopAppBranding?.baseName ??
+  (typeof __T3CODE_DESKTOP_PRODUCT_NAME__ === "undefined"
+    ? UPSTREAM_APP_BASE_NAME
+    : __T3CODE_DESKTOP_PRODUCT_NAME__);
+/** Whether this build is a fork under its own name, so T3's wordmark and name are not shown. */
+export const IS_FORK_BRAND = APP_BASE_NAME !== UPSTREAM_APP_BASE_NAME;
+
+/** Names this build's product wherever translated copy names upstream's, hyphenated spellings included. */
+export function brandText(text: string): string {
+  return IS_FORK_BRAND ? text.replace(/T3[ -]Code/g, APP_BASE_NAME) : text;
+}
 export const APP_STAGE_LABEL =
   injectedDesktopAppBranding?.stageLabel ??
   resolveWebAppStageLabel({
