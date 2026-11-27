@@ -6,7 +6,9 @@ import { claudeBridgeMarketplaceFiles } from "./ClaudeBridgeMod.ts";
 it("ships a marketplace whose one plugin is the mod its hooks file names", () => {
   const files = claudeBridgeMarketplaceFiles("1.2.3");
   const marketplace = JSON.parse(files.get(".claude-plugin/marketplace.json") ?? "{}");
-  const plugin = JSON.parse(files.get(`${CLAUDE_BRIDGE_MOD_NAME}/.claude-plugin/plugin.json`) ?? "{}");
+  const plugin = JSON.parse(
+    files.get(`${CLAUDE_BRIDGE_MOD_NAME}/.claude-plugin/plugin.json`) ?? "{}",
+  );
   const hooks = JSON.parse(files.get(`${CLAUDE_BRIDGE_MOD_NAME}/hooks/hooks.json`) ?? "{}");
 
   assert.deepStrictEqual(
