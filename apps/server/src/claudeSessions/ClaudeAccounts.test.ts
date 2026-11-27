@@ -228,3 +228,21 @@ it.effect("creates nothing when the organisation manages provider accounts", () 
     );
   }).pipe(Effect.scoped, Effect.provide(services)),
 );
+
+it.effect("removes the half-made home when a link fails part-way", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
+    const store = path.join(root, "store");
+    const home = path.join(root, "accounts", "work", "home");
+    // `projects` links; making `sessions` in the read-only store then fails.
+    yield* fileSystem.makeDirectory(path.join(store, "projects"), { recursive: true });
+    yield* fileSystem.chmod(store, 0o500);
+    const failed = yield* createManagedClaudeHome(home, store).pipe(Effect.asVoid, Effect.flip);
+    yield* fileSystem.chmod(store, 0o700);
+    assert.strictEqual(failed._tag, "PlatformError");
+    assert.isFalse(yield* fileSystem.exists(path.join(root, "accounts", "work")));
+    assert.deepEqual(yield* fileSystem.readDirectory(store), ["projects"]);
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
