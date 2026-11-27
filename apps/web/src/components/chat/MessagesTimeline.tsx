@@ -315,9 +315,7 @@ interface MessagesTimelineProps {
     | null;
   /** The refused run a send choice can resend, and how; see `heldSessionResendRunId`. */
   heldSessionResendRunId: RunId | null;
-  onResendHeldSession:
-    | ((runId: RunId, choice: ClaudeHeldSessionSend) => Promise<void>)
-    | null;
+  onResendHeldSession: ((runId: RunId, choice: ClaudeHeldSessionSend) => Promise<void>) | null;
   supportsConversationRollback: boolean;
   threadStartCheckpointAvailable?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
