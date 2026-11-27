@@ -19,7 +19,9 @@ import { claudeHeldSessionSendLabel } from "@t3tools/client-runtime/contract-lab
 import {
   HELD_SESSION_RESEND_CHOICES,
   heldSessionForkRunId,
+  offersThreadAccountConfirm,
 } from "@t3tools/client-runtime/state/thread-workflows";
+import { ThreadAccountConfirmAction } from "./ThreadAccountConfirmAction";
 import {
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
@@ -474,6 +476,17 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               <ExternalLinkIcon aria-hidden />
             </Button>
           </div>
+        ) : null}
+        {threadRef &&
+        workEntry.projectedItem !== undefined &&
+        offersThreadAccountConfirm({
+          visibility: workEntry.projectedItem.visibility,
+          item: failureItem,
+        }) ? (
+          <ThreadAccountConfirmAction
+            environmentId={threadRef.environmentId}
+            threadId={failureItem.threadId}
+          />
         ) : null}
         {forkRunId !== undefined && ctx.onForkHeldSession ? (
           <HeldSessionForkAction

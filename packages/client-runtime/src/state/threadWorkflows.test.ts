@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import {
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
+  CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE,
 } from "@t3tools/provider-core/client";
 
 import {
@@ -13,6 +14,7 @@ import {
   heldSessionForkRunId,
   heldSessionRefusedRunIds,
   heldSessionResendRunId,
+  offersThreadAccountConfirm,
   resolveLatestMergeBackRun,
   threadCanSteer,
   threadSupportsProviderHandoff,
@@ -546,5 +548,25 @@ describe("heldSessionForkRunId", () => {
     expect(heldSessionForkRunId(row("local", PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE))).toBe(
       "refused",
     );
+  });
+});
+
+describe("offersThreadAccountConfirm", () => {
+  const row = (visibility: "local" | "inherited" | "synthetic", code: string | null) => ({
+    visibility,
+    item: { failure: { code } },
+  });
+
+  it("offers a confirmation only on the thread's own row with the account-changed code", () => {
+    expect(
+      offersThreadAccountConfirm(row("local", CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE)),
+    ).toBe(true);
+    expect(
+      offersThreadAccountConfirm(row("inherited", CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE)),
+    ).toBe(false);
+    expect(offersThreadAccountConfirm(row("local", PROVIDER_THREAD_IN_USE_FAILURE_CODE))).toBe(
+      false,
+    );
+    expect(offersThreadAccountConfirm(row("local", null))).toBe(false);
   });
 });

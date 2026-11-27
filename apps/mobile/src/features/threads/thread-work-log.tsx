@@ -58,8 +58,12 @@ import * as DateTime from "effect/DateTime";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { heldSessionForkRunId } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  heldSessionForkRunId,
+  offersThreadAccountConfirm,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import { HeldSessionForkButton } from "./HeldSessionForkButton";
+import { ThreadAccountConfirmButton } from "./ThreadAccountConfirmButton";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
@@ -995,6 +999,15 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
             <Text selectable className="ml-7 text-sm text-foreground">
               {failureItem.failure.message}
             </Text>
+          ) : null}
+          {offersThreadAccountConfirm({
+            visibility: row.projectedItem.visibility,
+            item: failureItem,
+          }) ? (
+            <ThreadAccountConfirmButton
+              environmentId={props.environmentId}
+              threadId={failureItem.threadId}
+            />
           ) : null}
           {forkRunId !== undefined ? (
             <HeldSessionForkButton

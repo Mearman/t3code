@@ -7,7 +7,11 @@ import { expect, it, vi } from "vite-plus/test";
 type Children = { children?: ReactNode };
 type ButtonProps = { label: string; disabled?: boolean; onPress: () => void };
 
-const forkFromRun = vi.hoisted(() => vi.fn(async () => ({ _tag: "Success" })));
+const forkFromRun = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ readonly _tag: "Success"; readonly value?: unknown }> => ({
+    _tag: "Success",
+  })),
+);
 
 vi.mock("react-native", () => ({
   Animated: {},
@@ -91,6 +95,7 @@ vi.mock("../../state/threads", () => ({
     mcpSignInStart: { permissionAtom: () => null },
   },
 }));
+vi.mock("../../state/server", () => ({ serverEnvironment: { confirmClaudeThreadAccount: {} } }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => forkFromRun }));
 vi.mock("../layout/workspace/useSelectWorkspaceDetail", () => ({
   useSelectWorkspaceDetail: () => vi.fn(),
@@ -121,6 +126,68 @@ vi.mock("./work-log-layout", () => {
 });
 
 import { ThreadWorkLog } from "./thread-work-log";
+
+const failedRow = (
+  visibility: OrchestrationV2ProjectedTurnItem["visibility"],
+  code: string,
+  message: string,
+) =>
+  ({
+    id: "row-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    summary: "Provider error",
+    projectedItem: {
+      visibility,
+      item: {
+        type: "error",
+        status: "failed",
+        threadId: "thread-held",
+        runId: "run-refused",
+        failure: { class: "provider_error", code, message },
+      },
+    },
+  }) as unknown as Parameters<typeof ThreadWorkLog>[0]["activities"][number];
+
+it.each([
+  ["local", ["Send as this account"]],
+  ["inherited", []],
+] as const)(
+  "offers to confirm a changed Claude account on its own thread's row only: %s",
+  async (visibility, offered) => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    forkFromRun.mockClear();
+    forkFromRun.mockResolvedValueOnce({ _tag: "Success", value: { confirmed: true } });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    using _root = { [Symbol.dispose]: () => act(() => root.unmount()) };
+    act(() =>
+      root.render(
+        <ThreadWorkLog
+          {...({} as Parameters<typeof ThreadWorkLog>[0])}
+          activities={[
+            failedRow(
+              visibility,
+              "claude_thread_account_changed",
+              "This thread was sent as a@example.com, but Claude is now signed in as b@example.com.",
+            ),
+          ]}
+          anchorKey="row-1"
+          environmentId={"env-1" as EnvironmentId}
+          copiedRowId={null}
+          expandedRows={{}}
+        />,
+      ),
+    );
+    const buttons = [...container.querySelectorAll("button")];
+    expect(buttons.map((button) => button.textContent)).toEqual(offered);
+    await act(async () => buttons[0]?.click());
+    expect(forkFromRun.mock.calls).toEqual(
+      offered.length === 0
+        ? []
+        : [[{ environmentId: "env-1", input: { threadId: "thread-held" } }]],
+    );
+  },
+);
 
 const heldRow = (visibility: OrchestrationV2ProjectedTurnItem["visibility"]) =>
   ({
