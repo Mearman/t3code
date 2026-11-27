@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
@@ -501,6 +502,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AnalyticsService
       }).pipe(Effect.provide(layerRuntime));
 
       assert.deepEqual(capturedPaths, []);
+    }),
+  );
+});
+
+it("sends to upstream's collector by default only from an upstream build", () => {
+  const none = { key: Option.none<string>(), host: Option.none<string>() };
+  assert.deepEqual(AnalyticsService.resolveIngestEndpoint({ ...none, upstreamBuild: true }), {
+    key: "phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m",
+    host: "https://ingest.t3.codes",
+  });
+  assert.isUndefined(AnalyticsService.resolveIngestEndpoint({ ...none, upstreamBuild: false }));
+});
+
+it("lets a build of another repository opt in with both a key and a host of its own", () => {
+  const own = { key: Option.some("phc_own"), host: Option.some("https://ingest.example.com") };
+  assert.deepEqual(AnalyticsService.resolveIngestEndpoint({ ...own, upstreamBuild: false }), {
+    key: "phc_own",
+    host: "https://ingest.example.com",
+  });
+  assert.isUndefined(
+    AnalyticsService.resolveIngestEndpoint({
+      key: own.key,
+      host: Option.none(),
+      upstreamBuild: false,
+    }),
+  );
+  assert.isUndefined(
+    AnalyticsService.resolveIngestEndpoint({
+      key: Option.none(),
+      host: own.host,
+      upstreamBuild: false,
     }),
   );
 });

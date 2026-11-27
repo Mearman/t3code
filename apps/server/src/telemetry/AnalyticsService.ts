@@ -1,4 +1,5 @@
 // T3 ingest retains events and deduplicates retries by UUID.
+import { CLI_RELEASE_REPOSITORY, isUpstreamReleaseRepository } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isCiEnvironment, isDoNotTrackSet } from "@t3tools/shared/otelEnvironment";
 import type { ClientOs } from "@t3tools/contracts";
@@ -68,12 +69,8 @@ function retryDelayMs(failures: number, random: number): number {
 }
 
 const TelemetryEnvConfig = Config.all({
-  ingestKey: Config.String("T3CODE_TELEMETRY_KEY").pipe(
-    Config.withDefault("phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m"),
-  ),
-  ingestHost: Config.String("T3CODE_TELEMETRY_HOST").pipe(
-    Config.withDefault("https://ingest.t3.codes"),
-  ),
+  ingestKey: Config.String("T3CODE_TELEMETRY_KEY").pipe(Config.option),
+  ingestHost: Config.String("T3CODE_TELEMETRY_HOST").pipe(Config.option),
   enabled: Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.option),
   flushBatchSize: Config.Number("T3CODE_TELEMETRY_FLUSH_BATCH_SIZE").pipe(Config.withDefault(20)),
   maxBufferedEvents: Config.Number("T3CODE_TELEMETRY_MAX_BUFFERED_EVENTS").pipe(
@@ -81,6 +78,30 @@ const TelemetryEnvConfig = Config.all({
   ),
   wslDistroName: Config.String("WSL_DISTRO_NAME").pipe(Config.option),
 });
+
+const UPSTREAM_INGEST_KEY = "phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m";
+const UPSTREAM_INGEST_HOST = "https://ingest.t3.codes";
+
+/**
+ * Where usage events go. Only upstream's own builds default to its collector; a build of any
+ * other repository has no collector of its own, so it sends nothing until both
+ * `T3CODE_TELEMETRY_KEY` and `T3CODE_TELEMETRY_HOST` name one.
+ */
+export function resolveIngestEndpoint(input: {
+  readonly key: Option.Option<string>;
+  readonly host: Option.Option<string>;
+  readonly upstreamBuild: boolean;
+}): { readonly key: string; readonly host: string } | undefined {
+  const key = input.upstreamBuild
+    ? Option.orElseSome(input.key, () => UPSTREAM_INGEST_KEY)
+    : input.key;
+  const host = input.upstreamBuild
+    ? Option.orElseSome(input.host, () => UPSTREAM_INGEST_HOST)
+    : input.host;
+  return Option.isSome(key) && Option.isSome(host)
+    ? { key: key.value, host: host.value }
+    : undefined;
+}
 
 export class AnalyticsService extends Context.Service<
   AnalyticsService,
@@ -128,7 +149,14 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   const awaitingShellConsent = hostEnvironment.T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING === "1";
   const enabledByDefault = !isCiEnvironment(hostEnvironment);
-  const enabledAtStartup = Option.getOrElse(telemetryConfig.enabled, () => enabledByDefault);
+  const endpoint = resolveIngestEndpoint({
+    key: telemetryConfig.ingestKey,
+    host: telemetryConfig.ingestHost,
+    upstreamBuild: isUpstreamReleaseRepository(CLI_RELEASE_REPOSITORY),
+  });
+  // No endpoint, no events: an explicit opt-in cannot send them anywhere.
+  const enabledAtStartup =
+    endpoint !== undefined && Option.getOrElse(telemetryConfig.enabled, () => enabledByDefault);
   // A managed policy can switch analytics off over the environment, never on.
   const policyAllows =
     ManagedPolicy.deniedBy(yield* ManagedPolicy.ManagedPolicy, "telemetry") === undefined;
@@ -209,10 +237,10 @@ export const make = Effect.gen(function* () {
   const sendBatch = Effect.fn("AnalyticsService.sendBatch")(function* (
     events: ReadonlyArray<BufferedAnalyticsEvent>,
   ) {
-    if (!(yield* telemetryEnabled) || !distinctId) return;
+    if (!(yield* telemetryEnabled) || !distinctId || endpoint === undefined) return;
 
     const payload = {
-      api_key: telemetryConfig.ingestKey,
+      api_key: endpoint.key,
       batch: events.map((event) => ({
         uuid: event.uuid,
         event: event.event,
@@ -244,7 +272,7 @@ export const make = Effect.gen(function* () {
       })),
     };
 
-    yield* HttpClientRequest.post(`${telemetryConfig.ingestHost}/batch/`).pipe(
+    yield* HttpClientRequest.post(`${endpoint.host}/batch/`).pipe(
       HttpClientRequest.bodyJson(payload),
       Effect.flatMap(httpClient.execute),
       Effect.flatMap(HttpClientResponse.filterStatusOk),
