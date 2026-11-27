@@ -197,14 +197,15 @@ jobs:
             fi
           done
 
-      # The desktop bundle names the app ExaCode in its window title and About panel
-      # (scripts/lib/desktop-product-name.ts).
+      # The desktop bundle and the web client name the app ExaCode (scripts/lib/desktop-product-name.ts).
       - name: Check the desktop bundle's product name
         run: |
-          if ! grep -rqF '"ExaCode"' apps/desktop/dist-electron; then
-            echo "::error::apps/desktop/dist-electron does not name the app ExaCode."
-            exit 1
-          fi
+          for dir in apps/desktop/dist-electron apps/server/dist/client; do
+            if ! grep -rqF --include='*.js' --include='*.cjs' --include='*.mjs' '"ExaCode"' "$dir"; then
+              echo "::error::$dir does not name the app ExaCode."
+              exit 1
+            fi
+          done
 
       - name: Stage web asset manifest
         run: |

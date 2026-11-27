@@ -7,15 +7,30 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
+import { msg } from "gt-i18n";
+
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import { m, onLocaleChange } from "../i18n/messages.ts";
 import * as DesktopAssets from "./DesktopAssets.ts";
 import { UPSTREAM_APP_BASE_NAME } from "./DesktopAppName.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 
-// TRADEMARK.md: a fork says plainly that it is unofficial and shows no T3 branding.
-const UNOFFICIAL_FORK_NOTICE =
-  "An unofficial fork based on the T3 Code source code. Not affiliated with, endorsed by or maintained by T3 Tools, Inc.";
+/**
+ * TRADEMARK.md: a fork says plainly that it is unofficial. Undefined for upstream's own name, and
+ * the source text names upstream through a variable so the product-name swap cannot rewrite it.
+ */
+export function unofficialForkNotice(baseName: string): string | undefined {
+  return baseName === UPSTREAM_APP_BASE_NAME
+    ? undefined
+    : m(
+        msg(
+          "An unofficial fork based on the {upstream} source code. Not affiliated with, endorsed by or maintained by T3 Tools, Inc.",
+        ),
+        { upstream: UPSTREAM_APP_BASE_NAME },
+      );
+}
+
 const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
 const COMMIT_HASH_DISPLAY_LENGTH = 12;
 
@@ -99,14 +114,17 @@ export const make = Effect.gen(function* () {
     yield* electronApp.setName(
       `${environment.branding.baseName} ${environment.branding.stageLabel}`,
     );
-    yield* electronApp.setAboutPanelOptions({
-      applicationName: environment.displayName,
-      applicationVersion: environment.appVersion,
-      version: Option.getOrElse(commitHash, () => "unknown"),
-      ...(environment.branding.baseName === UPSTREAM_APP_BASE_NAME
-        ? {}
-        : { credits: UNOFFICIAL_FORK_NOTICE }),
+    const setAboutPanel = Effect.suspend(() => {
+      const credits = unofficialForkNotice(environment.branding.baseName);
+      return electronApp.setAboutPanelOptions({
+        applicationName: environment.displayName,
+        applicationVersion: environment.appVersion,
+        version: Option.getOrElse(commitHash, () => "unknown"),
+        ...(credits === undefined ? {} : { credits }),
+      });
     });
+    yield* setAboutPanel;
+    onLocaleChange(() => Effect.runFork(setAboutPanel));
 
     if (environment.platform === "win32") {
       yield* electronApp.setAppUserModelId(environment.appUserModelId);

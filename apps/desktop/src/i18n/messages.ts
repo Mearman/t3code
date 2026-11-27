@@ -43,11 +43,14 @@ export function m(message: string, variables: Readonly<Record<string, string>> =
       ? undefined
       : activeCatalog[hashMessage(source, { ...options, $format: "ICU" })];
   // Untranslated text is English, so it takes English plural rules.
-  return brandText(
-    target === undefined
-      ? gtFallback(source, { ...options, $locale: DEFAULT_LOCALE })
-      : gtFallback(target, { ...options, $locale: activeLocale, $_fallback: source }),
-  );
+  // The product name is swapped in the template, so a variable can still carry upstream's name.
+  return target === undefined
+    ? gtFallback(brandText(source), { ...options, $locale: DEFAULT_LOCALE })
+    : gtFallback(brandText(target), {
+        ...options,
+        $locale: activeLocale,
+        $_fallback: brandText(source),
+      });
 }
 
 /** Runs `listener` after each switch to a different UI language. */
