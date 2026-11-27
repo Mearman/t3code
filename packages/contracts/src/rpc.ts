@@ -35,6 +35,11 @@ import {
   PeerLinkThreadReadError,
 } from "./peerLink.ts";
 import {
+  ClaudeRemoteSessionList,
+  ClaudeReplicationReport,
+  ClaudeSessionReplicationError,
+} from "./claudeSessionReplication.ts";
+import {
   ClaudeAccountCreateInput,
   ClaudeAccountCreateResult,
   ChatGptReconnectProfileInput,
@@ -47,7 +52,12 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
-import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  IsoDateTime,
+  NonNegativeInt,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { SecretSourceCheckResult } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
@@ -617,6 +627,9 @@ export const WS_METHODS = {
   peerLinksThreadItem: "peerLinks.threadItem",
   peerLinksPairClient: "peerLinks.pairClient",
   peerLinksPairLink: "peerLinks.pairLink",
+  claudeSessionsListRemote: "claudeSessions.listRemote",
+  claudeSessionsReplicationReport: "claudeSessions.replicationReport",
+  claudeSessionsReplicateNow: "claudeSessions.replicateNow",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -979,6 +992,29 @@ const WsServerGetDatabaseStorageRpc = Rpc.make(WS_METHODS.serverGetDatabaseStora
 const WsServerReclaimDatabaseSpaceRpc = Rpc.make(WS_METHODS.serverReclaimDatabaseSpace, {
   payload: Schema.Struct({}),
   error: Schema.Union([DatabaseReclaimError, EnvironmentAuthorizationError]),
+});
+
+/** A linked environment's own Claude Code sessions, newest first, to open through the link. */
+const WsClaudeSessionsListRemoteRpc = Rpc.make(WS_METHODS.claudeSessionsListRemote, {
+  payload: Schema.Struct({
+    environmentId: EnvironmentId,
+    query: Schema.optionalKey(Schema.String),
+  }),
+  success: ClaudeRemoteSessionList,
+  error: Schema.Union([ClaudeSessionReplicationError, EnvironmentAuthorizationError]),
+});
+
+const WsClaudeSessionsReplicationReportRpc = Rpc.make(WS_METHODS.claudeSessionsReplicationReport, {
+  payload: Schema.Struct({}),
+  success: ClaudeReplicationReport,
+  error: Schema.Union([ClaudeSessionReplicationError, EnvironmentAuthorizationError]),
+});
+
+/** Copies linked environments' sessions by this environment's rules now, then reports. */
+const WsClaudeSessionsReplicateNowRpc = Rpc.make(WS_METHODS.claudeSessionsReplicateNow, {
+  payload: Schema.Struct({}),
+  success: ClaudeReplicationReport,
+  error: Schema.Union([ClaudeSessionReplicationError, EnvironmentAuthorizationError]),
 });
 
 const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
@@ -2554,6 +2590,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReclaimDatabaseSpaceRpc,
   WsServerUpdateSettingsRpc,
   WsPeerLinksListRpc,
+  WsClaudeSessionsListRemoteRpc,
+  WsClaudeSessionsReplicationReportRpc,
+  WsClaudeSessionsReplicateNowRpc,
   WsPeerLinksNamesRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,
