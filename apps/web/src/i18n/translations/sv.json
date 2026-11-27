@@ -6192,6 +6192,8 @@
   "0d22cd9e3b9d94f0": "T3 Code kunde inte bekräfta den här arbetsytan.",
   "573a9e6b17f4e9e3": "Läs in igen",
   "d6c31ff9bb97570e": "Sökgränsen nåddes. Vissa projekt eller konversationer kan saknas.",
+  "2121ddce5b4dafa1": "En mapp svarade inte, så vissa projekt eller konversationer kan saknas. Om macOS ber om åtkomst, svara på frågan och kontrollera igen.",
+  "28d7bb82d985217a": "En mapp svarade inte, så vissa trådar kan saknas. Om macOS ber om åtkomst, svara på frågan och importera igen.",
   "da6f86321113fb7b": "Den här anslutningen kan inte importera projekt eller trådhistorik.",
   "1cdf16e5edb6bd99": "den här datorn",
   "8893cd596459e03f": "Slutför konfigurationen",

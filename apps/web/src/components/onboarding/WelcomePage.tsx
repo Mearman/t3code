@@ -115,12 +115,21 @@ import { toastManager } from "../ui/toast";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { cn } from "../../lib/utils";
 import { formatRelativeTime } from "../../timestampFormat";
+import type { MessageResolver } from "../../i18n/messages";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const AGENT_ONBOARDING_THREAD_ID = ThreadId.make("onboarding-agent-setup");
 const SCAN_LIMIT_MESSAGE = msg(
   "Scan limit reached. Some projects or conversations may be missing.",
 );
+const UNANSWERED_FOLDER_MESSAGE = msg(
+  "A folder did not answer, so some projects or conversations may be missing. If macOS is asking for access, answer the prompt and check again.",
+);
+
+// An unanswered folder is the one the user can fix, so it is named before the scan budget.
+function scanNotice(result: { readonly unanswered?: boolean | undefined }, m: MessageResolver) {
+  return m(result.unanswered === true ? UNANSWERED_FOLDER_MESSAGE : SCAN_LIMIT_MESSAGE);
+}
 
 /**
  * First-run page for one computer: its agents, the projects found in agent history, and the
@@ -849,10 +858,10 @@ function ProjectsSection({
     );
   }
   if (candidates.length === 0) {
-    return scan.data?.truncated ? (
+    return scan.data?.truncated === true || scan.data?.unanswered === true ? (
       <WelcomeSection title={gt("Projects")}>
         <p className="text-xs leading-10 text-muted-foreground" role="status">
-          {m(SCAN_LIMIT_MESSAGE)}
+          {scanNotice(scan.data, m)}
         </p>
       </WelcomeSection>
     ) : null;
@@ -957,9 +966,9 @@ function ProjectsSection({
           </ScrollArea>
         </fieldset>
       ) : null}
-      {scan.data?.truncated ? (
+      {scan.data?.truncated === true || scan.data?.unanswered === true ? (
         <p className="pl-8 text-xs text-muted-foreground" role="status">
-          {m(SCAN_LIMIT_MESSAGE)}
+          {scanNotice(scan.data, m)}
         </p>
       ) : null}
       {scan.error !== null ? (
@@ -1620,6 +1629,7 @@ function useProjectImport({
         ? selection.filter((candidate) => importedProjects.has(candidate.key)).length
         : 0;
     let skippedThreadCount = 0;
+    let unansweredImport = false;
     const refreshEnvironments = new Set<EnvironmentId>();
     // Resolves false when the run stopped early: a newer run, an unmount, or lost access.
     const importEach = async () => {
@@ -1679,13 +1689,17 @@ function useProjectImport({
             (importedThreads.get(candidate.key) ?? 0) + threadImportResult.value.importedCount,
           );
           skippedThreadCount += threadImportResult.value.skippedCount;
+          if (threadImportResult.value.unanswered === true) unansweredImport = true;
           if (threadImportResult.value.importedCount > 0) {
             projectsWithImportedHistoryRef.current.set(
               candidate.key,
               scopeProjectRef(environmentId, projectId),
             );
           }
-          if (threadImportResult.value.skippedCount === 0) {
+          if (
+            threadImportResult.value.skippedCount === 0 &&
+            threadImportResult.value.unanswered !== true
+          ) {
             importedProjectsCount += 1;
             importedProjects.set(candidate.key, scopeProjectRef(environmentId, projectId));
           }
@@ -1727,6 +1741,11 @@ function useProjectImport({
         );
       } else {
         importWarningRef.current = gt("Could not import thread history.");
+      }
+      if (unansweredImport) {
+        importWarningRef.current = `${importWarningRef.current} ${gt(
+          "A folder did not answer, so some threads may be missing. If macOS is asking for access, answer the prompt and import again.",
+        )}`;
       }
     }
     finishAfterImport();

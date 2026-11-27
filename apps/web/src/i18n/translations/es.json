@@ -6191,6 +6191,8 @@
   "0d22cd9e3b9d94f0": "T3 Code no pudo confirmar este espacio de trabajo.",
   "573a9e6b17f4e9e3": "Recargar",
   "d6c31ff9bb97570e": "Se alcanzó el límite de escaneo. Puede que falten algunos proyectos o conversaciones.",
+  "2121ddce5b4dafa1": "Una carpeta no respondió, así que puede que falten algunos proyectos o conversaciones. Si macOS pide acceso, responde al aviso y vuelve a comprobar.",
+  "28d7bb82d985217a": "Una carpeta no respondió, así que puede que falten algunos hilos. Si macOS pide acceso, responde al aviso y vuelve a importar.",
   "da6f86321113fb7b": "Esta conexión no puede importar proyectos ni historial de hilos.",
   "1cdf16e5edb6bd99": "este equipo",
   "8893cd596459e03f": "Terminando la configuración",
