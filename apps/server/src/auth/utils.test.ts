@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveAuthClientMetadata, resolveSessionCookieName } from "./utils.ts";
+import {
+  deriveAuthClientMetadata,
+  isDirectSameHostRequest,
+  resolveSessionCookieName,
+} from "./utils.ts";
 
 describe("deriveAuthClientMetadata", () => {
   it("labels Electron user agents as Electron instead of Chrome", () => {
@@ -172,5 +176,45 @@ describe("session cookie isolation", () => {
     });
 
     expect(first).toBe(second);
+  });
+});
+
+describe("isDirectSameHostRequest", () => {
+  const request = (input: {
+    readonly peer: string;
+    readonly local?: string;
+    readonly headers?: Record<string, string>;
+  }) =>
+    ({
+      source: { socket: { remoteAddress: input.peer, localAddress: input.local ?? input.peer } },
+      headers: { host: "127.0.0.1:3774", ...input.headers },
+    }) as unknown as Parameters<typeof isDirectSameHostRequest>[0];
+
+  it("accepts a loopback peer, and one at the single address the server binds", () => {
+    expect(isDirectSameHostRequest(request({ peer: "127.0.0.1" }))).toBe(true);
+    expect(isDirectSameHostRequest(request({ peer: "::1", headers: { host: "[::1]:3774" } }))).toBe(
+      true,
+    );
+    expect(
+      isDirectSameHostRequest(
+        request({ peer: "192.168.1.5", local: "192.168.1.5", headers: { host: "192.168.1.5:3774" } }),
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses another host, a proxied request, a browser and a foreign Host", () => {
+    expect(
+      isDirectSameHostRequest(
+        request({ peer: "192.168.1.9", local: "192.168.1.5", headers: { host: "192.168.1.5:3774" } }),
+      ),
+    ).toBe(false);
+    for (const headers of [
+      { "x-forwarded-for": "10.0.0.2" },
+      { forwarded: "for=10.0.0.2" },
+      { origin: "https://example.com" },
+      { host: "attacker.example:3774" },
+    ]) {
+      expect(isDirectSameHostRequest(request({ peer: "127.0.0.1", headers }))).toBe(false);
+    }
   });
 });
