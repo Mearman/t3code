@@ -531,6 +531,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("claude code sessions exclude ignore folders directories")],
   },
   {
+    id: "claude-session-held-send",
+    title: msg("Sending to an open session"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude code terminal held session send fork ask default")],
+  },
+  {
     id: "claude-session-restore",
     title: msg("Restore a deleted session"),
     to: "/settings/threads",

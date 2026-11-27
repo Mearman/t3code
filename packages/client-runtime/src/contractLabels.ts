@@ -4,6 +4,7 @@
  */
 import {
   type BrowserImportFailureReason,
+  type ClaudeHeldSessionSend,
   isRuntimeModeAbove,
   managedCapabilityDenial as contractsManagedCapabilityDenial,
   managedUpdatesDenial as contractsManagedUpdatesDenial,
@@ -220,6 +221,20 @@ export function idleCompactionModeLabel(
   resolve: MFunctionType = mFallback,
 ): string {
   return resolve(IDLE_COMPACTION_MODE_LABELS[mode]);
+}
+
+const CLAUDE_HELD_SESSION_SEND_LABELS: Record<ClaudeHeldSessionSend | "default", string> = {
+  default: msg("Use default", { $context: "held Claude session send" }),
+  ask: msg("Ask each time"),
+  fork: msg("Continue in a fork"),
+};
+
+/** @public Labels for `ClaudeHeldSessionSend` values, plus "default" for no setting. */
+export function claudeHeldSessionSendLabel(
+  choice: ClaudeHeldSessionSend | "default",
+  resolve: MFunctionType = mFallback,
+): string {
+  return resolve(CLAUDE_HELD_SESSION_SEND_LABELS[choice]);
 }
 
 const BROWSER_IMPORT_FAILURE_MESSAGES: Record<BrowserImportFailureReason, string> = {

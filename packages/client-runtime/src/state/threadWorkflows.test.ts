@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
+import {
+  PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+  PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
+} from "@t3tools/provider-core/client";
 
 import {
   canForkProjectedAssistantItem,
@@ -498,6 +501,12 @@ describe("heldSessionForkRunId", () => {
     expect(heldSessionForkRunId(row("local", null))).toBe(undefined);
     expect(heldSessionForkRunId(row("local", PROVIDER_THREAD_IN_USE_FAILURE_CODE, null))).toBe(
       undefined,
+    );
+  });
+
+  it("keeps the fork button where the server already continued the send in a fork", () => {
+    expect(heldSessionForkRunId(row("local", PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE))).toBe(
+      "refused",
     );
   });
 });
