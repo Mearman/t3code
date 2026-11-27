@@ -1,5 +1,5 @@
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -22,6 +22,16 @@ const buildReleaseRepository =
 export interface EnvironmentReleaseSource {
   readonly serverVersion: string;
   readonly releaseRepository: string | undefined;
+}
+
+/** What a server's release check reads from its descriptor. */
+export function environmentReleaseSource(
+  descriptor: Pick<ExecutionEnvironmentDescriptor, "serverVersion" | "capabilities">,
+): EnvironmentReleaseSource {
+  return {
+    serverVersion: descriptor.serverVersion,
+    releaseRepository: descriptor.capabilities.serverReleaseRepository,
+  };
 }
 
 export interface EnvironmentReleaseCheck {

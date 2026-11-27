@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - Bundles packages/shared the way the build configs do.
 import * as NodeBuffer from "node:buffer";
 import * as NodePath from "node:path";
+import { ExecutionEnvironmentCapabilities } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { Rolldown } from "vite-plus/pack";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 
@@ -83,4 +85,31 @@ it("builds the desktop main process with the release repository define", async (
       ]),
     },
   });
+});
+
+// Every string of up to five characters from this alphabet, which covers each class the two
+// checks distinguish: segment characters, separators, dots, and anything else.
+const CANDIDATE_ALPHABET = ["a", "Z", "0", ".", "_", "-", "/", " "];
+const candidates = (length: number): ReadonlyArray<string> =>
+  length === 0
+    ? [""]
+    : candidates(length - 1).flatMap((prefix) => CANDIDATE_ALPHABET.map((c) => prefix + c));
+
+it("accepts exactly the release repositories a server may report to clients", () => {
+  const decodes = Schema.is(ExecutionEnvironmentCapabilities);
+  const disagreements: string[] = [];
+  for (let length = 1; length <= 5; length++) {
+    for (const value of candidates(length)) {
+      let resolved: string | undefined;
+      try {
+        resolved = resolveReleaseRepository({ GITHUB_REPOSITORY: value });
+      } catch {
+        resolved = undefined;
+      }
+      const reported = resolved === value;
+      const capabilities = { repositoryIdentity: true, serverReleaseRepository: value };
+      if (reported !== decodes(capabilities)) disagreements.push(value);
+    }
+  }
+  expect(disagreements).toEqual([]);
 });

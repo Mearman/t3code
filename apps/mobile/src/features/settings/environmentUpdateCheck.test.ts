@@ -2,7 +2,11 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { AtomRegistry } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { environmentReleaseCheckAtom, releaseCheckError } from "./environmentUpdateCheck";
+import {
+  environmentReleaseCheckAtom,
+  environmentReleaseSource,
+  releaseCheckError,
+} from "./environmentUpdateCheck";
 
 vi.mock("expo-constants", () => ({
   default: { expoConfig: { extra: { releaseRepository: "owner/fork" } } },
@@ -39,6 +43,22 @@ function makeRegistry() {
   };
   return { registry, flush };
 }
+
+describe("environmentReleaseSource", () => {
+  it("reads the server's version and the release repository it reports", () => {
+    expect(
+      environmentReleaseSource({
+        serverVersion: "0.0.40",
+        capabilities: { repositoryIdentity: true, serverReleaseRepository: "owner/fork" },
+      }),
+    ).toEqual({ serverVersion: "0.0.40", releaseRepository: "owner/fork" });
+    const descriptor = { serverVersion: "0.0.40", capabilities: { repositoryIdentity: true } };
+    expect(environmentReleaseSource(descriptor)).toEqual({
+      serverVersion: "0.0.40",
+      releaseRepository: undefined,
+    });
+  });
+});
 
 describe("environmentReleaseCheckAtom", () => {
   it("aborts the release lookup when the screen stops reading it", async () => {
