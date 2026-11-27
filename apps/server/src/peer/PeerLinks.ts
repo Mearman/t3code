@@ -86,7 +86,7 @@ export interface ResolvedPeerLink {
 }
 
 /** What a link's session is called in the peer's Connections, before this environment's label. */
-export const LINK_CLIENT_NAME_PREFIX = `${PRODUCT_NAME} · `;
+const LINK_CLIENT_NAME_PREFIX = `${PRODUCT_NAME} · `;
 // A peer built under upstream's name still labels its links this way.
 const UPSTREAM_LINK_CLIENT_NAME_PREFIX = `${UPSTREAM_PRODUCT_NAME} · `;
 
