@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -105,6 +106,20 @@ const GIT_FILE_READ_CONCURRENCY = 16;
 // A blocked path is skipped for a while, then read again in case it was fixed.
 const BLOCKED_GIT_FILE_RETRY_MS = 5 * 60 * 1000;
 const MAX_BLOCKED_GIT_FILE_PATHS = 1024;
+/**
+ * stat() and realpath() wait on the same prompt inside the libuv pool. Each lane of folder reads
+ * runs one at a time, so a prompt pins at most one pool thread per lane, and while it waits the
+ * lane's other reads report the folder unreadable instead of queueing behind it.
+ */
+const USER_PATH_READ_DEADLINE = "2 seconds";
+// Relative to the home folder; `/Volumes` (removable and network volumes) is guarded too.
+const PRIVACY_PROTECTED_HOME_FOLDERS = [
+  "Desktop",
+  "Documents",
+  "Downloads",
+  "Library/Mobile Documents",
+  "Library/CloudStorage",
+];
 
 const TranscriptContentBlock = Schema.Struct({
   type: Schema.optional(Schema.String),
@@ -974,13 +989,6 @@ export const make = Effect.gen(function* () {
     baseDir: path.resolve(serverConfig.baseDir),
     worktreesDir: path.resolve(serverConfig.worktreesDir),
   };
-  // Resolved candidates are compared with T3's folders as resolved too, so a symlinked base still matches.
-  const realPathOf = (directory: string) =>
-    fileSystem.realPath(directory).pipe(Effect.orElseSucceed(() => directory));
-  const realT3Dirs = {
-    baseDir: yield* realPathOf(configuredT3Dirs.baseDir),
-    worktreesDir: yield* realPathOf(configuredT3Dirs.worktreesDir),
-  };
   const platform = yield* HostProcess.Platform;
   const isWindows = platform === "win32";
   const foldWorktreeCase = isWindows;
@@ -996,6 +1004,72 @@ export const make = Effect.gen(function* () {
     path.join(homeDir, "Downloads"),
     path.join(homeDir, "Documents", "Codex"),
   ];
+  // Folders behind a macOS privacy prompt. APFS is case-insensitive by default.
+  const privacyProtectedRoots =
+    platform === "darwin"
+      ? [
+          ...PRIVACY_PROTECTED_HOME_FOLDERS.map((folder) => path.join(homeDir, folder)),
+          "/Volumes",
+        ].map((root) => root.toLowerCase())
+      : [];
+  const isPrivacyProtected = (target: string) => {
+    const folded = target.toLowerCase();
+    return privacyProtectedRoots.some((root) => folded === root || folded.startsWith(`${root}/`));
+  };
+
+  const makeUserPathLane = Effect.gen(function* () {
+    const permit = yield* Semaphore.make(1);
+    let pinned = false;
+    return <A, E>(read: Effect.Effect<A, E>) =>
+      Effect.gen(function* () {
+        if (pinned) return Option.none<A>();
+        let started = false;
+        const fiber = yield* permit
+          .withPermits(1)(
+            Effect.uninterruptible(
+              Effect.suspend(() => {
+                started = true;
+                return Effect.option(read);
+              }),
+            ),
+          )
+          .pipe(Effect.forkDetach);
+        const outcome = yield* Fiber.join(fiber).pipe(
+          Effect.timeoutOption(USER_PATH_READ_DEADLINE),
+        );
+        if (Option.isSome(outcome)) return outcome.value;
+        if (started) {
+          pinned = true;
+          yield* Fiber.await(fiber).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                pinned = false;
+              }),
+            ),
+            Effect.forkDetach,
+          );
+        } else yield* Effect.forkDetach(Fiber.interrupt(fiber));
+        return Option.none<A>();
+      });
+  });
+  const protectedLane = yield* makeUserPathLane;
+  const otherLane = yield* makeUserPathLane;
+  /** Runs a read of a folder a transcript or project names; none when it fails or blocks. */
+  const readUserPath = <A, E>(target: string, read: Effect.Effect<A, E>) =>
+    (isPrivacyProtected(target) ? protectedLane : otherLane)(read);
+  const statUserPath = (target: string) => readUserPath(target, fileSystem.stat(target));
+  const realPathOf = (target: string) =>
+    readUserPath(target, fileSystem.realPath(target)).pipe(
+      Effect.map(Option.getOrElse(() => target)),
+    );
+  // Resolved candidates are compared with T3's folders as resolved too, so a symlinked base still
+  // matches. Resolved on first use so that building the scanner reads nothing.
+  const realT3Dirs = yield* Effect.cached(
+    Effect.all({
+      baseDir: realPathOf(configuredT3Dirs.baseDir),
+      worktreesDir: realPathOf(configuredT3Dirs.worktreesDir),
+    }),
+  );
 
   const isScratchPath = (candidatePath: string) =>
     excludedProjectRoots.has(normalizeProjectPathForComparison(candidatePath)) ||
@@ -1011,6 +1085,7 @@ export const make = Effect.gen(function* () {
   const isExcludedProjectPath = (candidatePath: string, t3Dirs = configuredT3Dirs) =>
     isScratchPath(candidatePath) || isT3OwnedPath(candidatePath, t3Dirs);
 
+  // Agent homes, not user folders, so their many reads skip the lanes.
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
 
@@ -1049,14 +1124,12 @@ export const make = Effect.gen(function* () {
     knownStats?: FileSystem.File.Info,
   ) {
     const resolved = path.resolve(target);
-    const stats = knownStats === undefined ? yield* statOption(resolved) : Option.some(knownStats);
+    const stats =
+      knownStats === undefined ? yield* statUserPath(resolved) : Option.some(knownStats);
     if (Option.isSome(stats) && Option.isSome(stats.value.ino) && stats.value.ino.value > 0n) {
       return `inode:${stats.value.dev}:${stats.value.ino.value}`;
     }
-    const realPath = yield* fileSystem
-      .realPath(resolved)
-      .pipe(Effect.orElseSucceed(() => resolved));
-    return `path:${normalizeProjectPathForComparison(realPath)}`;
+    return `path:${normalizeProjectPathForComparison(yield* realPathOf(resolved))}`;
   });
 
   /** Stats a directory that may be offered as a project, or none when it is missing or excluded. */
@@ -1064,13 +1137,11 @@ export const make = Effect.gen(function* () {
     directory: string,
   ) {
     if (isExcludedProjectPath(directory)) return Option.none<FileSystem.File.Info>();
-    const stats = yield* statOption(directory);
+    const stats = yield* statUserPath(directory);
     if (Option.isNone(stats) || stats.value.type !== "Directory") return Option.none();
-    const realPath = yield* fileSystem
-      .realPath(directory)
-      .pipe(Effect.orElseSucceed(() => directory));
+    const realPath = yield* realPathOf(directory);
     // Symlinks can disguise excluded worktree paths; re-check their targets.
-    return isExcludedProjectPath(realPath, realT3Dirs) ? Option.none() : stats;
+    return isExcludedProjectPath(realPath, yield* realT3Dirs) ? Option.none() : stats;
   });
 
   // Paths whose own read outlived the deadline, mapped to when they may be read
@@ -1142,7 +1213,7 @@ export const make = Effect.gen(function* () {
     const pointers: Array<{ directory: string; gitPath: string }> = [];
     for (const directory of directories) {
       const gitPath = path.join(directory, ".git");
-      const gitStats = yield* statOption(gitPath);
+      const gitStats = yield* statUserPath(gitPath);
       if (Option.isNone(gitStats)) identities.set(directory, { _tag: "NotGit" });
       else if (gitStats.value.type === "Directory") {
         repositories.push({ directory, gitDir: gitPath, worktreeGitDir: null });
@@ -1700,9 +1771,10 @@ export const make = Effect.gen(function* () {
   ) {
     if (projectRoots === undefined) return cwd;
     const resolved = path.resolve(expandHomePath(cwd.trim(), homeDir));
+    // Decided from the path: reading inside a scratch folder such as ~/Documents/Codex
+    // raises a macOS privacy prompt just to exclude it.
     if (!isScratchPath(resolved) || isT3OwnedPath(resolved)) return cwd;
-    const realCwd = yield* realPathOf(resolved);
-    return isT3OwnedPath(realCwd, realT3Dirs) ? cwd : projectRoots[0]!;
+    return isT3OwnedPath(resolved, yield* realT3Dirs) ? cwd : projectRoots[0]!;
   });
 
   const discoverCodexTranscripts = Effect.fn("AgentSessionScanner.discoverCodexTranscripts")(
@@ -2180,10 +2252,8 @@ export const make = Effect.gen(function* () {
     completedSources: ReadonlyArray<AgentSessionImportSource>,
   ) {
     const root = path.resolve(expandHomePath(workspaceRoot, homeDir));
-    const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
-    if (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot, realT3Dirs)) {
-      return Stream.empty;
-    }
+    if (isExcludedProjectPath(root)) return Stream.empty;
+    if (isExcludedProjectPath(yield* realPathOf(root), yield* realT3Dirs)) return Stream.empty;
     const rootIdentity = yield* directoryIdentity(root);
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
