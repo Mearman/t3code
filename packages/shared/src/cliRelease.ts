@@ -6,11 +6,29 @@ import { compareSemverVersions } from "./semver.ts";
 const UPSTREAM_RELEASE_REPOSITORY = "pingdotgg/t3code";
 // Bundles define this from the build's release repository (scripts/lib/release-repository.ts).
 declare const __T3CODE_RELEASE_REPOSITORY__: string | undefined;
-const CLI_RELEASE_REPOSITORY =
+/** The `owner/name` repository whose GitHub releases this bundle updates from. */
+export const CLI_RELEASE_REPOSITORY =
   typeof __T3CODE_RELEASE_REPOSITORY__ === "undefined"
     ? UPSTREAM_RELEASE_REPOSITORY
     : __T3CODE_RELEASE_REPOSITORY__;
-export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
+
+/**
+ * Whether `repository` publishes upstream's releases. Any other repository may carry upstream's
+ * tags without their releases, so its clients trust only its releases and `update-feed` pointer.
+ */
+export function isUpstreamReleaseRepository(repository: string): boolean {
+  return repository === UPSTREAM_RELEASE_REPOSITORY;
+}
+
+export function cliReleasesPageUrl(repository: string = CLI_RELEASE_REPOSITORY): string {
+  return `https://github.com/${repository}/releases`;
+}
+export const CLI_RELEASES_PAGE_URL = cliReleasesPageUrl();
+
+/** The `update-feed` release's record of `channel`'s newest release (see release workflows). */
+export function cliChannelPointerUrl(channel: CliReleaseChannel, repository: string): string {
+  return `${cliReleasesPageUrl(repository)}/download/update-feed/${channel}.json`;
+}
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 
@@ -80,7 +98,7 @@ export function cliInstallScriptUrl(
   version: string,
   repository: string = CLI_RELEASE_REPOSITORY,
 ): string {
-  return repository === UPSTREAM_RELEASE_REPOSITORY
+  return isUpstreamReleaseRepository(repository)
     ? "https://t3.codes/install.sh"
     : `https://github.com/${repository}/releases/download/v${version}/install.sh`;
 }
@@ -150,8 +168,11 @@ export function acceptsTrackSwitchRelease(
 }
 
 /** Page until the channel matches; nightlies can push preview/stable releases past the first page. */
-export function cliReleaseIndexPageUrl(page: number): string {
-  return `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases?per_page=100&page=${page}`;
+export function cliReleaseIndexPageUrl(
+  page: number,
+  repository: string = CLI_RELEASE_REPOSITORY,
+): string {
+  return `https://api.github.com/repos/${repository}/releases?per_page=100&page=${page}`;
 }
 
 /** Draft assets are not downloadable. */
