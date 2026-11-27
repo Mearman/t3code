@@ -943,6 +943,115 @@ it.effect("a latest stable fork skips a refused run and starts from the last tra
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
+it.effect.each([
+  { name: "a newer transcript run", transcriptOrdinal: 2, expected: "ordering-transcript" },
+  { name: "a newer checkpointed run", transcriptOrdinal: 1, expected: "ordering-checkpointed" },
+] as const)("latest stable picks by ordinal across origins: $name wins", (variant) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const parentId = ThreadId.make(`ordering-parent-${variant.expected}`);
+    const forkId = ThreadId.make(`ordering-child-${variant.expected}`);
+    yield* createParent(parentId);
+    const checkpointedOrdinal = variant.transcriptOrdinal === 2 ? 1 : 2;
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: RunId.make("ordering-checkpointed"),
+      ordinal: checkpointedOrdinal,
+      status: "completed",
+      text: "CHECKPOINTED",
+      stable: true,
+    });
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: RunId.make("ordering-transcript"),
+      ordinal: variant.transcriptOrdinal,
+      status: "completed",
+      text: "TRANSCRIPT",
+      transcript: true,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.fork",
+      commandId: CommandId.make(`ordering-fork-${variant.expected}`),
+      sourceThreadId: parentId,
+      targetThreadId: forkId,
+      sourcePoint: { type: "latest_stable" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const forked = yield* orchestrator.getThreadProjection(forkId);
+    assert.deepEqual(forked.thread.forkedFrom, {
+      type: "run",
+      threadId: parentId,
+      runId: RunId.make(variant.expected),
+    });
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+it.effect("merge back and a side chat from latest stable start from a transcript run", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const parentId = ThreadId.make("transcript-merge-parent");
+    const forkId = ThreadId.make("transcript-merge-child");
+    const sideChatId = ThreadId.make("transcript-side-chat");
+    yield* createParent(parentId);
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: RunId.make("transcript-merge-parent-run"),
+      ordinal: 1,
+      status: "completed",
+      text: "PARENT",
+      stable: true,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.fork",
+      commandId: CommandId.make("transcript-merge-fork"),
+      sourceThreadId: parentId,
+      targetThreadId: forkId,
+      sourcePoint: { type: "latest_stable" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* writeParentRun({
+      threadId: forkId,
+      runId: RunId.make("transcript-merge-transcript"),
+      ordinal: 1,
+      status: "completed",
+      text: "TRANSCRIPT",
+      transcript: true,
+    });
+    yield* writeParentRun({
+      threadId: forkId,
+      runId: RunId.make("transcript-merge-refused"),
+      ordinal: 2,
+      status: "failed",
+      text: "REFUSED",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.merge_back",
+      commandId: CommandId.make("transcript-merge-back"),
+      sourceThreadId: forkId,
+      targetThreadId: parentId,
+      sourcePoint: { type: "latest_stable" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const parent = yield* orchestrator.getThreadProjection(parentId);
+    const merge = parent.contextTransfers.find((transfer) => transfer.type === "merge_back");
+    assert.equal(merge?.status, "pending");
+    assert.equal(merge?.sourcePoint.runId, RunId.make("transcript-merge-transcript"));
+
+    // A side chat selects the same way, so it forks natively from the transcript run instead of
+    // starting from a digest alone.
+    yield* forkSideChat("transcript-side-chat-fork", forkId, sideChatId);
+    const sideChat = yield* orchestrator.getThreadProjection(sideChatId);
+    assert.deepEqual(sideChat.thread.forkedFrom, {
+      type: "run",
+      threadId: forkId,
+      runId: RunId.make("transcript-merge-transcript"),
+    });
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
 it.effect("a latest stable fork with no completed run still fails", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
