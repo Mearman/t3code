@@ -601,14 +601,18 @@ describe("gateHeldClaudeSessionRuntime", () => {
   );
 
   it.effect.each([
-    ["terminal", "(pid 200, started from a terminal)", false],
-    ["non-interactive", "(pid 200, started non-interactively)", false],
-    ["agent-sdk", "(pid 200, started through the Agent SDK)", false],
-    ["possible-t3-leftover", "possibly by T3 Code before it restarted", true],
-    ["unknown", "(pid 200)", false],
+    { source: "terminal", text: "(pid 200, started from a terminal)", leftover: false },
+    { source: "non-interactive", text: "(pid 200, started non-interactively)", leftover: false },
+    { source: "agent-sdk", text: "(pid 200, started through the Agent SDK)", leftover: false },
+    {
+      source: "possible-t3-leftover",
+      text: "possibly by T3 Code before it restarted",
+      leftover: true,
+    },
+    { source: "unknown", text: "(pid 200)", leftover: false },
   ] as const)(
-    "words a %s holder without blaming T3 Code unless it may be its own",
-    (source, text, leftover) =>
+    "words a $source holder without blaming T3 Code unless it may be its own",
+    ({ source, text, leftover }) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
         const { runtime } = makeGate({ hold: { _tag: "held", pid: 200, source } });
