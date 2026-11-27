@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - A standalone build script reading and writing asset files.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - Standalone asset script.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 

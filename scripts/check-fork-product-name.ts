@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - A standalone release check over built files.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - Standalone release check.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
