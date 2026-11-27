@@ -83,6 +83,11 @@ on:
         required: false
         default: ""
         type: string
+      # Minutes the build job may take off Windows. GitHub-hosted runners have fewer cores than the runners this was sized on.
+      timeout_minutes:
+        required: false
+        default: 30
+        type: number
       # Whether this job saves the workspace pnpm store. Release's two Macs
       # install the same store on the same runner type, so only one saves it.
       save_pnpm_store:
@@ -133,7 +138,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     # Windows waits for the Linux CLI archive inside its own budget (see
     # "Wait for Linux CLI archive"), so it gets that wait on top of the usual 30.
-    timeout-minutes: ${{ inputs.platform == 'win' && 70 || 30 }}
+    timeout-minutes: ${{ inputs.platform == 'win' && 70 || inputs.timeout_minutes }}
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ inputs.clerk_publishable_key }}
       T3CODE_CLERK_JWT_TEMPLATE: ${{ inputs.clerk_jwt_template }}

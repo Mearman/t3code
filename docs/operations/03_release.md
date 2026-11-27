@@ -43,6 +43,14 @@ Labeling a same-repo PR `relay:preview` deploys stage `pr-<number>` (cleaned up 
 
 Windows packages the bundled server and its unpacked native modules in `resources/server.asar` (+ `server.asar.unpacked`) and embeds the matching-architecture Linux CLI archive as `resources/wsl-runtime.tar.gz` + SHA-256 sidecar (passed via `--wsl-runtime`). Avoid whole-package smart unpacking (keeps unpacked file counts and NSIS differential blockmaps bounded). `scripts/build-desktop-artifact.ts` enforces all structural, native-load, and WSL archive checks at build time.
 
+## Fork releases
+
+`release.yml` runs only in `pingdotgg/t3code`. A fork publishes nightlies with `.github/workflows/exacode-release.yml`, which runs after `CI` passes on a push to `main` (or on manual dispatch from `main`) on GitHub-hosted runners and needs no secrets. It builds macOS arm64 and x64 and Linux x64 and arm64, and publishes a prerelease carrying the desktop installers, updater manifests, CLI archives, an `install.sh` that defaults to the fork and the nightly channel, and a `SHA256SUMS` over every asset; then it moves the `update-feed` pointer. Dispatch with `dry_run` (required off `main`) to build everything and publish nothing.
+
+Builds take their release repository from `T3CODE_DESKTOP_UPDATE_REPOSITORY`, else `GITHUB_REPOSITORY`, for the desktop updater feed, `t3 update`, the remote SSH runner and install hints (`scripts/lib/release-repository.ts`), so a fork's CI build updates from the fork. The installers read `T3CODE_RELEASE_REPOSITORY`.
+
+macOS fork builds are signed ad hoc unless `CSC_LINK` and `CSC_KEY_PASSWORD` are set without the App Store Connect keys: `release-desktop.yml` then trusts that certificate on the runner and signs with it, without notarization or passkey entitlements. Export the certificate as a legacy-encrypted `.p12` (`openssl pkcs12 -export -legacy`), because macOS `security import` rejects OpenSSL 3's default encryption.
+
 ## One-time credentials setup
 
 ### npm OIDC trusted publishing
