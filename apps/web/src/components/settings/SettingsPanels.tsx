@@ -2589,13 +2589,9 @@ export function AboutSettingsPanel() {
         <SettingsRow
           {...setting("privacy-policy")}
           description={
-            telemetryOff !== undefined
-              ? gt("How we handle your data. {telemetryOff}", { telemetryOff })
-              : IS_FORK_PRODUCT
-                ? gt("What T3 Code sends, if anything, and how to turn it on or off.")
-                : gt(
-                    "How we handle your data, including the anonymous usage data T3 Code collects.",
-                  )
+            telemetryOff === undefined
+              ? gt("How we handle your data, including the anonymous usage data T3 Code collects.")
+              : gt("How we handle your data. {telemetryOff}", { telemetryOff })
           }
           control={
             <Button

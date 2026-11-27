@@ -13044,12 +13044,5 @@
   "5d7f6f4f7a7719ed": "Verlauf dieser Sitzung wird geladen",
   "d25e309d89bcf285": "Verlauf geladen",
   "669d9a6e03b3e6f2": "Die letzte Aktivität in diesem Thread kam von Claude Code in einem Terminal.",
-  "b0e84e35de44a0c3": "Terminal",
-  "ab9c53fd44bfd052": [
-    "T3 Code sendet keine Nutzungsdaten, solange ein Build nicht mit einem eigenen Erfassungsendpunkt eingerichtet ist. Siehe die",
-    " ",
-    { "t": "a", "i": 1, "c": "Hinweise zur Telemetrie" },
-    "."
-  ],
-  "7730df1de2817d26": "Was T3 Code sendet, falls überhaupt, und wie du es ein- oder ausschaltest."
+  "b0e84e35de44a0c3": "Terminal"
 }

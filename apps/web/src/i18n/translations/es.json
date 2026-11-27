@@ -13039,12 +13039,5 @@
   "5d7f6f4f7a7719ed": "Cargando el historial de esta sesión",
   "d25e309d89bcf285": "Historial cargado",
   "669d9a6e03b3e6f2": "La última actividad de este hilo vino de Claude Code en una terminal.",
-  "b0e84e35de44a0c3": "Terminal",
-  "ab9c53fd44bfd052": [
-    "T3 Code no envía datos de uso a menos que una compilación esté configurada con su propio punto de recopilación. Consulta las",
-    " ",
-    { "t": "a", "i": 1, "c": "notas de telemetría" },
-    "."
-  ],
-  "7730df1de2817d26": "Qué envía T3 Code, si envía algo, y cómo activarlo o desactivarlo."
+  "b0e84e35de44a0c3": "Terminal"
 }

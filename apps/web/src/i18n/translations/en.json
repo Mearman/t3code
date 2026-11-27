@@ -13053,12 +13053,5 @@
   "5d7f6f4f7a7719ed": "Loading this session's history",
   "d25e309d89bcf285": "History loaded",
   "669d9a6e03b3e6f2": "The latest activity in this thread came from Claude Code in a terminal.",
-  "b0e84e35de44a0c3": "Terminal",
-  "ab9c53fd44bfd052": [
-    "T3 Code sends no usage data unless a build is set up with its own collection endpoint. See the",
-    " ",
-    { "t": "a", "i": 1, "c": "telemetry notes" },
-    "."
-  ],
-  "7730df1de2817d26": "What T3 Code sends, if anything, and how to turn it on or off."
+  "b0e84e35de44a0c3": "Terminal"
 }

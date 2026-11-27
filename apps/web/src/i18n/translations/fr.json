@@ -13044,12 +13044,5 @@
   "5d7f6f4f7a7719ed": "Chargement de l'historique de cette session",
   "d25e309d89bcf285": "Historique chargé",
   "669d9a6e03b3e6f2": "La dernière activité de ce fil provient de Claude Code dans un terminal.",
-  "b0e84e35de44a0c3": "Terminal",
-  "ab9c53fd44bfd052": [
-    "T3 Code n'envoie aucune donnée d'utilisation, sauf si une version est configurée avec son propre point de collecte. Consultez les",
-    " ",
-    { "t": "a", "i": 1, "c": "notes sur la télémétrie" },
-    "."
-  ],
-  "7730df1de2817d26": "Ce que T3 Code envoie, le cas échéant, et comment l'activer ou le désactiver."
+  "b0e84e35de44a0c3": "Terminal"
 }
