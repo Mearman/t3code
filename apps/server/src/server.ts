@@ -824,8 +824,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
         ProjectionStoreV2.layer,
         RuntimeLayer.layerEventSink,
         IdAllocator.layer,
-        // The layer the drivers' infrastructure merges, so the gate and this share one record.
+        // The layers the drivers' infrastructure merges, so the gate and this share one of each.
         ClaudeSecondWriterRuns.layer,
+        ClaudeBridge.layer,
       ),
     ),
   ),

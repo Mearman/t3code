@@ -22,13 +22,16 @@ import {
   runsByOrigin,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { forkParked } from "../serverActivation.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import { ClaudeBridge, type ClaudeBridgeFailure } from "./ClaudeBridge.ts";
 import { ClaudeSecondWriterRuns } from "./ClaudeSecondWriterRuns.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -147,6 +150,7 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const secondWriters = yield* ClaudeSecondWriterRuns;
+  const bridge = yield* ClaudeBridge;
 
   // Says, after the reply, that the session now branches, once per run.
   const noteSecondWriter = Effect.fnUntraced(function* (
@@ -176,6 +180,49 @@ const make = Effect.gen(function* () {
             parentItemId: null,
             ordinal: AFTER_THE_REPLY_ORDINAL,
             status: "completed",
+            title: message,
+            startedAt: at,
+            completedAt: at,
+            updatedAt: at,
+            type: "system_notice",
+            message,
+            level: "warning",
+          },
+        },
+      ],
+    });
+  });
+
+  // Tells the thread that a prompt handed to the bridge never reached the terminal's claude.
+  const noteBridgeFailure = Effect.fnUntraced(function* (failure: ClaudeBridgeFailure) {
+    const threadId = ThreadId.make(failure.threadId);
+    const { thread, runs, turnItems } = yield* projections.getThreadRecords(threadId, [
+      "runs",
+      "turnItems",
+    ]);
+    const id = TurnItemId.make(`x:bridge-failed:${failure.runId}`);
+    if (turnItems.some((item) => item.id === id)) return;
+    const run = runs.find((candidate) => candidate.id === failure.runId);
+    const at = yield* DateTime.now;
+    const message = `The message handed to the terminal's claude did not reach it: ${failure.reason}. Send it again, or fork.`;
+    yield* eventSink.write({
+      events: [
+        {
+          id: yield* idAllocator.allocate.event({ threadId: thread.id }),
+          type: "turn-item.updated",
+          threadId: thread.id,
+          occurredAt: at,
+          payload: {
+            id,
+            threadId: thread.id,
+            runId: run?.id ?? null,
+            nodeId: run?.rootNodeId ?? null,
+            providerThreadId: run?.providerThreadId ?? null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: AFTER_THE_REPLY_ORDINAL,
+            status: "failed",
             title: message,
             startedAt: at,
             completedAt: at,
@@ -260,6 +307,16 @@ const make = Effect.gen(function* () {
       Stream.runForEach(engine.streamDomainEvents, handle).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("held Claude session event stream failed", { cause }),
+        ),
+      ),
+    );
+    yield* forkParked(
+      Effect.forever(
+        Queue.take(bridge.failures).pipe(
+          Effect.flatMap(noteBridgeFailure),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("noting a Claude bridge delivery failure failed", { cause }),
+          ),
         ),
       ),
     );

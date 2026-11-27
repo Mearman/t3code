@@ -1,16 +1,18 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { claudeBridgePromptText } from "./claudeBridge.ts";
+import { claudeBridgeIsCommandText, claudeBridgePromptText } from "./claudeBridge.ts";
 
 describe("claudeBridgePromptText", () => {
-  it("escapes a leading slash in text that is not a person's, so it runs no command", () => {
-    const escaped = claudeBridgePromptText("/clear the cache", false);
-    expect(escaped.startsWith("/")).toBe(false);
-    expect(escaped.endsWith("/clear the cache")).toBe(true);
+  it("escapes text Claude Code would read as a slash command, leading spaces included", () => {
+    for (const text of ["/clear the cache", "  /clear", "\n\t/compact"]) {
+      const escaped = claudeBridgePromptText(text);
+      // Claude Code refuses a submitted prompt whose trimmed start is a slash.
+      expect(claudeBridgeIsCommandText(escaped)).toBe(false);
+      expect(escaped.endsWith(text)).toBe(true);
+    }
   });
 
-  it("sends a person's own words, and any text not starting with a slash, as written", () => {
-    expect(claudeBridgePromptText("/compact", true)).toBe("/compact");
-    expect(claudeBridgePromptText("run /clear later", false)).toBe("run /clear later");
+  it("sends any other text as written", () => {
+    expect(claudeBridgePromptText("run /clear later")).toBe("run /clear later");
   });
 });

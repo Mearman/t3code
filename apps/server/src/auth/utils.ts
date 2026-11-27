@@ -169,15 +169,33 @@ function readRemoteAddressFromSource(source: unknown): string | undefined {
 const isLoopbackIpAddress = (address: string): boolean =>
   (NodeNet.isIPv4(address) && address.startsWith("127.")) || address === "::1";
 
-/** Whether the request came straight from this host: a loopback peer that no proxy forwarded. */
-export function isDirectLoopbackRequest(request: HttpServerRequest.HttpServerRequest): boolean {
+function readLocalAddressFromSource(source: unknown): string | undefined {
+  if (!source || typeof source !== "object") return undefined;
+  const candidate = source as { readonly socket?: { readonly localAddress?: string | null } };
+  return normalizeIpAddress(candidate.socket?.localAddress);
+}
+
+/**
+ * Whether the request came straight from this host, not through a proxy or a browser: a loopback
+ * peer, or one whose address is the address it reached, as when the server binds a single
+ * non-loopback address; no forwarding header; no `Origin`; and a `Host` naming that address.
+ */
+export function isDirectSameHostRequest(request: HttpServerRequest.HttpServerRequest): boolean {
   const peer = readRemoteAddressFromSource(request.source);
-  return (
-    peer !== undefined &&
-    isLoopbackIpAddress(peer) &&
-    request.headers["x-forwarded-for"] === undefined &&
-    request.headers["forwarded"] === undefined
-  );
+  const local = readLocalAddressFromSource(request.source);
+  if (peer === undefined) return false;
+  if (!isLoopbackIpAddress(peer) && peer !== local) return false;
+  if (
+    request.headers["x-forwarded-for"] !== undefined ||
+    request.headers["forwarded"] !== undefined ||
+    request.headers["origin"] !== undefined
+  ) {
+    return false;
+  }
+  const rawHost = request.headers["host"];
+  if (rawHost === undefined) return false;
+  const host = normalizeHostname(rawHost.replace(/:\d+$/u, ""));
+  return host === "localhost" || isLoopbackIpAddress(host) || host === local;
 }
 
 // A loopback peer is a local reverse proxy (Tailscale Serve); trust only the entry it appended.
