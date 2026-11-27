@@ -22,6 +22,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
+import { ClaudeHeldSessionSend } from "./claudeSessions.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
 import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
@@ -1103,6 +1104,13 @@ export const ClaudeSessionSyncSettings = Schema.Struct({
   restoreSessionIds: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  /**
+   * What a person's send to a session another process holds does when the send names no choice;
+   * null takes `DEFAULT_CLAUDE_HELD_SESSION_SEND`.
+   */
+  heldSessionSend: Schema.NullOr(ClaudeHeldSessionSend).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
 });
 export type ClaudeSessionSyncSettings = typeof ClaudeSessionSyncSettings.Type;
 
@@ -2056,6 +2064,7 @@ export const ServerSettingsPatch = Schema.Struct({
       additionalHomes: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
       excludedCwdGlobs: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
       restoreSessionIds: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+      heldSessionSend: Schema.optionalKey(Schema.NullOr(ClaudeHeldSessionSend)),
     }),
   ),
   observability: Schema.optionalKey(

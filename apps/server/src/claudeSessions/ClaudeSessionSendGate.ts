@@ -1,4 +1,8 @@
-import type { OrchestrationV2ProviderThread } from "@t3tools/contracts";
+import {
+  type ClaudeHeldSessionSend,
+  DEFAULT_CLAUDE_HELD_SESSION_SEND,
+  type OrchestrationV2ProviderThread,
+} from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
 import type * as PlatformError from "effect/PlatformError";
@@ -147,6 +151,9 @@ const FORK_OPTION =
 
 const RETRY_OPTION = "Close any other claude running this session, then send again.";
 
+const FORKED =
+  "T3 Code continues this message in a fork of the conversation, from what it has recorded; anything another process added since is left out.";
+
 const HOLDER_SOURCE_NOTES: Record<ClaudeSessionHolderSource, string> = {
   terminal: ", started from a terminal",
   "non-interactive": ", started non-interactively",
@@ -156,14 +163,17 @@ const HOLDER_SOURCE_NOTES: Record<ClaudeSessionHolderSource, string> = {
   unknown: ", started in a way T3 Code does not recognise",
 };
 
-function holdRefusal(hold: ClaudeSessionHold): ClaudeSessionRefusal {
+function holdRefusal(
+  hold: ClaudeSessionHold,
+  choice: ClaudeHeldSessionSend,
+): ClaudeSessionRefusal & { readonly continueInFork?: true } {
   switch (hold._tag) {
     case "held": {
       const holder = `Another Claude Code process (pid ${hold.pid}${HOLDER_SOURCE_NOTES[hold.source]})`;
-      return {
-        detail: `${holder} has this session open, so T3 Code sent nothing: two processes writing one session would split its history. ${FORK_OPTION}`,
-        holderObserved: true,
-      };
+      const refused = `${holder} has this session open, so T3 Code sent nothing to it: two processes writing one session would split its history.`;
+      return choice === "fork"
+        ? { detail: `${refused} ${FORKED}`, holderObserved: true, continueInFork: true }
+        : { detail: `${refused} ${FORK_OPTION}`, holderObserved: true };
     }
     case "unconfirmed":
       return {
@@ -221,21 +231,27 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
 ): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
   // A failed check or a holder only possibly there may clear on its own (a slow `ps`, an entry
   // being written), so it is checked again before the write is refused.
-  const settledProbe = (sessionId: string, attemptsLeft: number) => {
-    const attempt: Effect.Effect<ClaudeSessionRefusal | undefined> = Effect.result(
+  const settledProbe = (
+    sessionId: string,
+    attemptsLeft: number,
+    choice: ClaudeHeldSessionSend,
+  ) => {
+    const attempt: Effect.Effect<
+      (ClaudeSessionRefusal & { readonly continueInFork?: true }) | undefined
+    > = Effect.result(
       probe(sessionId),
     ).pipe(
       Effect.flatMap((probed) => {
         if (Result.isSuccess(probed)) {
           const hold = probed.success;
           if (hold === undefined) return Effect.undefined;
-          const refusal = holdRefusal(hold);
+          const refusal = holdRefusal(hold, choice);
           return refusal.holderObserved || attemptsLeft === 0
             ? Effect.succeed(refusal)
-            : settledProbe(sessionId, attemptsLeft - 1);
+            : settledProbe(sessionId, attemptsLeft - 1, choice);
         }
         return attemptsLeft > 0
-          ? settledProbe(sessionId, attemptsLeft - 1)
+          ? settledProbe(sessionId, attemptsLeft - 1, choice)
           : Effect.logWarning("Claude send gate could not check a session's holders", {
               sessionId,
               reason: probed.failure.message,
@@ -246,10 +262,11 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   };
   const refuseHeld = (
     providerThread: OrchestrationV2ProviderThread,
+    choice: ClaudeHeldSessionSend = "ask",
   ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
     const sessionId = providerThread.nativeThreadRef?.nativeId;
     if (sessionId === undefined || sessionId === null) return Effect.void;
-    return Effect.flatMap(settledProbe(sessionId, PROBE_RETRIES), (refusal) =>
+    return Effect.flatMap(settledProbe(sessionId, PROBE_RETRIES, choice), (refusal) =>
       refusal === undefined
         ? Effect.void
         : Effect.fail(
@@ -259,6 +276,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
               detail: refusal.detail,
               cause: refusal,
               ...(refusal.holderObserved ? { holderObserved: true } : {}),
+              ...(refusal.continueInFork === true ? { continueInFork: true } : {}),
             }),
           ),
     );
@@ -267,9 +285,14 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     input: Pick<
       ProviderAdapter.ProviderAdapterV2TurnInput,
       "threadId" | "runId" | "providerThread"
-    >,
+    > & {
+      readonly message?: Pick<ProviderAdapter.ProviderAdapterV2TurnMessage, "heldSessionSend">;
+    },
   ) =>
-    refuseHeld(input.providerThread).pipe(
+    refuseHeld(
+      input.providerThread,
+      input.message?.heldSessionSend ?? DEFAULT_CLAUDE_HELD_SESSION_SEND,
+    ).pipe(
       Effect.mapError(
         (cause) =>
           new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -301,8 +324,13 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     ...(compactThread === undefined
       ? {}
       : {
+          // A compaction never forks: it would compact a copy, not the session the person meant.
           compactThread: (input: ProviderAdapter.ProviderAdapterV2TurnInput) =>
-            refuseBeforePrompt(input).pipe(Effect.andThen(() => compactThread(input))),
+            refuseBeforePrompt({
+              threadId: input.threadId,
+              runId: input.runId,
+              providerThread: input.providerThread,
+            }).pipe(Effect.andThen(() => compactThread(input))),
         }),
     // With nothing live the adapter keeps the title for the next turn, as it does here when held.
     ...(applyThreadTitle === undefined

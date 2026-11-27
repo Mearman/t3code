@@ -22,6 +22,7 @@ import {
   type OrchestrationV2ForceStopThreadInput,
   type OrchestrationV2ForceStopThreadResult,
   type ModelSelection,
+  type ClaudeHeldSessionSend,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
@@ -170,6 +171,8 @@ export interface ThreadManagementSendInput {
   readonly freshContext?: boolean;
   /** Ask the run for a result as data matching this JSON Schema; it is queued, never steered. */
   readonly outputSchema?: Readonly<Record<string, Schema.Json>>;
+  /** What the send does if another Claude Code process holds the thread's session. */
+  readonly heldSessionSend?: ClaudeHeldSessionSend;
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
 }
@@ -989,6 +992,7 @@ const make = Effect.gen(function* () {
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       ...(input.freshContext ? { freshContext: true } : {}),
       ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+      ...(input.heldSessionSend === undefined ? {} : { heldSessionSend: input.heldSessionSend }),
       dispatchMode,
       ...(mode === "auto" ? { deliveryIntent: "auto" } : {}),
       ...(mode === "queue" ? { explicitQueue: true as const } : {}),

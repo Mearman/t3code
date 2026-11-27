@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
+import { ClaudeHeldSessionSend } from "./claudeSessions.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
 import {
   ContextTransferId,
@@ -565,6 +566,12 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
     Schema.Record(Schema.String, Schema.Json).annotate({
       description:
         "JSON Schema for a result the turn must return as data, read back as `output` from `t3_thread_wait`. Never steers.",
+    }),
+  ),
+  heldSessionSend: Schema.optional(
+    ClaudeHeldSessionSend.annotate({
+      description:
+        "Only for a Claude thread a terminal has open: `fork` continues in a forked thread; `ask` (default) sends nothing.",
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),

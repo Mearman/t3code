@@ -5,6 +5,7 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import {
   CommandId,
+  resolveClaudeHeldSessionSend,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   latestProviderTurnForAttempt,
   withMessageSenderNote,
@@ -380,6 +381,7 @@ export const layer: Layer.Layer<
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
     const worktreeRestore = yield* ThreadWorktreeRestore;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const makeRunControls = (input: {
@@ -2461,6 +2463,20 @@ export const layer: Layer.Layer<
       const deliverySession = carriesPendingContext
         ? makeDeliverySession(session, startWithHandoffs)
         : session;
+      // An unreadable setting leaves the default, which sends nothing to a held session.
+      const configuredHeldSessionSend = yield* serverSettings.getSettings.pipe(
+        Effect.map((settings) => settings.claudeSessionSync.heldSessionSend),
+        Effect.catch((cause) =>
+          Effect.logWarning("Held-session send setting unreadable", { cause }).pipe(
+            Effect.as(null),
+          ),
+        ),
+      );
+      const heldSessionSend = resolveClaudeHeldSessionSend({
+        chosen: run.heldSessionSend,
+        sentByPerson: message.createdBy === "user",
+        configured: configuredHeldSessionSend,
+      });
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
@@ -2518,6 +2534,7 @@ export const layer: Layer.Layer<
           ...(message.senderThreadId === undefined
             ? {}
             : { senderThreadId: message.senderThreadId }),
+          ...(heldSessionSend === undefined ? {} : { heldSessionSend }),
         },
         modelSelection: run.modelSelection,
         runtimePolicy: resolvedRuntimePolicy,

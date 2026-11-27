@@ -150,6 +150,7 @@ import {
   visibleConversationItems,
   visibleDeltaRunOrdinals,
 } from "./ContextHandoffService.ts";
+import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
 import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
 import {
   cancelledBeforeStart,
@@ -7459,7 +7460,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.dispatchMode.type !== "start_immediately" ||
         source === undefined ||
         (source.status !== "interrupted" &&
-          !(source.status === "failed" && limited?.class === "usage_limit")) ||
+          !(source.status === "failed" && limited?.class === "usage_limit") &&
+          // A send refused for a holder is resent once the person has chosen what it does.
+          !(
+            source.status === "failed" &&
+            limited?.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE &&
+            command.heldSessionSend !== undefined
+          )) ||
         latestT3ExecutedRun(projection.runs)?.id !== source.id ||
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
@@ -8417,6 +8424,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { usageLimitContinuationOfRunId: command.usageLimitContinuationOfRunId }),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...(freshContext ? { freshContext: true } : {}),
+        ...(command.heldSessionSend === undefined
+          ? {}
+          : { heldSessionSend: command.heldSessionSend }),
         ...output,
       };
       const attempt: OrchestrationV2RunAttempt = {
@@ -8846,6 +8856,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...wakeWorkStartedAt(projection, command),
         ...(freshContext ? { freshContext: true } : {}),
+        ...(command.heldSessionSend === undefined
+          ? {}
+          : { heldSessionSend: command.heldSessionSend }),
         ...output,
       };
       const attempt: OrchestrationV2RunAttempt = {

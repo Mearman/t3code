@@ -9,6 +9,7 @@ import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
+import * as ClaudeHeldSessionForkReactor from "./claudeSessions/ClaudeHeldSessionForkReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as MilestoneHub from "./milestones/MilestoneHub.ts";
 import * as OrchestrationMilestones from "./milestones/OrchestrationMilestones.ts";
@@ -809,6 +810,14 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       yield* service.start();
     }),
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      yield* (yield* ClaudeHeldSessionForkReactor.ClaudeHeldSessionForkReactor).start();
+    }),
+  ).pipe(
+    Layer.provide(ClaudeHeldSessionForkReactor.layer),
+    Layer.provide(ProjectionStoreV2.layer),
+  ),
   Layer.effectDiscard(
     Effect.gen(function* () {
       yield* (yield* OrchestrationMilestones.OrchestrationMilestones).start();
