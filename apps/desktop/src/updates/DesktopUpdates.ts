@@ -290,7 +290,7 @@ export function describeUpdateErrorCause(cause: unknown): string {
   }
 }
 
-/** A GitHub feed that reads only the `update-feed` pointer and release list (patches/electron-updater). */
+/** A GitHub feed read through its releases only, never its tag feed (patches/electron-updater). */
 type PointerOnlyGitHubFeed = Extract<
   ElectronUpdater.ElectronUpdaterFeedUrl,
   { provider: "github" }
