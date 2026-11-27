@@ -6,6 +6,7 @@ import {
   cliInstallScriptUrl,
   newestCliReleaseVersion,
   parseChecksums,
+  projectNoreplyEmail,
 } from "./cliRelease.ts";
 
 describe("cliRelease", () => {
@@ -56,5 +57,15 @@ describe("cliRelease", () => {
     expect(newestCliReleaseVersion(releases, "nightly")).toBe("1.2.4-nightly.20260912.7");
     expect(newestCliReleaseVersion(releases, "stable")).toBe("1.2.3");
     expect(newestCliReleaseVersion([{ tag_name: "v1.2.3" }], "preview")).toBeUndefined();
+  });
+});
+
+describe("projectNoreplyEmail", () => {
+  it("keeps upstream's address and gives a fork one no account can own", () => {
+    expect(projectNoreplyEmail(true, "T3 Code")).toBe("noreply@t3.codes");
+    expect(projectNoreplyEmail(false, "ExaCode")).toBe("noreply@exacode.invalid");
+    expect(projectNoreplyEmail(false, "My  Fork!")).toBe("noreply@my-fork.invalid");
+    expect(projectNoreplyEmail(false, "!!!")).toBe("noreply@fork.invalid");
+    expect(projectNoreplyEmail(false, "ExaCode")).not.toContain("users.noreply.github.com");
   });
 });

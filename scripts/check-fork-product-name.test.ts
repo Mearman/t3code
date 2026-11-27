@@ -35,9 +35,22 @@ it("finds upstream's name in shipped text and ignores maps, licences and T3's Gi
   ).toEqual(["assets/app.js", "index.html"]);
 });
 
-it("allows the one quoted literal that identifies upstream, not a second", () => {
+it("allows the one quoted literal that identifies upstream once per build, not per file", () => {
   expect(found({ "a.js": 'const u="T3 Code";' })).toEqual([]);
   expect(found({ "a.js": 'const u="T3 Code";const v="T3 Code";' })).toEqual(["a.js"]);
+  expect(found({ "a.js": 'const u="T3 Code";', "b.js": 'const t="T3 Code";' })).toHaveLength(1);
+});
+
+it("does not take a look-alike host for T3's hosted app, and also scans css, svg and text", () => {
+  expect(found({ "a.js": 'const h="https://evilapp.t3.codes/x";' })).toEqual(["a.js"]);
+  expect(found({ "a.js": 'const h="https://app.t3.codes/x";' })).toEqual([]);
+  expect(
+    found({
+      "a.css": "/* T3 Code */",
+      "a.svg": "<title>T3 Code</title>",
+      "a.txt": "see https://github.com/pingdotgg/t3code",
+    }),
+  ).toEqual(["a.css", "a.svg", "a.txt"]);
 });
 
 it("finds upstream's repository and site outside the allowed quoted addresses", () => {

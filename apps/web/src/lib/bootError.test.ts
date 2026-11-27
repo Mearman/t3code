@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   type BootErrorEnvironment,
   buildErrorReport,
+  issuesAvailable,
   resolveTriageCommand,
   updateActionFor,
 } from "./bootError";
@@ -132,5 +133,14 @@ describe("updateActionFor", () => {
       expect(updateActionFor(state(status))).toBeNull();
     }
     expect(updateActionFor(undefined)).toBeNull();
+  });
+});
+
+describe("issuesAvailable", () => {
+  it("links the report form for upstream and only a fork told Issues are on", () => {
+    expect(issuesAvailable(false, undefined)).toBe(true);
+    expect(issuesAvailable(true, true)).toBe(true);
+    expect(issuesAvailable(true, false)).toBe(false);
+    expect(issuesAvailable(true, undefined)).toBe(false);
   });
 });

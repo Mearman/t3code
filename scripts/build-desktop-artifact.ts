@@ -29,6 +29,7 @@ import {
   releasePackageFiles,
   updateReleasePackageVersions,
 } from "./update-release-package-versions.ts";
+import { isUpstreamReleaseRepository } from "@t3tools/shared/cliRelease";
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   BRAND_ASSET_PATHS,
@@ -2936,6 +2937,15 @@ export class DesktopRepositoryMissingError extends Schema.TaggedError<DesktopRep
   }
 }
 
+export class DesktopRepositoryIsUpstreamError extends Schema.TaggedError<DesktopRepositoryIsUpstreamError>()(
+  "DesktopRepositoryIsUpstreamError",
+  { repository: Schema.String },
+) {
+  override get message(): string {
+    return `A build with its own product name cannot release from ${this.repository}, upstream's own repository.`;
+  }
+}
+
 export class DesktopMaintainerMissingError extends Schema.TaggedError<DesktopMaintainerMissingError>()(
   "DesktopMaintainerMissingError",
   {},
@@ -2952,6 +2962,9 @@ const readDesktopListing = Effect.gen(function* () {
   }
   const repository = yield* readReleaseRepository;
   if (repository === "") return yield* new DesktopRepositoryMissingError();
+  if (isUpstreamReleaseRepository(repository)) {
+    return yield* new DesktopRepositoryIsUpstreamError({ repository });
+  }
   return resolveDesktopListing({
     productName: identity.productName.value,
     repository,

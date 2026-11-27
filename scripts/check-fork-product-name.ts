@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 
 import { UPSTREAM_PRODUCT_NAME, UPSTREAM_PRODUCT_PATTERN } from "@t3tools/shared/productName";
 
-const SHIPPED_TEXT = /\.(?:js|mjs|cjs|html|json|webmanifest)$/;
+const SHIPPED_TEXT = /\.(?:js|mjs|cjs|html|css|svg|txt|json|webmanifest)$/;
 // Licence texts quote their upstream packages, not this product.
 const IGNORED_FILES = /third-party-licenses/;
 const CONTEXT = 40;
@@ -28,7 +28,7 @@ const SHARED_ADDRESSES: ReadonlySet<string> = new Set([
   "https://ingest.t3.codes",
 ]);
 // T3's hosted web app is a connection surface any server can use, so its hostnames stay.
-const HOSTED_APP = /(?:https?:\/\/)?(?:[\w-]+\.)*app\.t3\.codes/g;
+const HOSTED_APP = /(?<![\w.-])(?:https?:\/\/)?(?:[\w-]+\.)*app\.t3\.codes/g;
 const QUOTED_TOKEN = /(["'`])([^"'`\s]*(?:t3\.codes|pingdotgg\/t3code)[^"'`\s]*)\1/g; // product-name: keep
 
 export interface UpstreamNameFinding {
@@ -36,20 +36,19 @@ export interface UpstreamNameFinding {
   readonly context: string;
 }
 
-const QUOTED_UPSTREAM_NAME = new RegExp(`(["'\`])${UPSTREAM_PRODUCT_NAME}\\1`);
+const QUOTED_UPSTREAM_NAME = new RegExp(`(["'\`])${UPSTREAM_PRODUCT_NAME}\\1`, "g");
 
 /**
  * `text` without the upstream addresses a fork build is allowed to carry: the quoted shared
- * addresses, T3's hosted app, and the one quoted literal of upstream's name that tells an
- * upstream build from a fork's (`UPSTREAM_PRODUCT_NAME`; a bundle holds it once).
+ * addresses and T3's hosted app. The one quoted literal of upstream's name that tells an upstream
+ * build from a fork's is allowed once per bundle, not per file, so `findUpstreamNames` counts it.
  */
 export function withoutSharedAddresses(text: string): string {
   return text
     .replace(HOSTED_APP, "")
     .replace(QUOTED_TOKEN, (token, _quote, address: string) =>
       SHARED_ADDRESSES.has(address) ? "" : token,
-    )
-    .replace(QUOTED_UPSTREAM_NAME, "");
+    );
 }
 
 /**
@@ -60,12 +59,22 @@ export function findUpstreamNames(
   directories: ReadonlyArray<string>,
 ): ReadonlyArray<UpstreamNameFinding> {
   const findings: Array<UpstreamNameFinding> = [];
+  // The one quoted name that identifies upstream is allowed once in the whole build.
+  let identifyingNameAllowed = 1;
+  const allowIdentifyingName = (text: string) =>
+    text.replace(QUOTED_UPSTREAM_NAME, (quoted) => {
+      if (identifyingNameAllowed === 0) return quoted;
+      identifyingNameAllowed -= 1;
+      return "";
+    });
   const visit = (path: string) => {
     for (const entry of NodeFS.readdirSync(path, { withFileTypes: true })) {
       const child = NodePath.join(path, entry.name);
       if (entry.isDirectory()) visit(child);
       else if (SHIPPED_TEXT.test(entry.name) && !IGNORED_FILES.test(entry.name)) {
-        const text = withoutSharedAddresses(NodeFS.readFileSync(child, "utf8"));
+        const text = allowIdentifyingName(
+          withoutSharedAddresses(NodeFS.readFileSync(child, "utf8")),
+        );
         for (const pattern of [UPSTREAM_PRODUCT_PATTERN, UPSTREAM_ADDRESS]) {
           for (const match of text.matchAll(pattern)) {
             findings.push({
