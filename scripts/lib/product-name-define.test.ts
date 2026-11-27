@@ -5,6 +5,18 @@ import { forkIdentity, forkProductName, productNameDefine } from "./product-name
 it("defines the product name as a string literal for the bundle", () => {
   expect(productNameDefine({ T3CODE_DESKTOP_PRODUCT_NAME: " ExaCode " })).toEqual({
     __T3CODE_DESKTOP_PRODUCT_NAME__: '"ExaCode"',
+    __T3CODE_BUILD_ISSUES_ENABLED__: "false",
+  });
+  expect(
+    productNameDefine({
+      T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode",
+      T3CODE_TRIAGE_LABEL: "reported-in-app",
+      T3CODE_ISSUES_ENABLED: "1",
+    }),
+  ).toEqual({
+    __T3CODE_DESKTOP_PRODUCT_NAME__: '"ExaCode"',
+    __T3CODE_TRIAGE_LABEL__: '"reported-in-app"',
+    __T3CODE_BUILD_ISSUES_ENABLED__: "true",
   });
   expect(forkProductName({ T3CODE_DESKTOP_PRODUCT_NAME: " ExaCode " })).toBe("ExaCode");
 });
