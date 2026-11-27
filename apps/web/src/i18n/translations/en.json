@@ -6193,6 +6193,8 @@
   "0d22cd9e3b9d94f0": "T3 Code could not confirm this workspace.",
   "573a9e6b17f4e9e3": "Reload",
   "d6c31ff9bb97570e": "Scan limit reached. Some projects or conversations may be missing.",
+  "2121ddce5b4dafa1": "A folder did not answer, so some projects or conversations may be missing. If macOS is asking for access, answer the prompt and check again.",
+  "28d7bb82d985217a": "A folder did not answer, so some threads may be missing. If macOS is asking for access, answer the prompt and import again.",
   "da6f86321113fb7b": "This connection cannot import projects or thread history.",
   "1cdf16e5edb6bd99": "this computer",
   "8893cd596459e03f": "Finishing setup",
