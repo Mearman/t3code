@@ -161,8 +161,10 @@ const reportUnavailable = Effect.gen(function* () {
  * `Unavailable` when given up on, when its lane or path is still closed by such a read, or when
  * stuck reads hold half the pool. A caller interrupted while its read is queued cancels the read.
  */
-export const readUserPath = <A, E>(target: string, read: Effect.Effect<A, E>) =>
-  Effect.gen(function* () {
+export const readUserPath = Effect.fn("UserPathReads.readUserPath")(function* <A, E>(
+  target: string,
+  read: Effect.Effect<A, E>,
+) {
     const state = yield* UserPathReads;
     const platform = yield* HostProcess.Platform;
     const { key, closes } = userPathLane(target, platform, yield* HostProcess.HomeDirectory);
@@ -197,7 +199,7 @@ export const readUserPath = <A, E>(target: string, read: Effect.Effect<A, E>) =>
       ),
     );
     return settled._tag === "Unavailable" ? yield* reportUnavailable : settled;
-  });
+});
 
 const laneOf = (state: UserPathReadState, key: string) => {
   const existing = state.lanes.get(key);
@@ -222,14 +224,13 @@ const stuckReadLimit = (environment: NodeJS.ProcessEnv) => {
 };
 
 // Detached from every caller, so a caller that goes away cannot leave a stuck read unrecorded.
-const drain = (
+const drain = Effect.fn("UserPathReads.drain")(function* (
   state: UserPathReadState,
   lane: Lane,
   key: string,
   closes: UserPathLane["closes"],
   limit: number,
-) =>
-  Effect.gen(function* () {
+) {
     for (let job = lane.queue.shift(); job !== undefined; job = lane.queue.shift()) {
       const { target } = job;
       if (lane.closed || isClosedPath(state, target) || state.stuckReads >= limit) {
@@ -267,4 +268,4 @@ const drain = (
       );
     }
     lane.draining = false;
-  });
+});
