@@ -113,6 +113,7 @@ import {
 import {
   getUserQueuedThreadRuns,
   heldSessionRefusedRunIds,
+  HELD_SESSION_TERMINAL_DISPATCH,
   heldSessionResendRunId,
   threadCanSteer,
   threadSupportsProviderHandoff,
@@ -275,6 +276,7 @@ import { type TerminalContextDraft } from "../lib/terminalContext";
 import { collectInlineContextIds } from "../lib/composerContextReferences";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { useEnvironmentQueryRefresh } from "../state/query";
 import { revisionedQuery } from "../state/revisionedQuery";
 import { useEnvironmentScope } from "~/state/session";
@@ -3141,6 +3143,13 @@ export default function ChatView(props: ChatViewProps) {
     setThreadError,
   });
   const onResendHeldSessionStable = useStableCallback(onResendHeldSession);
+  // Taking over or writing beside a terminal's claude needs terminal:operate, as a terminal does.
+  const canOperateTerminal = useAtomValue(
+    orchestrationEnvironment.v2.dispatchCommand.permissionAtom(
+      environmentId,
+      HELD_SESSION_TERMINAL_DISPATCH,
+    ),
+  );
   const { onSend, captureDetachedSend } = useComposerSend({
     environmentId,
     routeThreadKey,
@@ -3749,7 +3758,7 @@ export default function ChatView(props: ChatViewProps) {
                       ? null
                       : (heldSessionResendRunId(serverProjection) ?? null)
                   }
-                  onResendHeldSession={onResendHeldSessionStable}
+                  onResendHeldSession={canOperateTerminal ? onResendHeldSessionStable : null}
                   onOpenThread={onOpenRelatedThreadStable}
                   parentThreadLink={parentThreadLink}
                   workflowOpening={workflowOpening}

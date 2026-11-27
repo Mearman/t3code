@@ -7,7 +7,6 @@ import {
   hasQuestionAnswer,
 } from "@t3tools/client-runtime/work-log/user-input";
 import {
-  type ClaudeHeldSessionSend,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type EnvironmentId,
   type RunId,
@@ -17,7 +16,10 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { Link } from "@tanstack/react-router";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
 import { claudeHeldSessionSendLabel } from "@t3tools/client-runtime/contract-labels";
-import { heldSessionForkRunId } from "@t3tools/client-runtime/state/thread-workflows";
+import {
+  HELD_SESSION_RESEND_CHOICES,
+  heldSessionForkRunId,
+} from "@t3tools/client-runtime/state/thread-workflows";
 import {
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
@@ -294,11 +296,6 @@ export function ViewedImagesTimelineRow({
     </div>
   );
 }
-
-// Choices that resend the refused message itself; a fork is offered beside them.
-const HELD_SESSION_RESEND_CHOICES = [
-  "takeOver",
-] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
 
 // Offered where another process holds the session: the fork continues in a session of its own.
 function HeldSessionForkAction(props: {
