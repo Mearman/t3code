@@ -150,7 +150,10 @@ import {
   visibleConversationItems,
   visibleDeltaRunOrdinals,
 } from "./ContextHandoffService.ts";
-import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
+import {
+  PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+  PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
+} from "@t3tools/provider-core/client";
 import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
 import {
   cancelledBeforeStart,
@@ -7464,7 +7467,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // A send refused for a holder is resent once the person has chosen what it does.
           !(
             source.status === "failed" &&
-            limited?.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE &&
+            (limited?.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE ||
+              limited?.code === PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE) &&
             command.heldSessionSend !== undefined
           )) ||
         latestT3ExecutedRun(projection.runs)?.id !== source.id ||

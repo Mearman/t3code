@@ -10,10 +10,11 @@ import {
 import {
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
+  PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
 } from "@t3tools/provider-core/client";
 import * as DateTime from "effect/DateTime";
 
-import { planHeldSessionFork } from "./ClaudeHeldSessionForkReactor.ts";
+import { planHeldSessionFork, wentBesideHolder } from "./ClaudeHeldSessionReactor.ts";
 
 const instanceId = ProviderInstanceId.make("claudeAgent");
 const at = DateTime.makeUnsafe("2026-11-27T12:00:00.000Z");
@@ -112,4 +113,44 @@ it("leaves a refusal that asked, and any other failure, to the person", () => {
     });
     assert.strictEqual(planHeldSessionFork(projection, refused), undefined);
   }
+});
+
+it("notes a branch only on a resend with `send` whose prompt reached Claude", () => {
+  const refused = run(1, { status: "failed" });
+  const resent = run(2, {
+    heldSessionSend: "send",
+    manualContinuationOfRunId: refused.id,
+  });
+  const projection = (input: {
+    readonly code: string;
+    readonly delivered: boolean;
+    readonly resent?: OrchestrationV2Run;
+  }) =>
+    ({
+      runs: [refused, input.resent ?? resent],
+      attempts: [{ id: "attempt:2", runId: (input.resent ?? resent).id }],
+      // A send refused before its prompt has no provider turn; a dropped prompt is marked so.
+      providerTurns: [{ runAttemptId: "attempt:2", promptDropped: !input.delivered }],
+      turnItems: [refusalOf(refused, input.code)],
+    }) as never;
+
+  for (const code of [
+    PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+    PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
+  ]) {
+    assert.isTrue(wentBesideHolder(projection({ code, delivered: true }), resent));
+  }
+  assert.isFalse(
+    wentBesideHolder(projection({ code: PROVIDER_THREAD_IN_USE_FAILURE_CODE, delivered: false }), resent),
+  );
+  assert.isFalse(
+    wentBesideHolder(projection({ code: "provider_error", delivered: true }), resent),
+  );
+  const askedAgain = run(2, { manualContinuationOfRunId: refused.id });
+  assert.isFalse(
+    wentBesideHolder(
+      projection({ code: PROVIDER_THREAD_IN_USE_FAILURE_CODE, delivered: true, resent: askedAgain }),
+      askedAgain,
+    ),
+  );
 });

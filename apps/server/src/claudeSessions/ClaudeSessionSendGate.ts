@@ -159,6 +159,12 @@ const FORK_OPTION =
 
 const RETRY_OPTION = "Close any other claude running this session, then send again.";
 
+const SENT_BESIDE =
+  "T3 Code sends this message beside that process once it waits for a prompt; its next prompt will continue from before this reply, so the session branches.";
+
+const BUSY_FOR_SEND =
+  "It is working, and T3 Code sends beside another process only while it waits for a prompt. Send again once it is idle, or fork.";
+
 const FORKED =
   "T3 Code continues this message in a fork of the conversation, from what it has recorded; anything another process added since is left out.";
 
@@ -171,17 +177,28 @@ const HOLDER_SOURCE_NOTES: Record<ClaudeSessionHolderSource, string> = {
   unknown: ", started in a way T3 Code does not recognise",
 };
 
+type HeldRefusal = ClaudeSessionRefusal & { readonly continueAs?: "fork" | "send" };
+
 function holdRefusal(
   hold: ClaudeSessionHold,
   choice: ClaudeHeldSessionSend,
-): ClaudeSessionRefusal & { readonly continueInFork?: true } {
+  resend: boolean,
+): HeldRefusal {
   switch (hold._tag) {
     case "held": {
       const holder = `Another Claude Code process (pid ${hold.pid}${HOLDER_SOURCE_NOTES[hold.source]})`;
       const refused = `${holder} has this session open, so T3 Code sent nothing to it: two processes writing one session would split its history.`;
-      return choice === "fork"
-        ? { detail: `${refused} ${FORKED}`, holderObserved: true, continueInFork: true }
-        : { detail: `${refused} ${FORK_OPTION}`, holderObserved: true };
+      if (choice === "fork") {
+        return { detail: `${refused} ${FORKED}`, holderObserved: true, continueAs: "fork" };
+      }
+      // A send beside the holder goes only as a resend of a refusal the thread shows first.
+      if (choice === "send" && !resend) {
+        return { detail: `${refused} ${SENT_BESIDE}`, holderObserved: true, continueAs: "send" };
+      }
+      if (choice === "send") {
+        return { detail: `${refused} ${BUSY_FOR_SEND}`, holderObserved: true };
+      }
+      return { detail: `${refused} ${FORK_OPTION}`, holderObserved: true };
     }
     case "unconfirmed":
       return {
@@ -259,21 +276,26 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
 ): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
   // A failed check or a holder only possibly there may clear on its own (a slow `ps`, an entry
   // being written), so it is checked again before the write is refused.
-  const settledProbe = (sessionId: string, attemptsLeft: number, choice: ClaudeHeldSessionSend) => {
+  const settledProbe = (
+    sessionId: string,
+    attemptsLeft: number,
+    choice: ClaudeHeldSessionSend,
+    resend: boolean,
+  ) => {
     const attempt: Effect.Effect<
-      (ClaudeSessionRefusal & { readonly continueInFork?: true }) | undefined
+      HeldRefusal | undefined
     > = Effect.result(probe(sessionId)).pipe(
       Effect.flatMap((probed) => {
         if (Result.isSuccess(probed)) {
           const hold = probed.success;
           if (hold === undefined) return Effect.undefined;
-          const refusal = holdRefusal(hold, choice);
+          const refusal = holdRefusal(hold, choice, resend);
           return refusal.holderObserved || attemptsLeft === 0
             ? Effect.succeed(refusal)
-            : settledProbe(sessionId, attemptsLeft - 1, choice);
+            : settledProbe(sessionId, attemptsLeft - 1, choice, resend);
         }
         return attemptsLeft > 0
-          ? settledProbe(sessionId, attemptsLeft - 1, choice)
+          ? settledProbe(sessionId, attemptsLeft - 1, choice, resend)
           : Effect.logWarning("Claude send gate could not check a session's holders", {
               sessionId,
               reason: probed.failure.message,
@@ -285,10 +307,11 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   const refuseHeld = (
     providerThread: OrchestrationV2ProviderThread,
     choice: ClaudeHeldSessionSend = "ask",
+    resend = false,
   ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
     const sessionId = providerThread.nativeThreadRef?.nativeId;
     if (sessionId === undefined || sessionId === null) return Effect.void;
-    return Effect.flatMap(settledProbe(sessionId, PROBE_RETRIES, choice), (refusal) =>
+    return Effect.flatMap(settledProbe(sessionId, PROBE_RETRIES, choice, resend), (refusal) =>
       refusal === undefined
         ? Effect.void
         : Effect.fail(
@@ -298,7 +321,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
               detail: refusal.detail,
               cause: refusal,
               ...(refusal.holderObserved ? { holderObserved: true } : {}),
-              ...(refusal.continueInFork === true ? { continueInFork: true } : {}),
+              ...(refusal.continueAs === undefined ? {} : { continueAs: refusal.continueAs }),
             }),
           ),
     );
@@ -399,19 +422,38 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
       });
     return step(undefined);
   };
+  // A resend that chose `send` goes beside a holder waiting for a prompt, never one mid-turn.
+  const sendBeside = (
+    providerThread: OrchestrationV2ProviderThread,
+  ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
+    const sessionId = providerThread.nativeThreadRef?.nativeId;
+    if (sessionId === undefined || sessionId === null) return Effect.void;
+    return Effect.flatMap(Effect.result(probe(sessionId)), (probed) =>
+      Result.isSuccess(probed) &&
+      (probed.success === undefined || (probed.success._tag === "held" && probed.success.idle))
+        ? Effect.void
+        : refuseHeld(providerThread, "send", true),
+    );
+  };
   const refuseBeforePrompt = (
     input: Pick<
       ProviderAdapter.ProviderAdapterV2TurnInput,
       "threadId" | "runId" | "providerThread"
     > & {
-      readonly message?: Pick<ProviderAdapter.ProviderAdapterV2TurnMessage, "heldSessionSend">;
+      readonly message?: Pick<
+        ProviderAdapter.ProviderAdapterV2TurnMessage,
+        "heldSessionSend" | "resendsHeldRefusal"
+      >;
     },
   ) => {
     const choice = input.message?.heldSessionSend ?? DEFAULT_CLAUDE_HELD_SESSION_SEND;
+    const resend = input.message?.resendsHeldRefusal === true;
     return (
       choice === "takeOver"
         ? takeOverHeld(input.providerThread)
-        : refuseHeld(input.providerThread, choice)
+        : choice === "send" && resend
+          ? sendBeside(input.providerThread)
+          : refuseHeld(input.providerThread, choice)
     ).pipe(
       Effect.mapError(
         (cause) =>

@@ -1,5 +1,9 @@
 import { classifyCodexManagedError } from "../provider/CodexManagedErrors.ts";
-import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  latestRootProviderFailure,
+  runsByOrigin,
+} from "@t3tools/shared/orchestrationV2ThreadError";
+import { isHeldRefusalCode } from "@t3tools/provider-core/client";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
@@ -2472,6 +2476,12 @@ export const layer: Layer.Layer<
           ),
         ),
       );
+      const continued = projection.runs.find(
+        (candidate) => candidate.id === run.manualContinuationOfRunId,
+      );
+      const resendsHeldRefusal =
+        continued !== undefined &&
+        isHeldRefusalCode(latestRootProviderFailure(continued, projection.turnItems)?.code);
       const heldSessionSend = resolveClaudeHeldSessionSend({
         chosen: run.heldSessionSend,
         terminalAccess: run.heldSessionTerminalAccess === true,
@@ -2536,6 +2546,7 @@ export const layer: Layer.Layer<
             ? {}
             : { senderThreadId: message.senderThreadId }),
           ...(heldSessionSend === undefined ? {} : { heldSessionSend }),
+          ...(resendsHeldRefusal ? { resendsHeldRefusal: true as const } : {}),
         },
         modelSelection: run.modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
