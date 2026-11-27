@@ -7,6 +7,7 @@ import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as ClaudeAccounts from "./claudeSessions/ClaudeAccounts.ts";
+import * as ClaudeThreadAccounts from "./claudeSessions/ClaudeThreadAccounts.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as PeerClientPairing from "./peer/PeerClientPairing.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
@@ -2809,6 +2810,15 @@ export const layerWsRpc = (
         [WS_METHODS.providerAuthCancel]: (input) => providerAuth.cancel(input, currentSessionId),
         [WS_METHODS.providerAuthRemoveMethod]: (input) => providerAuth.removeMethod(input),
         [WS_METHODS.providerAuthLogout]: (input) => providerAuth.logout(input),
+        [WS_METHODS.claudeThreadAccountConfirm]:
+          /* Request instrumentation already owns the span; keep this helper in that context. */
+          Effect.fnUntraced(function* (input) {
+            const path = yield* Path.Path;
+            const store = yield* ClaudeThreadAccounts.makeClaudeThreadAccountStore(
+              ClaudeThreadAccounts.claudeThreadAccountsFile(path, config.stateDir),
+            );
+            return { confirmed: (yield* store.confirm(input.threadId)) !== undefined };
+          }),
         [WS_METHODS.claudeAccountCreate]: (input) =>
           ClaudeAccounts.createClaudeAccount(input).pipe(
             Effect.provideService(ServerSettings.ServerSettingsService, serverSettings),

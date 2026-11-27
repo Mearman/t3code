@@ -49,6 +49,12 @@ import {
   type ClaudeCapabilitiesProbe,
 } from "../ClaudeProvider.ts";
 import { makeClaudeAuth, makeClaudeQueryLoginSession } from "../ClaudeAuth.ts";
+import {
+  claudeAccountIdentity,
+  claudeThreadAccountsFile,
+  gateClaudeThreadAccounts,
+  makeClaudeThreadAccountStore,
+} from "../../claudeSessions/ClaudeThreadAccounts.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import {
@@ -440,6 +446,28 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     });
 
+    const probeAccount = Effect.scoped(
+      Effect.gen(function* () {
+        const prepared = yield* prepareClaudeIdleQuery(effectiveConfig, processEnv, stateDir);
+        const query = yield* acquireClaudeIdleQuery(prepared.open);
+        return claudeAccountIdentity(
+          yield* Effect.tryPromise({
+            try: () => query.accountInfo(),
+            catch: setupFailure("verify", "Claude Code did not report its account."),
+          }),
+        );
+      }),
+    ).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    const threadAccounts = yield* makeClaudeThreadAccountStore(
+      claudeThreadAccountsFile(path, stateDir),
+    ).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+
     // Same rules as Codex: serialised on the config directory that holds the
     // login, one request id kept until Claude answers (a cooldown or rate
     // limit is an answer), then a re-probe.
@@ -546,7 +574,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
         ),
-      orchestrationAdapter: sendGatedAdapter,
+      orchestrationAdapter: gateClaudeThreadAccounts(
+        sendGatedAdapter,
+        probeAccount,
+        threadAccounts,
+      ),
       textGeneration,
       consumeResetCredit,
       auth,
