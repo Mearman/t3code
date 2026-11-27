@@ -316,6 +316,27 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
     const sessionId = providerThread.nativeThreadRef?.nativeId;
     if (sessionId === undefined || sessionId === null) return Effect.void;
+    // Signals the holder only if a fresh read still finds the same idle terminal claude.
+    const signal = (pid: number) =>
+      Effect.flatMap(Effect.result(probe(sessionId)), (reread) => {
+        if (Result.isFailure(reread)) return refuseHeld(providerThread, "ask");
+        const hold = reread.success;
+        const unchanged =
+          hold?._tag === "held" && hold.pid === pid && hold.idle && hold.source === "terminal";
+        if (!unchanged) return Effect.andThen(takeOver.pause, () => step(undefined));
+        return takeOver.terminate(pid).pipe(
+          Effect.mapError(() =>
+            inUse(
+              providerThread,
+              `T3 Code could not stop the Claude Code process (pid ${pid}) holding this session, so it sent nothing. Close it and send again.`,
+            ),
+          ),
+          Effect.andThen(takeOver.pause),
+          Effect.andThen(() => step({ pid, checks: 1 })),
+        );
+      });
+    // One signal per send: a holder that is not the one signalled refuses rather than being
+    // stopped.
     const step = (
       terminated: { readonly pid: number; readonly checks: number } | undefined,
     ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> =>
@@ -324,7 +345,15 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
         const hold = probed.success;
         if (hold === undefined) return Effect.void;
         if (hold._tag !== "held") return refuseHeld(providerThread, "ask");
-        if (terminated?.pid === hold.pid) {
+        if (terminated !== undefined && hold.pid !== terminated.pid) {
+          return Effect.fail(
+            inUse(
+              providerThread,
+              `After T3 Code stopped pid ${terminated.pid}, another Claude Code process (pid ${hold.pid}) opened this session, so T3 Code sent nothing and stopped nothing more. ${FORK_OPTION}`,
+            ),
+          );
+        }
+        if (terminated !== undefined) {
           return terminated.checks >= TAKE_OVER_EXIT_CHECKS
             ? Effect.fail(
                 inUse(
@@ -336,17 +365,16 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
                 step({ pid: hold.pid, checks: terminated.checks + 1 }),
               );
         }
-        if (!hold.idle) return Effect.andThen(takeOver.pause, () => step(terminated));
-        return takeOver.terminate(hold.pid).pipe(
-          Effect.mapError(() =>
+        if (hold.source !== "terminal") {
+          return Effect.fail(
             inUse(
               providerThread,
-              `T3 Code could not stop the Claude Code process (pid ${hold.pid}) holding this session, so it sent nothing. Close it and send again.`,
+              `Another Claude Code process (pid ${hold.pid}${HOLDER_SOURCE_NOTES[hold.source]}) has this session open. T3 Code takes over only a claude started from a terminal, so it stopped nothing and sent nothing. ${FORK_OPTION}`,
             ),
-          ),
-          Effect.andThen(takeOver.pause),
-          Effect.andThen(() => step({ pid: hold.pid, checks: 1 })),
-        );
+          );
+        }
+        if (!hold.idle) return Effect.andThen(takeOver.pause, () => step(undefined));
+        return signal(hold.pid);
       });
     return step(undefined);
   };
