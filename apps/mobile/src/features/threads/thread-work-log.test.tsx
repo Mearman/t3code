@@ -45,9 +45,17 @@ vi.mock("@expo/ui/community/masked-view", () => ({ MaskedView: () => null }));
 vi.mock("@legendapp/list/reanimated", () => ({ AnimatedLegendList: () => null }));
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
 vi.mock("@effect/atom-react", () => ({
-  // Only the fork button selects from an atom: the source thread's title.
+  // Only the held-session buttons select from an atom: the source thread's projection.
   useAtomValue: (_atom: unknown, select?: (thread: unknown) => unknown) =>
-    select === undefined ? false : select({ projection: { thread: { title: "Held" } } }),
+    select === undefined
+      ? false
+      : select({
+          projection: {
+            thread: { title: "Held", runtimeMode: "full-access" },
+            runs: [],
+            turnItems: [],
+          },
+        }),
 }));
 vi.mock("../../components/ProviderIcon", () => ({ ProviderIcon: () => null }));
 vi.mock("../../components/T3Wordmark", () => ({ T3Wordmark: () => null }));
