@@ -1111,7 +1111,9 @@ export const make = Effect.gen(function* () {
   // each phase that touches them.
   const blockedGitFilePaths = new Map<string, number>();
 
-  /** Reads small files without the libuv pool; "" when missing, unreadable or blocked. */
+  /**
+ * Reads small files, off the libuv pool except on Windows; "" when missing, unreadable or blocked.
+ */
   const readGitFiles = Effect.fn("AgentSessionScanner.readGitFiles")(function* (
     filePaths: ReadonlyArray<string>,
   ) {
@@ -2120,12 +2122,15 @@ export const make = Effect.gen(function* () {
   let cachedCandidates: Effect.Success<ReturnType<typeof collectCandidates>> | null = null;
 
   // A folder that did not answer leaves its projects out, so the result is marked unanswered and
-  // the candidates are not kept for imports, which collect them again.
+  // the candidates are not kept for imports, which collect them again. `truncated` is set too, so
+  // a client that predates `unanswered` still shows a notice.
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
     const [collected, collectedPartially] = yield* trackUnavailableReads(collectCandidates());
     cachedCandidates = collectedPartially ? null : collected;
     const [result, mergedPartially] = yield* trackUnavailableReads(mergeCandidates(collected));
-    return collectedPartially || mergedPartially ? { ...result, unanswered: true } : result;
+    return collectedPartially || mergedPartially
+      ? { ...result, truncated: true, unanswered: true }
+      : result;
   });
 
   const mergeCandidates = Effect.fnUntraced(function* (
