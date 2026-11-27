@@ -115,12 +115,14 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         _tag: "held",
         pid: 200,
         source: "unknown",
+        idle: false,
       });
       expect(yield* probeWith(files, "launched")).toBeUndefined();
       expect(yield* probeWith(files, "integrated")).toEqual({
         _tag: "held",
         pid: 103,
         source: "unknown",
+        idle: false,
       });
     }),
   );
@@ -134,7 +136,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       // The process started before it wrote the entry, so it is the one that wrote it.
       expect(
         yield* probeWith(written(START_SECONDS * 1000 + 500), "windows", always, false),
-      ).toEqual({ _tag: "held", pid: 200, source: "unknown" });
+      ).toEqual({ _tag: "held", pid: 200, source: "unknown", idle: false });
       // It started after the entry was written, so it reused the pid.
       expect(
         yield* probeWith(written(START_SECONDS * 1000 - 60_000), "windows", always, false),
@@ -144,6 +146,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         _tag: "held",
         pid: 200,
         source: "unknown",
+        idle: false,
       });
       const pidOnly = { "200.json": entry(200, "windows", { procStart: "not a time" }) };
       expect(yield* probeWith(pidOnly, "windows", always, false)).toEqual({
@@ -167,6 +170,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         _tag: "held",
         pid: 104,
         source: "unknown",
+        idle: false,
       });
       expect(yield* probeWith(behindLauncher, "launched")).toBeUndefined();
       const spawnedDirectly = {
@@ -177,6 +181,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         _tag: "held",
         pid: 102,
         source: "unknown",
+        idle: false,
       });
       expect(yield* probeWith(spawnedDirectly, "spawned")).toBeUndefined();
       // The same rule decides an unreadable entry below the spawned CLI's own.
@@ -215,6 +220,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         _tag: "held",
         pid: 102,
         source: "unknown",
+        idle: false,
       });
     }),
   );
@@ -226,6 +232,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         _tag: "held",
         pid: 105,
         source: "unknown",
+        idle: false,
       });
     }),
   );
@@ -263,6 +270,20 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
           yield* probeWith(files, "opening", () => Effect.succeed(processes), true, ownRootPids),
         ).toBeUndefined();
       }),
+  );
+
+  it.effect("calls a holder idle only when its entry says it waits for a prompt", () =>
+    Effect.gen(function* () {
+      const idleOf = (status: string | undefined) =>
+        probeWith(
+          { "200.json": entry(200, "terminal", status === undefined ? {} : { status }) },
+          "terminal",
+        ).pipe(Effect.map((hold) => (hold?._tag === "held" ? hold.idle : undefined)));
+      expect(yield* idleOf("idle")).toBe(true);
+      for (const status of ["busy", "waiting", "shell", "compacting", undefined]) {
+        expect(yield* idleOf(status)).toBe(false);
+      }
+    }),
   );
 
   it.effect("tells how a holder was started from its registry entrypoint", () =>
@@ -332,6 +353,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         _tag: "held",
         pid: 202,
         source: "t3-code",
+        idle: false,
       });
       // A third-party Agent SDK app with the same parent is not blamed on T3 Code.
       const thirdParty = { "202.json": entry(202, "app", { entrypoint: "sdk-ts" }) };
@@ -339,6 +361,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         _tag: "held",
         pid: 202,
         source: "agent-sdk",
+        idle: false,
       });
     }),
   );
@@ -386,6 +409,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
           _tag: "held",
           pid: 200,
           source: "unknown",
+          idle: false,
         },
       );
     }),
@@ -508,6 +532,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
     /** Fail this many probes with `probeFailure` before answering with `hold`. */
     readonly failingProbes?: number;
     readonly liveNativeThreadId?: string;
+    /** Runs at each take-over wait, so a test can let the holder go idle or exit. */
+    readonly onPause?: (state: { hold: ClaudeSessionHold | undefined }) => void;
+    readonly terminateFails?: boolean;
   }) => {
     const calls: Array<string> = [];
     const probes: Array<string> = [];
@@ -553,6 +580,16 @@ describe("gateHeldClaudeSessionRuntime", () => {
           : Effect.succeed(state.hold);
       },
       REQUIREMENT,
+      {
+        terminate: (pid) => {
+          calls.push(`terminate:${pid}`);
+          return input.terminateFails === true ? Effect.fail(new Error("EPERM")) : Effect.void;
+        },
+        pause: Effect.sync(() => {
+          calls.push("pause");
+          input.onPause?.(state);
+        }),
+      },
     );
     return { runtime, calls, probes, state };
   };
@@ -615,7 +652,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const { runtime, calls, probes } = makeGate({
-        hold: { _tag: "held", pid: 200, source: "unknown" },
+        hold: { _tag: "held", pid: 200, source: "unknown", idle: false },
       });
       const operations = writes(runtime, providerThread(now), now);
 
@@ -636,7 +673,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
   it.effect("marks a send that chose to fork, and nothing else, for the server to fork", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, source: "terminal" } });
+      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, source: "terminal", idle: false } });
       const turn = turnInput(providerThread(now), now);
       const forked = { ...turn, message: { ...turn.message, heldSessionSend: "fork" as const } };
       const inUseOf = (refusal: unknown) =>
@@ -669,6 +706,106 @@ describe("gateHeldClaudeSessionRuntime", () => {
       expectInUse("startTurn", fork, true);
     }),
   );
+
+  describe("take over", () => {
+    const held = (idle: boolean): ClaudeSessionHold => ({
+      _tag: "held",
+      pid: 200,
+      source: "terminal",
+      idle,
+    });
+    const takeOverTurn = (now: DateTime.Utc) => {
+      const turn = turnInput(providerThread(now), now);
+      return { ...turn, message: { ...turn.message, heldSessionSend: "takeOver" as const } };
+    };
+
+    it.effect("stops an idle holder, waits for it to exit, then sends", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        let pauses = 0;
+        const { runtime, calls } = makeGate({
+          hold: held(true),
+          // The holder exits at the second check after SIGTERM.
+          onPause: (state) => {
+            pauses += 1;
+            if (pauses === 2) state.hold = undefined;
+          },
+        });
+
+        yield* runtime.startTurn(takeOverTurn(now));
+
+        expect(calls).toEqual(["terminate:200", "pause", "pause", "startTurn"]);
+      }),
+    );
+
+    it.effect("never stops a busy holder: it waits until the holder is idle", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        let pauses = 0;
+        const { runtime, calls } = makeGate({
+          hold: held(false),
+          onPause: (state) => {
+            pauses += 1;
+            if (pauses === 3) state.hold = held(true);
+            if (pauses === 4) state.hold = undefined;
+          },
+        });
+
+        yield* runtime.startTurn(takeOverTurn(now));
+
+        expect(calls).toEqual(["pause", "pause", "pause", "terminate:200", "pause", "startTurn"]);
+      }),
+    );
+
+    it.effect("sends once a busy holder exits by itself, stopping nothing", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({
+          hold: held(false),
+          onPause: (state) => {
+            state.hold = undefined;
+          },
+        });
+
+        yield* runtime.startTurn(takeOverTurn(now));
+
+        expect(calls).toEqual(["pause", "startTurn"]);
+      }),
+    );
+
+    it.effect("refuses, sending nothing, when the holder outlives SIGTERM or cannot be stopped", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const stuck = makeGate({ hold: held(true) });
+        const unstoppable = makeGate({ hold: held(true), terminateFails: true });
+
+        const stuckRefusal = yield* Effect.flip(stuck.runtime.startTurn(takeOverTurn(now)));
+        const unstoppableRefusal = yield* Effect.flip(
+          unstoppable.runtime.startTurn(takeOverTurn(now)),
+        );
+
+        expect(stuck.calls.filter((call) => call.startsWith("terminate"))).toEqual([
+          "terminate:200",
+        ]);
+        expect(stuck.calls).not.toContain("startTurn");
+        expect(unstoppable.calls).toEqual(["terminate:200"]);
+        expectInUse("startTurn", stuckRefusal, true);
+        expectInUse("startTurn", unstoppableRefusal, true);
+      }),
+    );
+
+    it.effect("stops nothing it cannot confirm, refusing as ask does", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({ hold: { _tag: "unconfirmed", pid: 200 } });
+
+        const refusal = yield* Effect.flip(runtime.startTurn(takeOverTurn(now)));
+
+        expect(calls).toEqual([]);
+        expectInUse("startTurn", refusal, false);
+      }),
+    );
+  });
 
   it.effect("never marks a fork where a holder was only possibly there", () =>
     Effect.gen(function* () {
@@ -709,7 +846,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
     ({ source, text, t3 }) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
-        const { runtime } = makeGate({ hold: { _tag: "held", pid: 200, source } });
+        const { runtime } = makeGate({ hold: { _tag: "held", pid: 200, source, idle: false } });
 
         const refusal = yield* Effect.flip(
           runtime.resumeThread({ providerThread: providerThread(now) }),
@@ -724,7 +861,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
   it.effect("still forks a held session", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, source: "unknown" } });
+      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, source: "unknown", idle: false } });
 
       yield* runtime.forkThread({
         sourceProviderThread: providerThread(now),
@@ -739,7 +876,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const { runtime, calls, probes } = makeGate({
-        hold: { _tag: "held", pid: 200, source: "unknown" },
+        hold: { _tag: "held", pid: 200, source: "unknown", idle: false },
       });
 
       yield* runtime.stopTask({ providerThread: providerThread(now), taskId: "task" });
@@ -754,7 +891,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
       const now = yield* DateTime.now;
       const title = { providerThread: providerThread(now), title: "Renamed" };
       const held = makeGate({
-        hold: { _tag: "held", pid: 200, source: "unknown" },
+        hold: { _tag: "held", pid: 200, source: "unknown", idle: false },
         liveNativeThreadId: "held-session",
       });
       yield* held.runtime.applyThreadTitle(title);
@@ -764,7 +901,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
       });
       yield* unchecked.runtime.applyThreadTitle(title);
       // With nothing live the adapter itself waits for the next turn, so the gate does not probe.
-      const idle = makeGate({ hold: { _tag: "held", pid: 200, source: "unknown" } });
+      const idle = makeGate({ hold: { _tag: "held", pid: 200, source: "unknown", idle: false } });
       yield* idle.runtime.applyThreadTitle(title);
       const free = makeGate({ liveNativeThreadId: "held-session" });
       yield* free.runtime.applyThreadTitle(title);
@@ -784,7 +921,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
       const now = yield* DateTime.now;
       const thread = providerThread(now);
       const { runtime, calls, probes, state } = makeGate({
-        hold: { _tag: "held", pid: 200, source: "unknown" },
+        hold: { _tag: "held", pid: 200, source: "unknown", idle: false },
       });
 
       yield* Effect.flip(runtime.startTurn(turnInput(thread, now)));

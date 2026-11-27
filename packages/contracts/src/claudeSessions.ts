@@ -2,9 +2,10 @@ import * as Schema from "effect/Schema";
 
 /**
  * What a send does when another Claude Code process holds the session: `ask` sends nothing and
- * offers the choices; `fork` continues in a new thread forked from what T3 Code recorded.
+ * offers the choices; `fork` continues in a new thread forked from what T3 Code recorded;
+ * `takeOver` stops the holder with SIGTERM once it is idle, waiting while it is busy, then sends.
  */
-export const ClaudeHeldSessionSend = Schema.Literals(["ask", "fork"]);
+export const ClaudeHeldSessionSend = Schema.Literals(["ask", "fork", "takeOver"]);
 export type ClaudeHeldSessionSend = typeof ClaudeHeldSessionSend.Type;
 
 /** The choices an agent's or a CLI send may name: neither acts on the other process. */

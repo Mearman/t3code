@@ -46,6 +46,8 @@ export type ClaudeSessionHold =
       readonly _tag: "held";
       readonly pid: number;
       readonly source: ClaudeSessionHolderSource;
+      /** The holder's registry entry says it waits for a prompt, not for a turn or a person. */
+      readonly idle: boolean;
     }
   | { readonly _tag: "unconfirmed"; readonly pid: number }
   | { readonly _tag: "unreadable"; readonly pid: number };
@@ -121,7 +123,12 @@ export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(functi
         entrypoint: holder.entry.entrypoint ?? null,
       });
     }
-    return { _tag: "held", pid: holder.entry.pid, source } as const;
+    return {
+      _tag: "held",
+      pid: holder.entry.pid,
+      source,
+      idle: holder.entry.status === "idle",
+    } as const;
   }
   const roots = new Set(ownRootPids);
   // Without a readable entry a live pid is all there is to match.
@@ -202,6 +209,17 @@ function uncheckedRefusal(
   };
 }
 
+/** How a send that chose `takeOver` stops a holder and waits between checks of the registry. */
+export interface ClaudeSessionTakeOver {
+  /** Sends SIGTERM to `pid`, which the probe has just confirmed by its start time. */
+  readonly terminate: (pid: number) => Effect.Effect<void, Error>;
+  /** The wait between two checks while the holder is busy or exiting. */
+  readonly pause: Effect.Effect<void>;
+}
+
+// Claude Code ends within a few checks of SIGTERM; a holder still there after this many is stuck.
+const TAKE_OVER_EXIT_CHECKS = 30;
+
 // Each write checks up to this many more times before refusing for a holder it did not see.
 const PROBE_RETRIES = 2;
 
@@ -228,6 +246,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   probe: ClaudeSessionHoldProbe,
   /** What the host needs to list processes, told to the user when it cannot. */
   processTableRequirement: string,
+  takeOver: ClaudeSessionTakeOver,
 ): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
   // A failed check or a holder only possibly there may clear on its own (a slow `ps`, an entry
   // being written), so it is checked again before the write is refused.
@@ -275,6 +294,55 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
           ),
     );
   };
+  const inUse = (providerThread: OrchestrationV2ProviderThread, detail: string) =>
+    new ProviderAdapter.ProviderAdapterThreadInUseError({
+      driver: runtime.driver,
+      providerThreadId: providerThread.id,
+      detail,
+      cause: detail,
+      holderObserved: true,
+    });
+  // Stops an idle holder, waits while one is busy (never stopping it mid-turn) and returns once
+  // the session is free. A holder only possibly there, or a failed check, refuses as `ask` does.
+  const takeOverHeld = (
+    providerThread: OrchestrationV2ProviderThread,
+  ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
+    const sessionId = providerThread.nativeThreadRef?.nativeId;
+    if (sessionId === undefined || sessionId === null) return Effect.void;
+    const step = (
+      terminated: { readonly pid: number; readonly checks: number } | undefined,
+    ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> =>
+      Effect.flatMap(Effect.result(probe(sessionId)), (probed) => {
+        if (Result.isFailure(probed)) return refuseHeld(providerThread, "ask");
+        const hold = probed.success;
+        if (hold === undefined) return Effect.void;
+        if (hold._tag !== "held") return refuseHeld(providerThread, "ask");
+        if (terminated?.pid === hold.pid) {
+          return terminated.checks >= TAKE_OVER_EXIT_CHECKS
+            ? Effect.fail(
+                inUse(
+                  providerThread,
+                  `T3 Code stopped the Claude Code process (pid ${hold.pid}) holding this session, but it has not exited, so T3 Code sent nothing. Close it and send again.`,
+                ),
+              )
+            : Effect.andThen(takeOver.pause, () =>
+                step({ pid: hold.pid, checks: terminated.checks + 1 }),
+              );
+        }
+        if (!hold.idle) return Effect.andThen(takeOver.pause, () => step(terminated));
+        return takeOver.terminate(hold.pid).pipe(
+          Effect.mapError(() =>
+            inUse(
+              providerThread,
+              `T3 Code could not stop the Claude Code process (pid ${hold.pid}) holding this session, so it sent nothing. Close it and send again.`,
+            ),
+          ),
+          Effect.andThen(takeOver.pause),
+          Effect.andThen(() => step({ pid: hold.pid, checks: 1 })),
+        );
+      });
+    return step(undefined);
+  };
   const refuseBeforePrompt = (
     input: Pick<
       ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -282,10 +350,12 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     > & {
       readonly message?: Pick<ProviderAdapter.ProviderAdapterV2TurnMessage, "heldSessionSend">;
     },
-  ) =>
-    refuseHeld(
-      input.providerThread,
-      input.message?.heldSessionSend ?? DEFAULT_CLAUDE_HELD_SESSION_SEND,
+  ) => {
+    const choice = input.message?.heldSessionSend ?? DEFAULT_CLAUDE_HELD_SESSION_SEND;
+    return (
+      choice === "takeOver"
+        ? takeOverHeld(input.providerThread)
+        : refuseHeld(input.providerThread, choice)
     ).pipe(
       Effect.mapError(
         (cause) =>
@@ -299,6 +369,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
           }),
       ),
     );
+  };
   const { resumeTurn, compactThread, applyThreadTitle, mcpApps, mcpSignIn } = runtime;
   return {
     ...runtime,
@@ -374,6 +445,7 @@ export function gateHeldClaudeSessions(
   adapter: ProviderAdapter.ProviderAdapterV2["Service"],
   probe: ClaudeSessionHoldProbe,
   processTableRequirement: string,
+  takeOver: ClaudeSessionTakeOver,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     ...adapter,
@@ -382,7 +454,7 @@ export function gateHeldClaudeSessions(
         .openSession(input)
         .pipe(
           Effect.map((runtime) =>
-            gateHeldClaudeSessionRuntime(runtime, probe, processTableRequirement),
+            gateHeldClaudeSessionRuntime(runtime, probe, processTableRequirement, takeOver),
           ),
         ),
   };
