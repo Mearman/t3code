@@ -4,7 +4,9 @@ T3 Code sends lightweight product usage events and relay connection traces to ke
 
 ## Product usage events
 
-The server sends usage events to `ingest.t3.codes` under a hashed random install ID (plus a hashed T3 Connect account ID when signed in, and random client device IDs). Events contain provider, catalog model name (non-catalog models report as custom), reasoning effort, permission mode, turn/request outcome, duration, release channel, and token counts.
+A build of a fork (a build whose release repository is not `pingdotgg/t3code`) sends nothing: it has no collector of its own and never defaults to T3's. It sends usage events only if the build is given both `T3CODE_TELEMETRY_KEY` and `T3CODE_TELEMETRY_HOST` for a collector of its own; an explicit `T3CODE_TELEMETRY_ENABLED=true` cannot send events without them. The rest of this page describes what a build with a collector sends.
+
+The server sends usage events to `ingest.t3.codes` (T3's own builds) under a hashed random install ID (plus a hashed T3 Connect account ID when signed in, and random client device IDs). Events contain provider, catalog model name (non-catalog models report as custom), reasoning effort, permission mode, turn/request outcome, duration, release channel, and token counts.
 
 ## Disable telemetry
 
