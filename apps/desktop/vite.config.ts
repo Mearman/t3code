@@ -5,11 +5,13 @@ import { defaultInclude, defineConfig } from "vite-plus";
 import { Rolldown } from "vite-plus/pack";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
-import { productNameDefine } from "../../scripts/lib/product-name-define.ts";
+import { forkIdentity, productNameDefine } from "../../scripts/lib/product-name-define.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import { releaseRepositoryDefine } from "../../scripts/lib/release-repository.ts";
 
 const repoEnv = loadRepoEnv();
+// Fails a fork build that has no repository to name, before it bundles anything.
+forkIdentity(repoEnv);
 const domTests = ["src/preview/PickPreload.test.ts"];
 
 // Install only bundle externals; the server bundle already carries its dependency tree.

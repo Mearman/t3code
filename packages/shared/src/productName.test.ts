@@ -14,3 +14,10 @@ it("keeps upstream's text when no product name is defined", () => {
   assert.isFalse(IS_FORK_PRODUCT);
   assert.equal(UPSTREAM_PRODUCT_NAME, "T3 Code");
 });
+
+it("leaves T3's GitHub App name alone", () => {
+  assert.equal(
+    renameProduct("Install T3 Code for GitHub, then open T3 Code.", "ExaCode"),
+    "Install T3 Code for GitHub, then open ExaCode.",
+  );
+});
