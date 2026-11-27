@@ -19,13 +19,29 @@ import {
 } from "./ClaudeSessionRegistry.ts";
 
 /**
+ * How a holding process was started, from its registry entry's `entrypoint`: `terminal` (`cli`),
+ * `non-interactive` (`sdk-cli`, as `claude -p`), `agent-sdk` (another `sdk-*`, as T3 Code's own
+ * CLIs), `possible-t3-leftover` (an `agent-sdk` process whose parent has gone, as one left when T3
+ * Code restarted) or `unknown`.
+ */
+export type ClaudeSessionHolderSource =
+  | "terminal"
+  | "non-interactive"
+  | "agent-sdk"
+  | "possible-t3-leftover"
+  | "unknown";
+
+/**
  * Why T3 Code must not write to a Claude session: a live process outside its own tree holds it
- * (`sdk` when it runs through the Agent SDK, as T3 Code's own do); a live process's entry names
- * it but the process could be matched by pid alone (`unconfirmed`); or a live process's entry
- * stays unreadable, so it may hold it.
+ * (with how it was started); a live process's entry names it but the process could be matched by
+ * pid alone (`unconfirmed`); or a live process's entry stays unreadable, so it may hold it.
  */
 export type ClaudeSessionHold =
-  | { readonly _tag: "held"; readonly pid: number; readonly sdk: boolean }
+  | {
+      readonly _tag: "held";
+      readonly pid: number;
+      readonly source: ClaudeSessionHolderSource;
+    }
   | { readonly _tag: "unconfirmed"; readonly pid: number }
   | { readonly _tag: "unreadable"; readonly pid: number };
 
@@ -42,6 +58,19 @@ const candidatesFor = (
     (entry) => entry.sessionId === undefined || entry.sessionId === sessionId,
   ),
 });
+
+/** A process is orphaned when its parent is init or no longer in the process table. */
+function claudeHolderSource(
+  entrypoint: string | undefined,
+  holder: ClaudeProcessRow | undefined,
+  byPid: ReadonlyMap<number, ClaudeProcessRow>,
+): ClaudeSessionHolderSource {
+  if (entrypoint === "cli") return "terminal";
+  if (entrypoint === "sdk-cli") return "non-interactive";
+  if (entrypoint?.startsWith("sdk") !== true) return "unknown";
+  const orphaned = holder !== undefined && (holder.ppid <= 1 || !byPid.has(holder.ppid));
+  return orphaned ? "possible-t3-leftover" : "agent-sdk";
+}
 
 /**
  * Reads `sessionsDir` and, only when an entry not of a CLI T3 Code spawned may name `sessionId`,
@@ -88,7 +117,11 @@ export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(functi
       ? ({
           _tag: "held",
           pid: holder.entry.pid,
-          sdk: holder.entry.entrypoint?.startsWith("sdk") === true,
+          source: claudeHolderSource(
+            holder.entry.entrypoint,
+            table.byPid.get(holder.entry.pid),
+            table.byPid,
+          ),
         } satisfies ClaudeSessionHold)
       : ({ _tag: "unconfirmed", pid: holder.entry.pid } satisfies ClaudeSessionHold);
   }
@@ -120,12 +153,19 @@ const FORK_OPTION =
 
 const RETRY_OPTION = "Close any other claude running this session, then send again.";
 
+const HOLDER_SOURCE_NOTES: Record<ClaudeSessionHolderSource, string> = {
+  terminal: ", started from a terminal",
+  "non-interactive": ", started non-interactively",
+  "agent-sdk": ", started through the Agent SDK",
+  "possible-t3-leftover":
+    ", started through the Agent SDK and left running, possibly by T3 Code before it restarted",
+  unknown: "",
+};
+
 function holdRefusal(hold: ClaudeSessionHold): ClaudeSessionRefusal {
   switch (hold._tag) {
     case "held": {
-      const holder = hold.sdk
-        ? `A Claude Code process started through the Agent SDK (pid ${hold.pid}), possibly one T3 Code started before it restarted,`
-        : `Another Claude Code process (pid ${hold.pid})`;
+      const holder = `Another Claude Code process (pid ${hold.pid}${HOLDER_SOURCE_NOTES[hold.source]})`;
       return {
         detail: `${holder} has this session open, so T3 Code sent nothing: two processes writing one session would split its history. ${FORK_OPTION}`,
         holderObserved: true,
