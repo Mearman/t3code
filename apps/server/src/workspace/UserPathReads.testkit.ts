@@ -17,8 +17,7 @@ export const fileSystemBlockedUnder = (input: {
   readonly answered: Deferred.Deferred<void>;
 }) => {
   const { fileSystem, root, separator, blocked, answered } = input;
-  const isUnder = (target: string) =>
-    target === root || target.startsWith(`${root}${separator}`);
+  const isUnder = (target: string) => target === root || target.startsWith(`${root}${separator}`);
   const block = <A, E, R>(target: string, read: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
     isUnder(target)
       ? Queue.offer(blocked, target).pipe(
