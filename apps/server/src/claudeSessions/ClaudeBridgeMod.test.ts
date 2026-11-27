@@ -1,5 +1,9 @@
 import { assert, it } from "@effect/vitest";
-import { CLAUDE_BRIDGE_CONNECTION_FILE, CLAUDE_BRIDGE_MOD_NAME } from "@t3tools/contracts";
+import {
+  CLAUDE_BRIDGE_CONNECTION_DIRECTORY,
+  CLAUDE_BRIDGE_MOD_NAME,
+  CLAUDE_BRIDGE_PROOF_HEADER,
+} from "@t3tools/contracts";
 
 import { claudeBridgeMarketplaceFiles } from "./ClaudeBridgeMod.ts";
 
@@ -19,12 +23,11 @@ it("ships a marketplace whose one plugin is the mod its hooks file names", () =>
   assert.isTrue(files.has(`${CLAUDE_BRIDGE_MOD_NAME}/hooks/${hooks.modules[0].slice(2)}`));
 });
 
-it("keeps the mod inert outside an interactive session and reads its home's connection file", () => {
+// The mod's behaviour runs in Claude Code's own test kit:
+// apps/server/scripts/test-claude-bridge-mod.ts.
+it("builds the mod from the bridge contract's names", () => {
   const source =
     claudeBridgeMarketplaceFiles("1.2.3").get(`${CLAUDE_BRIDGE_MOD_NAME}/hooks/register.ts`) ?? "";
-  assert.include(source, "if (e.isInteractive)");
-  assert.include(source, JSON.stringify(CLAUDE_BRIDGE_CONNECTION_FILE));
-  // A prompt goes as the person's words only when the server says so.
-  assert.include(source, "command.asUser === true");
-  assert.notInclude(source, '["/usr/bin/env"]');
+  assert.include(source, JSON.stringify(CLAUDE_BRIDGE_CONNECTION_DIRECTORY));
+  assert.include(source, JSON.stringify(CLAUDE_BRIDGE_PROOF_HEADER));
 });

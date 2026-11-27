@@ -1,6 +1,7 @@
 import {
-  CLAUDE_BRIDGE_CONNECTION_FILE,
+  CLAUDE_BRIDGE_CONNECTION_DIRECTORY,
   CLAUDE_BRIDGE_MOD_NAME,
+  CLAUDE_BRIDGE_PROOF_HEADER,
   CLAUDE_BRIDGE_SCHEMA_VERSION,
 } from "@t3tools/contracts";
 
@@ -12,71 +13,160 @@ export const CLAUDE_BRIDGE_PLUGIN_ID = `${CLAUDE_BRIDGE_MOD_NAME}@${CLAUDE_BRIDG
 export const CLAUDE_BRIDGE_MIN_CLAUDE_VERSION = "2.1.287";
 
 /**
- * The mod's hooks module. It runs only in an interactive session (so never in T3 Code's own Agent SDK sessions or a `-p` run), finds the server through the connection file in its Claude home, and polls it over loopback for prompts to submit. Claude remains the only writer.
+ * The mod's hooks module. It runs only in an interactive session, so never in T3 Code's own Agent
+ * SDK sessions or a `-p` run. A timer polls every T3 Code server named in its Claude home's
+ * connection directory, checks each answer's proof, submits each prompt only into the session it
+ * names, and acknowledges each one, so the server keeps a prompt until it is taken. Claude remains
+ * the only writer of the session.
  */
 const REGISTER_SOURCE = `import type { EngineInterface, Register } from "claude-code";
 
-const CONNECTION_FILE = ${JSON.stringify(CLAUDE_BRIDGE_CONNECTION_FILE)};
+const DIRECTORY = ${JSON.stringify(CLAUDE_BRIDGE_CONNECTION_DIRECTORY)};
 const SCHEMA_VERSION = ${CLAUDE_BRIDGE_SCHEMA_VERSION};
-// After a failed poll the mod waits this long, so a stopped server costs one request a minute.
-const RETRY_MS = 60_000;
+const PROOF_HEADER = ${JSON.stringify(CLAUDE_BRIDGE_PROOF_HEADER)};
+const POLL_MS = 1_000;
+// A server that failed is asked again after this long, so a stopped one costs little.
+const RETRY_MS = 30_000;
+// Commands already submitted, remembered so one handed out twice is submitted once.
+const REMEMBERED = 256;
+
+type Connection = { url: string; token: string; proof: string };
+type Ack = { commandId: string; submitted: boolean; reason?: string };
+type Command = { commandId: string; sessionId: string; text: string; asUser: boolean };
+type Server = { pollerKey?: string; acks: Ack[]; retryAt: number };
 
 // A reload runs the module again, so these start over with the new code.
+let sessionId: string | undefined;
 let released = false;
 let polling = false;
+let started = false;
+let problem: string | undefined;
+const servers = new Map<string, Server>();
+const submitted: string[] = [];
 
-// One variable by name, never the whole environment, which holds the session's credentials.
-async function env($: EngineInterface, name: string): Promise<string | undefined> {
-  const { exitCode, stdout } = await $.process.run(["/usr/bin/printenv", name]);
-  return exitCode === 0 ? stdout.trim() : undefined;
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-async function connection($: EngineInterface): Promise<{ url: string; token: string }> {
-  const home = (await env($, "CLAUDE_CONFIG_DIR")) ?? (await env($, "HOME")) + "/.claude";
-  const parsed = JSON.parse(await $.fs.read(home + "/" + CONNECTION_FILE));
-  if (parsed.schemaVersion !== SCHEMA_VERSION) {
-    throw new Error("T3 Code bridge schema " + parsed.schemaVersion + " is not supported");
-  }
-  return parsed;
+function isConnection(value: unknown): value is Connection & { schemaVersion: number } {
+  if (typeof value !== "object" || value === null) return false;
+  const fields = value as Record<string, unknown>;
+  return (
+    fields.schemaVersion === SCHEMA_VERSION &&
+    typeof fields.url === "string" &&
+    typeof fields.token === "string" &&
+    typeof fields.proof === "string"
+  );
 }
 
-async function loop($: EngineInterface): Promise<void> {
-  if (polling) return;
-  polling = true;
-  const sessionId = await $.session.id();
-  $.ui.status("T3 Code bridge");
-  while (!released) {
+async function connections($: EngineInterface): Promise<Map<string, Connection>> {
+  const configured = await $.env.get("CLAUDE_CONFIG_DIR");
+  const home = configured ?? (await $.env.get("HOME")) + "/.claude";
+  const directory = home + "/" + DIRECTORY;
+  const found = new Map<string, Connection>();
+  if (!(await $.fs.exists(directory))) return found;
+  for (const entry of await $.fs.list(directory)) {
+    if (entry.kind !== "file" || !entry.name.endsWith(".json")) continue;
     try {
-      const { url, token } = await connection($);
-      const response = await $.http.fetch(url + "/poll", {
-        method: "POST",
-        headers: { authorization: "Bearer " + token, "content-type": "application/json" },
-        body: JSON.stringify({ schemaVersion: SCHEMA_VERSION, sessionId }),
-      });
-      if (!response.ok) throw new Error("T3 Code bridge poll answered " + response.status);
-      for (const command of JSON.parse(response.text).commands) {
-        if (released || command.type !== "submit") continue;
-        await $.prompt.submit(
-          command.asUser === true ? { text: command.text, asUser: true } : { text: command.text },
-        );
-      }
-    } catch {
-      await $.clock.sleep(RETRY_MS);
+      const parsed: unknown = JSON.parse(await $.fs.read(directory + "/" + entry.name));
+      if (isConnection(parsed)) found.set(entry.name, parsed);
+    } catch (error) {
+      $.ui.log("T3 Code bridge: unreadable " + entry.name + ": " + describe(error), { to: "debug" });
     }
   }
-  polling = false;
-  $.ui.status(undefined);
+  return found;
+}
+
+async function take($: EngineInterface, command: Command): Promise<Ack> {
+  const { commandId } = command;
+  if (submitted.includes(commandId)) return { commandId, submitted: true };
+  if (released) return { commandId, submitted: false, reason: "the terminal released the session" };
+  if (command.sessionId !== sessionId) {
+    return { commandId, submitted: false, reason: "the terminal started another conversation" };
+  }
+  try {
+    const result = await $.prompt.submit(
+      command.asUser ? { text: command.text, asUser: true } : { text: command.text },
+    );
+    if (result.drop !== undefined) return { commandId, submitted: false, reason: result.drop };
+  } catch (error) {
+    return { commandId, submitted: false, reason: describe(error) };
+  }
+  submitted.push(commandId);
+  if (submitted.length > REMEMBERED) submitted.shift();
+  return { commandId, submitted: true };
+}
+
+async function pollServer($: EngineInterface, name: string, connection: Connection, now: number) {
+  const server = servers.get(name) ?? { acks: [], retryAt: 0 };
+  servers.set(name, server);
+  if (now < server.retryAt) return;
+  const acks = server.acks;
+  server.acks = [];
+  try {
+    const response = await $.http.fetch(connection.url + "/poll", {
+      method: "POST",
+      headers: { authorization: "Bearer " + connection.token, "content-type": "application/json" },
+      body: JSON.stringify({
+        schemaVersion: SCHEMA_VERSION,
+        sessionId,
+        ...(server.pollerKey === undefined ? {} : { pollerKey: server.pollerKey }),
+        acks,
+      }),
+    });
+    // Only the server that wrote the file knows its proof; anything else at that address is
+    // ignored.
+    if (response.headers[PROOF_HEADER] !== connection.proof) {
+      throw new Error("the answer did not come from T3 Code");
+    }
+    if (!response.ok) throw new Error("T3 Code answered " + response.status);
+    const answer = JSON.parse(response.text) as { pollerKey: string; commands: Command[] };
+    server.pollerKey = answer.pollerKey;
+    for (const command of answer.commands) server.acks.push(await take($, command));
+    problem = undefined;
+  } catch (error) {
+    server.acks = [...acks, ...server.acks];
+    server.retryAt = now + RETRY_MS;
+    problem = describe(error);
+    $.ui.log("T3 Code bridge: " + problem, { to: "debug" });
+  }
+}
+
+async function tick($: EngineInterface): Promise<void> {
+  // A released session keeps polling only to refuse what is handed to it, so T3 Code says so.
+  if (polling || sessionId === undefined) return;
+  polling = true;
+  try {
+    const now = await $.clock.now();
+    const found = await connections($);
+    for (const name of [...servers.keys()]) if (!found.has(name)) servers.delete(name);
+    for (const [name, connection] of found) await pollServer($, name, connection, now);
+    $.ui.status(
+      found.size === 0
+        ? "T3 Code bridge: no T3 Code running"
+        : problem === undefined
+          ? "T3 Code bridge"
+          : "T3 Code bridge: " + problem,
+    );
+  } finally {
+    polling = false;
+  }
 }
 
 export const register: Register = (on) => {
   on("session.start", async ($, e, next) => {
     const result = await next(e);
-    if (e.isInteractive) {
+    if (!e.isInteractive) return result;
+    // A new conversation (a clear, a resume) gets new keys; nothing queued for the old one lands.
+    sessionId = await $.session.id();
+    servers.clear();
+    if (!started) {
+      started = true;
       await $.command.register({
         name: "t3-bridge",
         description: "release: stop T3 Code sending to this session; resume: let it again",
       });
-      void loop($);
+      $.clock.every(POLL_MS, () => void tick($));
     }
     return result;
   });
@@ -85,11 +175,11 @@ export const register: Register = (on) => {
     const argument = e.args.trim();
     if (argument === "release") {
       released = true;
+      $.ui.status("T3 Code bridge: released");
       return { text: "T3 Code no longer sends to this session." };
     }
     if (argument === "resume") {
       released = false;
-      void loop($);
       return { text: "T3 Code can send to this session again." };
     }
     return next(e);
