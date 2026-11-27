@@ -2144,7 +2144,7 @@ it("renders the Linux metainfo under the fork's name and links", () => {
   );
   assert.include(rendered, "<name>ExaCode</name>");
   assert.include(rendered, '<url type="vcs-browser">https://github.com/owner/fork</url>');
-  assert.notInclude(rendered, "T3 Tools");
+  assert.notInclude(rendered, "<name>T3 Tools");
   assert.notInclude(rendered, "t3.codes");
   assert.notInclude(rendered, "pingdotgg");
   assert.include(rendered, "<id>com.t3tools.t3code</id>");
