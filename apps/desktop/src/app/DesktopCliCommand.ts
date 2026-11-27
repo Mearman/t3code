@@ -399,7 +399,8 @@ export const make = Effect.gen(function* () {
       return yield* fail("Install the t3 command first.");
     }
     const setup = startupLine(installed.value);
-    if (setup === undefined) return yield* fail(`${APP_BASE_NAME} cannot add t3 to this shell's PATH.`);
+    if (setup === undefined)
+      return yield* fail(`${APP_BASE_NAME} cannot add t3 to this shell's PATH.`);
     const shadowedBy = yield* foreignFirstOnPath;
     if (Option.isSome(shadowedBy)) {
       return yield* fail(

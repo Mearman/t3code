@@ -2132,7 +2132,10 @@ it("lists a fork build as unofficial under its own name and repository", () => {
 
 it("renders the Linux metainfo under the fork's name and links", () => {
   const template = NodeFS.readFileSync(
-    NodePath.join(import.meta.dirname, "../apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml"),
+    NodePath.join(
+      import.meta.dirname,
+      "../apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml",
+    ),
     "utf8",
   );
   const rendered = renderLinuxMetainfo(
