@@ -296,7 +296,9 @@ export function ViewedImagesTimelineRow({
 }
 
 // Choices that resend the refused message itself; a fork is offered beside them.
-const HELD_SESSION_RESEND_CHOICES = ["takeOver"] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
+const HELD_SESSION_RESEND_CHOICES = [
+  "takeOver",
+] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
 
 // Offered where another process holds the session: the fork continues in a session of its own.
 function HeldSessionForkAction(props: {

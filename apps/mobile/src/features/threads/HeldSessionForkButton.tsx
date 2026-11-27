@@ -24,7 +24,9 @@ import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspace
 import { waitForThreadShell } from "./threadForkNavigation";
 
 // Choices that resend the refused message itself; the fork is offered beside them.
-const HELD_SESSION_RESEND_CHOICES = ["takeOver"] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
+const HELD_SESSION_RESEND_CHOICES = [
+  "takeOver",
+] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
 
 /**
  * Offered on this thread's own run refused because another process holds its session. The fork
@@ -45,7 +47,8 @@ export function HeldSessionForkButton(props: {
   const resendable = useAtomValue(
     environmentThreadDetails.threadAtom(threadRef),
     (thread) =>
-      thread !== undefined && heldSessionResendRunId(thread.projection) === props.refusedRunId,
+      thread?.projection !== undefined &&
+      heldSessionResendRunId(thread.projection) === props.refusedRunId,
   );
   const runtimeMode = useAtomValue(
     environmentThreadDetails.threadAtom(threadRef),

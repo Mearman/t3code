@@ -102,9 +102,7 @@ export interface TimelineRowSharedState {
     | null;
   /** The refused run a send choice can resend; its row offers the choices besides a fork. */
   heldSessionResendRunId: RunId | null;
-  onResendHeldSession:
-    | ((runId: RunId, choice: ClaudeHeldSessionSend) => Promise<void>)
-    | null;
+  onResendHeldSession: ((runId: RunId, choice: ClaudeHeldSessionSend) => Promise<void>) | null;
   onToggleTurnFold: (runId: RunId) => void;
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;

@@ -673,7 +673,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
   it.effect("marks a send that chose to fork, and nothing else, for the server to fork", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, source: "terminal", idle: false } });
+      const { runtime, calls } = makeGate({
+        hold: { _tag: "held", pid: 200, source: "terminal", idle: false },
+      });
       const turn = turnInput(providerThread(now), now);
       const forked = { ...turn, message: { ...turn.message, heldSessionSend: "fork" as const } };
       const inUseOf = (refusal: unknown) =>
@@ -773,25 +775,27 @@ describe("gateHeldClaudeSessionRuntime", () => {
       }),
     );
 
-    it.effect("refuses, sending nothing, when the holder outlives SIGTERM or cannot be stopped", () =>
-      Effect.gen(function* () {
-        const now = yield* DateTime.now;
-        const stuck = makeGate({ hold: held(true) });
-        const unstoppable = makeGate({ hold: held(true), terminateFails: true });
+    it.effect(
+      "refuses, sending nothing, when the holder outlives SIGTERM or cannot be stopped",
+      () =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const stuck = makeGate({ hold: held(true) });
+          const unstoppable = makeGate({ hold: held(true), terminateFails: true });
 
-        const stuckRefusal = yield* Effect.flip(stuck.runtime.startTurn(takeOverTurn(now)));
-        const unstoppableRefusal = yield* Effect.flip(
-          unstoppable.runtime.startTurn(takeOverTurn(now)),
-        );
+          const stuckRefusal = yield* Effect.flip(stuck.runtime.startTurn(takeOverTurn(now)));
+          const unstoppableRefusal = yield* Effect.flip(
+            unstoppable.runtime.startTurn(takeOverTurn(now)),
+          );
 
-        expect(stuck.calls.filter((call) => call.startsWith("terminate"))).toEqual([
-          "terminate:200",
-        ]);
-        expect(stuck.calls).not.toContain("startTurn");
-        expect(unstoppable.calls).toEqual(["terminate:200"]);
-        expectInUse("startTurn", stuckRefusal, true);
-        expectInUse("startTurn", unstoppableRefusal, true);
-      }),
+          expect(stuck.calls.filter((call) => call.startsWith("terminate"))).toEqual([
+            "terminate:200",
+          ]);
+          expect(stuck.calls).not.toContain("startTurn");
+          expect(unstoppable.calls).toEqual(["terminate:200"]);
+          expectInUse("startTurn", stuckRefusal, true);
+          expectInUse("startTurn", unstoppableRefusal, true);
+        }),
     );
 
     it.effect("stops nothing it cannot confirm, refusing as ask does", () =>
@@ -861,7 +865,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
   it.effect("still forks a held session", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, source: "unknown", idle: false } });
+      const { runtime, calls } = makeGate({
+        hold: { _tag: "held", pid: 200, source: "unknown", idle: false },
+      });
 
       yield* runtime.forkThread({
         sourceProviderThread: providerThread(now),
