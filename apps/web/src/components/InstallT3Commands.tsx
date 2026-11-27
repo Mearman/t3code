@@ -1,4 +1,6 @@
+import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
 import { T } from "gt-react";
+import { DESKTOP_DOWNLOAD_URL } from "~/branding";
 import { cn } from "~/lib/utils";
 
 import { CommandBlock } from "./CommandBlock";
@@ -16,10 +18,24 @@ export function InstallT3Commands({
 }) {
   return (
     <div className={cn("space-y-2", className)}>
-      <p className="text-xs text-muted-foreground">macOS, Linux</p>
-      <CommandBlock command="curl -fsSL https://t3.codes/install.sh | sh" />
-      <p className="text-xs text-muted-foreground">Windows (PowerShell)</p>
-      <CommandBlock command="irm https://t3.codes/install.ps1 | iex" />
+      {IS_FORK_PRODUCT ? (
+        <p className="text-xs text-muted-foreground">
+          <T>
+            Download <code className="font-mono">install.sh</code> from the{" "}
+            <a className="underline" href={DESKTOP_DOWNLOAD_URL} target="_blank" rel="noreferrer">
+              releases page
+            </a>{" "}
+            and run it with <code className="font-mono">sh</code>.
+          </T>
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground">macOS, Linux</p>
+          <CommandBlock command="curl -fsSL https://t3.codes/install.sh | sh" />
+          <p className="text-xs text-muted-foreground">Windows (PowerShell)</p>
+          <CommandBlock command="irm https://t3.codes/install.ps1 | iex" />
+        </>
+      )}
       <p className="text-xs text-muted-foreground">
         <T>Then</T>
       </p>

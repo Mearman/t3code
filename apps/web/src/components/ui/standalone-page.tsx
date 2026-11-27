@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
-import { APP_BASE_NAME, IS_FORK_BRAND } from "../../branding";
+import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
+import { APP_BASE_NAME } from "../../branding";
 import { AppWordmark } from "../AppWordmark";
 
 export function StandalonePage({ children }: { readonly children: ReactNode }) {
@@ -25,7 +26,7 @@ export function StandalonePageHeader({
     <>
       <div className="flex items-baseline justify-between gap-3 text-muted-foreground">
         <span className="flex items-baseline gap-1.5" role="img" aria-label={APP_BASE_NAME}>
-          {IS_FORK_BRAND ? (
+          {IS_FORK_PRODUCT ? (
             <span className="text-lg font-medium tracking-tight text-foreground">
               {APP_BASE_NAME}
             </span>

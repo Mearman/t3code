@@ -1,3 +1,4 @@
+import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m as resolveMessage } from "~/i18n/messages";
 import { useAtomValue } from "@effect/atom-react";
@@ -2570,7 +2571,7 @@ export function AboutSettingsPanel() {
             />
           </>
         )}
-        <MobileAppSettingsRow />
+        {IS_FORK_PRODUCT ? null : <MobileAppSettingsRow />}
         {primaryEnvironmentId === null ? null : (
           <SettingsRow
             {...setting("welcome-page")}
