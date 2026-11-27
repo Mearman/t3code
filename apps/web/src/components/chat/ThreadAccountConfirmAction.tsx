@@ -2,6 +2,10 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
 import { useState } from "react";
 
+import { useAtomValue } from "@effect/atom-react";
+import { canConfirmThreadAccount } from "@t3tools/client-runtime/state/thread-workflows";
+
+import { useServerConfigs } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
@@ -15,6 +19,14 @@ export function ThreadAccountConfirmAction(props: {
   const gt = useGT();
   const confirm = useAtomCommand(serverEnvironment.confirmClaudeThreadAccount, "confirm account");
   const [busy, setBusy] = useState(false);
+  const permitted = useAtomValue(
+    serverEnvironment.confirmClaudeThreadAccount.permissionAtom(props.environmentId),
+  );
+  const serverConfirms =
+    useServerConfigs().get(props.environmentId)?.environment.capabilities.claudeThreadAccounts ===
+    true;
+  // Without the button, the refusal's own advice to send again confirms the account.
+  if (!canConfirmThreadAccount({ serverConfirms, permitted })) return null;
   return (
     <div className="ms-7 pb-1">
       <Button

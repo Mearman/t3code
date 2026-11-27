@@ -96,6 +96,7 @@ vi.mock("../../state/threads", () => ({
   },
 }));
 vi.mock("../../state/server", () => ({ serverEnvironment: { confirmClaudeThreadAccount: {} } }));
+vi.mock("./threadAccountConfirmAccess", () => ({ useThreadAccountConfirmAccess: () => true }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => forkFromRun }));
 vi.mock("../layout/workspace/useSelectWorkspaceDetail", () => ({
   useSelectWorkspaceDetail: () => vi.fn(),

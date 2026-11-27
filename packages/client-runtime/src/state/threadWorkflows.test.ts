@@ -12,6 +12,7 @@ import {
   deriveThreadQueueWorkflowState,
   getUserQueuedThreadRuns,
   heldSessionForkRunId,
+  canConfirmThreadAccount,
   heldSessionRefusedRunIds,
   heldSessionResendRunId,
   offersThreadAccountConfirm,
@@ -568,5 +569,13 @@ describe("offersThreadAccountConfirm", () => {
       false,
     );
     expect(offersThreadAccountConfirm(row("local", null))).toBe(false);
+  });
+});
+
+describe("canConfirmThreadAccount", () => {
+  it("offers the button only where the server confirms and the connection may operate", () => {
+    expect(canConfirmThreadAccount({ serverConfirms: true, permitted: true })).toBe(true);
+    expect(canConfirmThreadAccount({ serverConfirms: false, permitted: true })).toBe(false);
+    expect(canConfirmThreadAccount({ serverConfirms: true, permitted: false })).toBe(false);
   });
 });
