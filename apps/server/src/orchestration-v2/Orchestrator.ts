@@ -1373,7 +1373,8 @@ function latestStartedRun(runs: ReadonlyArray<OrchestrationV2Run>): Orchestratio
 function latestStableRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | null {
-  // A run read back from a provider transcript has no checkpoint; the transcript is its stable point.
+  // A run read back from a provider transcript has no checkpoint, so the transcript is its stable
+  // point. Side chats select the same way, so a thread of transcript runs forks natively.
   return (
     runsByOrigin(projection.runs, "any")
       .filter(
@@ -16940,8 +16941,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
-    // The latest stable run is the one with a checkpoint, or read from a transcript. Wait for a just-completed run's capture,
-    // outside the locks its commit takes, so a fork right after a turn starts from that turn.
+    // The latest stable run has a checkpoint, or was read from a transcript. Wait for a
+    // just-completed run's capture, outside the locks its commit takes, so a fork right after a
+    // turn starts from that turn.
     if (
       (command.type === "thread.fork" || command.type === "thread.merge_back") &&
       command.sourcePoint.type === "latest_stable"
