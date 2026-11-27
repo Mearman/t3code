@@ -3649,17 +3649,27 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
       yield* Effect.gen(function* () {
         const scanner = yield* AgentSessionScanner.AgentSessionScanner;
         const scanPaths = scanner.scan.pipe(
-          Effect.map(({ candidates, unanswered }) => ({
+          Effect.map(({ candidates, unanswered, truncated }) => ({
             paths: candidates.map(({ path }) => path).toSorted(),
             unanswered,
+            truncated,
           })),
         );
         const first = yield* Effect.forkChild(scanPaths);
         expect(yield* Queue.take(blocked)).toBe(documentsProject);
         yield* TestClock.adjust("2 seconds");
-        expect(yield* Fiber.join(first)).toEqual({ paths: [otherProject], unanswered: true });
+        // `truncated` keeps a client that predates `unanswered` showing a notice.
+        expect(yield* Fiber.join(first)).toEqual({
+          paths: [otherProject],
+          unanswered: true,
+          truncated: true,
+        });
         // The read still waiting closes the folder, so this scan skips it without reading.
-        expect(yield* scanPaths).toEqual({ paths: [otherProject], unanswered: true });
+        expect(yield* scanPaths).toEqual({
+          paths: [otherProject],
+          unanswered: true,
+          truncated: true,
+        });
         expect(yield* Queue.size(blocked)).toBe(0);
 
         yield* Deferred.succeed(answered, undefined);
@@ -3667,6 +3677,7 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
         expect(yield* scanPaths).toEqual({
           paths: [documentsProject, otherProject].toSorted(),
           unanswered: undefined,
+          truncated: undefined,
         });
       }).pipe(
         Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, scannerFileSystem })),

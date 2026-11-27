@@ -47,6 +47,7 @@ const state = vi.hoisted(() => ({
   linkError: null as string | null,
   refreshLinkState: vi.fn(),
   scanError: null as string | null,
+  scanFlags: {} as { truncated?: boolean; unanswered?: boolean },
   scanPending: false,
   runningTerminalIds: null as unknown,
   openTerminal: vi.fn(),
@@ -144,7 +145,7 @@ vi.mock(import("../../onboarding/useProjectScans"), async (original) => {
         state.scan({ environmentId });
         return {
           environmentId,
-          data: (state.scanPending ? null : { candidates, truncated: false }) as never,
+          data: (state.scanPending ? null : { candidates, ...state.scanFlags }) as never,
           isPending: state.scanPending,
           error: state.scanError,
           refresh: state.refreshScan,
@@ -362,6 +363,7 @@ function setup() {
   state.linkError = null;
   state.refreshLinkState.mockReset();
   state.scanError = null;
+  state.scanFlags = {};
   state.scanPending = false;
   state.runningTerminalIds = Atom.make<ReadonlyArray<string>>([]).pipe(Atom.keepAlive);
   for (const command of [state.openTerminal, state.writeTerminal, state.closeTerminal]) {
@@ -616,6 +618,42 @@ it("keeps the started projects checked when the page opens again after a quit", 
   ]);
   await using _second = await mountWelcome();
   await vi.waitFor(() => expect(pageText()).toContain("Import 2 projects and their threads"));
+});
+
+it("names the unanswered folder, not the scan limit, when a scan is both", async () => {
+  using _now = setup();
+  state.scanFlags = { truncated: true, unanswered: true };
+  await using _screen = await mountWelcome();
+  await vi.waitFor(() => expect(pageText()).toContain("A folder did not answer"));
+  expect(pageText()).not.toContain("Scan limit reached");
+});
+
+it("shows the scan limit notice for a scan that only ran out of budget", async () => {
+  using _now = setup();
+  state.scanFlags = { truncated: true };
+  await using _screen = await mountWelcome();
+  await vi.waitFor(() => expect(pageText()).toContain("Scan limit reached"));
+  expect(pageText()).not.toContain("A folder did not answer");
+});
+
+it("warns that an import left threads out when a folder did not answer", async () => {
+  using _now = setup();
+  appAtomRegistry.set(candidatesAtom(), [candidate("/projects/first")]);
+  state.importThreads.mockResolvedValue(
+    AsyncResult.success({ importedCount: 0, skippedCount: 0, unanswered: true }),
+  );
+  await using _screen = await mountWelcome();
+  using toastAdd = vi.spyOn(toastManager, "add");
+
+  await click("Import 1 project and start");
+  await vi.waitFor(() =>
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "warning",
+        description: expect.stringContaining("A folder did not answer, so some threads"),
+      }),
+    ),
+  );
 });
 
 it("keeps the project controls when a later scan fails", async () => {
