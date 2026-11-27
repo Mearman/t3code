@@ -1,5 +1,5 @@
 import * as NodeModule from "node:module";
-import * as NodeUrl from "node:url";
+import * as NodeURL from "node:url";
 import * as NodeZlib from "node:zlib";
 
 import react from "@vitejs/plugin-react";
@@ -21,6 +21,7 @@ import {
   type HashSource,
 } from "../../scripts/lib/product-name-transform";
 import { loadRepoEnv } from "../../scripts/lib/public-config";
+import { releaseRepositoryDefine } from "../../scripts/lib/release-repository";
 import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version";
 import { thirdPartyLicensesPlugin } from "../../scripts/lib/third-party-licenses";
 import { tailwindPlugins } from "./vite/tailwind";
@@ -36,7 +37,7 @@ async function loadGtHashSource(): Promise<HashSource> {
   const fromWeb = NodeModule.createRequire(import.meta.url);
   const fromGtReact = NodeModule.createRequire(fromWeb.resolve("gt-react"));
   const module: { readonly hashSource: HashSource } = await import(
-    NodeUrl.pathToFileURL(fromGtReact.resolve("generaltranslation/id")).href
+    NodeURL.pathToFileURL(fromGtReact.resolve("generaltranslation/id")).href
   );
   return module.hashSource;
 }
@@ -315,7 +316,7 @@ export default defineConfig(({ command }) => {
         ? undefined
         : productNameTransformPlugin({
             name: productName,
-            repositoryRoot: NodeUrl.fileURLToPath(new URL("../../", import.meta.url)),
+            repositoryRoot: NodeURL.fileURLToPath(new URL("../../", import.meta.url)),
             hashSource: loadGtHashSource,
           }),
       bootstrapTitlePlugin(),
@@ -353,6 +354,7 @@ export default defineConfig(({ command }) => {
     },
     define: {
       ...productNameDefine(repoEnv),
+      ...releaseRepositoryDefine(repoEnv),
       "import.meta.env.VITE_WS_URL": JSON.stringify(configuredWsUrl ?? ""),
       // Override .env URLs with empty values in single-origin dev so clients use window.location.origin.
       "import.meta.env.VITE_HTTP_URL": JSON.stringify(configuredHttpUrl ?? ""),
