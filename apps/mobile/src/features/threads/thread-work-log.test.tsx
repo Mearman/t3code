@@ -57,6 +57,9 @@ vi.mock("@effect/atom-react", () => ({
           },
         }),
 }));
+vi.mock("../../state/orchestration", () => ({
+  orchestrationEnvironment: { v2: { dispatchCommand: { permissionAtom: () => ({}) } } },
+}));
 vi.mock("../../components/ProviderIcon", () => ({ ProviderIcon: () => null }));
 vi.mock("../../components/T3Wordmark", () => ({ T3Wordmark: () => null }));
 vi.mock("../../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
