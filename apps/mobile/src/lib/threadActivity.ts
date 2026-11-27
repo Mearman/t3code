@@ -766,8 +766,9 @@ function itemPreview(item: OrchestrationV2TurnItem, resolve: MessageResolver): s
           );
     case "run_interrupt_request":
     case "run_interrupt_result":
-    case "system_notice":
       return item.message || null;
+    case "system_notice":
+      return systemNoticeLabel(item, resolve) || null;
     case "error":
       return item.failure.message;
     case "compaction":
