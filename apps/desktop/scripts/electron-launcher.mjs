@@ -4,6 +4,8 @@ import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import { EXACODE_ICON_PATHS } from "../../../scripts/lib/brand-assets.ts";
+import { loadRepoEnv } from "../../../scripts/lib/public-config.ts";
 import { ensureElectronRuntime } from "./ensure-electron-runtime.mjs";
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -13,24 +15,23 @@ const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-// A fork's own product name (the build's T3CODE_DESKTOP_PRODUCT_NAME) replaces T3 Code's name and icon.
-const forkProductName = process.env.T3CODE_DESKTOP_PRODUCT_NAME?.trim() || undefined;
+// A fork's product name, from the environment or .env like the bundle's define, replaces the name.
+const forkProductName = loadRepoEnv().T3CODE_DESKTOP_PRODUCT_NAME?.trim() || undefined;
 const APP_BASE_NAME = forkProductName ?? "T3 Code";
 const APP_DISPLAY_NAME = `${APP_BASE_NAME} (${isDevelopment ? "Dev" : "Beta"})`;
 const APP_BUNDLE_ID = isDevelopment
   ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
   : "com.t3tools.t3code";
 const APP_PROTOCOL_SCHEMES = isDevelopment ? ["t3code-dev"] : ["t3code"];
-const LAUNCHER_VERSION = 20;
+const LAUNCHER_VERSION = 21;
 const developmentMacIconPngPath = NodePath.join(
   repoRoot,
   "assets",
   "dev",
   "blueprint-macos-1024.png",
 );
-const productionMacIconPngPath = forkProductName
-  ? NodePath.join(repoRoot, "assets", "exacode", "exacode-macos-1024.png")
-  : NodePath.join(repoRoot, "assets", "prod", "black-macos-1024.png");
+const productionMacIconPngPath = NodePath.join(repoRoot, "assets", "prod", "black-macos-1024.png");
+const forkMacIconPngPath = NodePath.join(repoRoot, EXACODE_ICON_PATHS.macIconPng);
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher script has no Effect runtime.
 const hostPlatform = NodeOS.platform();
 
@@ -208,10 +209,14 @@ function registerMacLauncherBundle(appBundlePath) {
 // Bundle-internal paths are macOS paths whatever host builds them.
 function resolveMacLauncherIconPaths(runtimeDir, development = isDevelopment) {
   return {
-    sourceIconPath: development ? developmentMacIconPngPath : productionMacIconPngPath,
+    sourceIconPath: forkProductName
+      ? forkMacIconPngPath
+      : development
+        ? developmentMacIconPngPath
+        : productionMacIconPngPath,
     generatedIconPath: NodePath.posix.join(
       runtimeDir,
-      development ? "icon-dev.icns" : forkProductName ? "icon-fork.icns" : "icon-prod.icns",
+      forkProductName ? "icon-fork.icns" : development ? "icon-dev.icns" : "icon-prod.icns",
     ),
   };
 }

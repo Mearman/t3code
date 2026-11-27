@@ -5,7 +5,7 @@ import { defaultInclude, defineConfig } from "vite-plus";
 import { Rolldown } from "vite-plus/pack";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
-import { desktopProductNameDefine } from "../../scripts/lib/desktop-product-name.ts";
+import { productNameDefine } from "../../scripts/lib/product-name-define.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import { releaseRepositoryDefine } from "../../scripts/lib/release-repository.ts";
 
@@ -28,7 +28,7 @@ const publicConfigDefine = {
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
   ),
   ...releaseRepositoryDefine(repoEnv),
-  ...desktopProductNameDefine(repoEnv),
+  ...productNameDefine(repoEnv),
 };
 
 const PAGE_WORLD_MODULE = /[\\/]src[\\/]preview[\\/]PageWorld\.ts$/;

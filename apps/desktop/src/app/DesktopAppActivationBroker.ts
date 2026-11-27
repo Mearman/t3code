@@ -5,7 +5,7 @@ import {
   type DesktopAppActivationRequest,
   type DesktopAppActivationResponse,
 } from "@t3tools/contracts";
-import { APP_BASE_NAME } from "./DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 interface PendingActivation {
   readonly request: DesktopAppActivationRequest;
@@ -45,7 +45,7 @@ export class DesktopAppActivationBroker {
   request(request: DesktopAppActivationRequest): Promise<DesktopAppActivationResponse> {
     if (this.#closed) {
       return Promise.resolve(
-        failure(request.requestId, "renderer-unavailable", `${APP_BASE_NAME} is shutting down.`),
+        failure(request.requestId, "renderer-unavailable", `${PRODUCT_NAME} is shutting down.`),
       );
     }
     if (this.#pending.has(request.requestId)) {
@@ -90,7 +90,7 @@ export class DesktopAppActivationBroker {
           failure(
             pending.request.requestId,
             "renderer-unavailable",
-            `The ${APP_BASE_NAME} window closed before it opened the project.`,
+            `The ${PRODUCT_NAME} window closed before it opened the project.`,
           ),
         );
       }
@@ -106,7 +106,7 @@ export class DesktopAppActivationBroker {
       failure(
         requestId,
         "renderer-unavailable",
-        `The command closed before ${APP_BASE_NAME} was ready.`,
+        `The command closed before ${PRODUCT_NAME} was ready.`,
       ),
     );
   }
@@ -119,7 +119,7 @@ export class DesktopAppActivationBroker {
         failure(
           pending.request.requestId,
           "renderer-unavailable",
-          `${APP_BASE_NAME} is shutting down.`,
+          `${PRODUCT_NAME} is shutting down.`,
         ),
       );
     }

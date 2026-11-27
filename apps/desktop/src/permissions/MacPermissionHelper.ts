@@ -12,7 +12,7 @@ import {
 } from "./MacSettingsWindow.ts";
 
 import { MAC_PERMISSION_SETUP_TITLES, type MacPermission } from "./MacPermission.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 const permissionGranted = (permission: MacPermission) => {
   if (permission === "screen-recording")
@@ -64,7 +64,7 @@ img { width: 32px; height: 32px; pointer-events: none; }
 </style></head><body><main id="panel">
 <button id="close" aria-label="${escapeHtml(m(msg("Close permission helper")))}">×</button>
 <header>${escapeHtml(m(msg("↑ Drag T3 Code into the list above")))}</header>
-<button id="app" draggable="true" aria-label="${escapeHtml(m(msg("Drag T3 Code to System Settings, or click to reveal in Finder")))}"><img src="${escapeHtml(icon)}" alt="" draggable="false">T3 Code</button>
+<button id="app" draggable="true" aria-label="${escapeHtml(m(msg("Drag T3 Code to System Settings, or click to reveal in Finder")))}"><img src="${escapeHtml(icon)}" alt="" draggable="false">${escapeHtml(PRODUCT_NAME)}</button>
 </main></body></html>`;
 }
 
@@ -96,7 +96,7 @@ export class MacPermissionHelper {
     const appIcon = iconPaths
       .map((iconPath) => Electron.nativeImage.createFromPath(iconPath))
       .find((image) => !image.isEmpty());
-    if (!appIcon) throw new Error(`The packaged ${APP_BASE_NAME} icon is missing.`);
+    if (!appIcon) throw new Error(`The packaged ${PRODUCT_NAME} icon is missing.`);
     const icon = appIcon.resize({ width: 64, height: 64 });
     const window = new Electron.BrowserWindow({
       width: 560,

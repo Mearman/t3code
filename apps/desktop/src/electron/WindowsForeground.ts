@@ -1,4 +1,4 @@
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 export interface WindowsForegroundApi {
   readonly getCurrentThreadId: () => number;
@@ -217,7 +217,7 @@ export function loadWindowsForegroundApi(): Promise<WindowsForegroundApi> {
 export async function activateWindowsForeground(handleBuffer: Buffer): Promise<void> {
   const api = await loadWindowsForegroundApi();
   if (activateWindowsForegroundWithApi(handleBuffer, api)) return;
-  throw new Error(`Windows refused to activate the ${APP_BASE_NAME} window.`);
+  throw new Error(`Windows refused to activate the ${PRODUCT_NAME} window.`);
 }
 
 export async function isWindowsShellHostedForeground(): Promise<boolean> {

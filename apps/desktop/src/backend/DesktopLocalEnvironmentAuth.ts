@@ -16,7 +16,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as HttpClient from "effect/http/HttpClient";
 
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 // Each /oauth/token attempt may take 10 s, so a backend busy after ready needs several attempts.
 const BOOTSTRAP_TRANSIENT_RETRY_TIMEOUT = Duration.seconds(60);
@@ -122,7 +122,7 @@ export const make = Effect.gen(function* () {
             httpBaseUrl: config.httpBaseUrl.href,
             credential,
             clientMetadata: {
-              label: `${APP_BASE_NAME} Desktop`,
+              label: `${PRODUCT_NAME} Desktop`,
               deviceType: "desktop",
             },
           }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));

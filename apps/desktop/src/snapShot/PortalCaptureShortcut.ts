@@ -14,7 +14,7 @@ import {
 import * as Schema from "effect/Schema";
 import type { SnapShotKeyChord } from "@t3tools/contracts";
 import { HYPRLAND_CAPTURE_ACTION, portalShortcutTrigger } from "./linuxCaptureSession.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 export { portalShortcutTrigger } from "./linuxCaptureSession.ts";
 
 const PORTAL = "org.freedesktop.portal.Desktop";
@@ -164,7 +164,7 @@ export class PortalCaptureShortcut {
       throw new Error("Change the capture binding in your Hyprland config, then save it.");
     if (!this.hasSession || this.version < 2)
       throw new Error(
-        `Open your desktop's shortcut settings and allow ${APP_BASE_NAME}'s capture shortcut.`,
+        `Open your desktop's shortcut settings and allow ${PRODUCT_NAME}'s capture shortcut.`,
       );
     await this.call({
       destination: this.owner,
@@ -192,7 +192,7 @@ export class PortalCaptureShortcut {
       shortcutPending: false,
       shortcutCanRetry: !this.managedByHyprland,
       shortcutMessage: this.managedByHyprland
-        ? `Couldn't connect to Hyprland shortcuts. Make sure xdg-desktop-portal-hyprland is running, then restart ${APP_BASE_NAME}.`
+        ? `Couldn't connect to Hyprland shortcuts. Make sure xdg-desktop-portal-hyprland is running, then restart ${PRODUCT_NAME}.`
         : error instanceof Error
           ? error.message
           : "Could not register the capture shortcut.",
@@ -332,7 +332,7 @@ export class PortalCaptureShortcut {
             shortcutMessage:
               this.version >= 2
                 ? "Shortcut permission wasn't granted. Open shortcut permissions to allow it."
-                : `Shortcut permission wasn't granted. Allow ${APP_BASE_NAME} in your desktop's shortcut settings.`,
+                : `Shortcut permission wasn't granted. Allow ${PRODUCT_NAME} in your desktop's shortcut settings.`,
           });
           return undefined;
         }
@@ -357,7 +357,7 @@ export class PortalCaptureShortcut {
         shortcutPending: false,
         shortcutMessage: shortcut
           ? "Managed by Hyprland. Add the binding to your config and save it."
-          : `Hyprland did not register the capture action. Check that xdg-desktop-portal-hyprland is running, then restart ${APP_BASE_NAME}.`,
+          : `Hyprland did not register the capture action. Check that xdg-desktop-portal-hyprland is running, then restart ${PRODUCT_NAME}.`,
       });
       return;
     }

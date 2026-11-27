@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import type { DesktopCaptureExtensionState } from "@t3tools/contracts";
 
 import { GNOME_CAPTURE_FILES, GNOME_CAPTURE_UUID } from "./gnomeCaptureBundle.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 const SHELL = "org.gnome.Shell";
 const SHELL_PATH = "/org/gnome/Shell";
@@ -56,7 +56,7 @@ export async function installGnomeCaptureBundle({ bundle, dataHome }: SetupPaths
     );
     if (installed.version > metadata.version)
       throw new Error(
-        `A newer extension is installed. Update ${APP_BASE_NAME} instead of replacing it.`,
+        `A newer extension is installed. Update ${PRODUCT_NAME} instead of replacing it.`,
       );
   }
   const staged = await NodeFSP.mkdtemp(NodePath.join(parent, ".t3-capture-install-"));
@@ -183,7 +183,7 @@ export class GnomeCaptureSetup {
       if (installed && (!info.state || (info.version && installed.version > info.version.value)))
         return {
           status: "restart-required",
-          message: `Installed. Save your work, sign out of GNOME and sign back in, then return here to enable the extension. Restarting ${APP_BASE_NAME} alone is not enough.`,
+          message: `Installed. Save your work, sign out of GNOME and sign back in, then return here to enable the extension. Restarting ${PRODUCT_NAME} alone is not enough.`,
         };
       if ((installed?.version ?? info.version?.value ?? 0) < bundled.version)
         return {
@@ -194,12 +194,12 @@ export class GnomeCaptureSetup {
       if (!properties.UserExtensionsEnabled.value)
         return {
           status: "extensions-disabled",
-          message: `GNOME has disabled user extensions. Turn on Extensions in the GNOME Extensions app, then check again. ${APP_BASE_NAME} will not enable your other extensions for you.`,
+          message: `GNOME has disabled user extensions. Turn on Extensions in the GNOME Extensions app, then check again. ${PRODUCT_NAME} will not enable your other extensions for you.`,
         };
       if (info.state?.value === 1)
         return {
           status: "enabled",
-          message: `The ${APP_BASE_NAME} extension is running. Active-window snapshots are available.`,
+          message: `The ${PRODUCT_NAME} extension is running. Active-window snapshots are available.`,
         };
       if (info.state?.value === 3 || info.state?.value === 4)
         return {
@@ -210,7 +210,7 @@ export class GnomeCaptureSetup {
         };
       return {
         status: "disabled",
-        message: `Enable the ${APP_BASE_NAME} extension to allow active-window snapshots. You can disable it here at any time.`,
+        message: `Enable the ${PRODUCT_NAME} extension to allow active-window snapshots. You can disable it here at any time.`,
       };
     } catch (error) {
       return {
