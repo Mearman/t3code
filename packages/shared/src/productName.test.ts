@@ -1,6 +1,19 @@
 import { assert, it } from "@effect/vitest";
 
-import { brandText, IS_FORK_PRODUCT, renameProduct, UPSTREAM_PRODUCT_NAME } from "./productName.ts";
+import { afterEach, vi } from "vite-plus/test";
+
+import {
+  brandText,
+  IS_FORK_PRODUCT,
+  IS_PROVABLY_UPSTREAM_BUILD,
+  renameProduct,
+  UPSTREAM_PRODUCT_NAME,
+} from "./productName.ts";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.resetModules();
+});
 
 it("renames every spelling of upstream's product", () => {
   assert.equal(
@@ -20,4 +33,17 @@ it("leaves T3's GitHub App name alone", () => {
     renameProduct("Install T3 Code for GitHub, then open T3 Code.", "ExaCode"),
     "Install T3 Code for GitHub, then open ExaCode.",
   );
+});
+
+it("is not provably upstream's when the build defined nothing", () => {
+  assert.isFalse(IS_PROVABLY_UPSTREAM_BUILD);
+});
+
+it("takes the build kind from the define", async () => {
+  for (const defined of [true, false]) {
+    vi.resetModules();
+    vi.stubGlobal("__T3CODE_BUILD_PROVABLY_UPSTREAM__", defined);
+    const fresh = await import("./productName.ts");
+    assert.equal(fresh.IS_PROVABLY_UPSTREAM_BUILD, defined);
+  }
 });
