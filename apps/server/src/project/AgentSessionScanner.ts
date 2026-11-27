@@ -46,7 +46,11 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { piHome, resolvePiSessionsDir } from "@t3tools/provider-pi/server/usage";
 import * as ServerSettings from "../serverSettings.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
-import { readUserPath, trackUnavailableReads } from "../workspace/UserPathReads.ts";
+import {
+  readUserPath,
+  trackUnavailableReads,
+  trackUnavailableReadsInStream,
+} from "../workspace/UserPathReads.ts";
 import {
   createTranscriptJsonReader,
   createTranscriptJsonSelector,
@@ -242,7 +246,9 @@ export type AgentSessionRecentThread =
     }
   | { readonly _tag: "AlreadyImported"; readonly source: AgentSessionImportSource }
   | { readonly _tag: "Duplicate"; readonly source: AgentSessionImportSource }
-  | { readonly _tag: "Skipped" };
+  | { readonly _tag: "Skipped" }
+  /** Last item, when a folder did not answer and so some threads may be missing. */
+  | { readonly _tag: "Unanswered" };
 
 export class AgentSessionScanner extends Context.Service<
   AgentSessionScanner,
@@ -1114,9 +1120,12 @@ export const make = Effect.gen(function* () {
     const contents = yield* Effect.forEach(
       unique,
       (filePath) => {
-        // No privacy prompts or FIFOs to block open() here.
         if (isWindows) {
-          return fileSystem.readFileString(filePath).pipe(Effect.orElseSucceed(() => ""));
+          // A network share or mapped drive can hang here like any other user folder.
+          return readOption(
+            filePath,
+            fileSystem.readFileString(filePath).pipe(Effect.orElseSucceed(() => "")),
+          ).pipe(Effect.map(Option.getOrElse(() => "")));
         }
         if ((blockedGitFilePaths.get(filePath) ?? 0) > now) return Effect.succeed("");
         blockedGitFilePaths.delete(filePath);
@@ -2110,13 +2119,13 @@ export const make = Effect.gen(function* () {
 
   let cachedCandidates: Effect.Success<ReturnType<typeof collectCandidates>> | null = null;
 
-  // A folder that did not answer leaves its projects out, so the result is marked truncated and
+  // A folder that did not answer leaves its projects out, so the result is marked unanswered and
   // the candidates are not kept for imports, which collect them again.
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
     const [collected, collectedPartially] = yield* trackUnavailableReads(collectCandidates());
     cachedCandidates = collectedPartially ? null : collected;
     const [result, mergedPartially] = yield* trackUnavailableReads(mergeCandidates(collected));
-    return collectedPartially || mergedPartially ? { ...result, truncated: true } : result;
+    return collectedPartially || mergedPartially ? { ...result, unanswered: true } : result;
   });
 
   const mergeCandidates = Effect.fnUntraced(function* (
@@ -2230,10 +2239,14 @@ export const make = Effect.gen(function* () {
     const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
 
     // Imports recorded since a budget-truncated collection can free budget for transcripts it cut off.
-    if (cachedCandidates === null || cachedCandidates.metadataTruncated) {
-      cachedCandidates = yield* collectCandidates();
+    // A collection a folder left partial is used once and not kept.
+    let collected = cachedCandidates;
+    if (collected === null || collected.metadataTruncated) {
+      const [fresh, partial] = yield* trackUnavailableReads(collectCandidates());
+      collected = fresh;
+      cachedCandidates = partial ? null : fresh;
     }
-    const { candidates } = cachedCandidates;
+    const { candidates } = collected;
 
     // The scan counts a linked worktree's sessions toward its main checkout, so import them with it.
     const candidateDirectories = candidates.flatMap((candidate) => {
@@ -2508,7 +2521,11 @@ export const make = Effect.gen(function* () {
   const recentThreads: AgentSessionScanner["Service"]["recentThreads"] = (
     workspaceRoot,
     completedSources = [],
-  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources));
+  ) =>
+    trackUnavailableReadsInStream(
+      Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources)),
+      { _tag: "Unanswered" } as const,
+    );
 
   return AgentSessionScanner.of({ scan, recentThreads });
 });
