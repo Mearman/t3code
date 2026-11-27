@@ -110,6 +110,7 @@ export function ProviderAuthenticationSection({
     interaction?.type === "browser" || interaction?.type === "deviceCode"
       ? interaction.url
       : auth?.authorizationUrl;
+  const pastesCode = interaction?.type === "browser" && interaction.callbackInput === "code";
 
   async function run(command: () => Promise<AtomCommandResult<unknown, unknown>>) {
     if (pendingRef.current) return false;
@@ -485,11 +486,16 @@ export function ProviderAuthenticationSection({
               }}
             >
               <label className="grid gap-1">
-                <T>If the final localhost page does not load, paste its full URL here.</T>
+                {pastesCode ? (
+                  <T>After you sign in, paste the code the page shows here.</T>
+                ) : (
+                  <T>If the final localhost page does not load, paste its full URL here.</T>
+                )}
                 <Input
                   size="sm"
                   id={`provider-callback-${instanceId}`}
-                  type="url"
+                  type={pastesCode ? "text" : "url"}
+                  spellCheck={false}
                   autoComplete="off"
                   value={values.callback ?? ""}
                   disabled={disabled}
