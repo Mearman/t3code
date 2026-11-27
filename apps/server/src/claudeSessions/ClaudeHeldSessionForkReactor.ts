@@ -31,7 +31,9 @@ type ForkPlan =
   | { readonly type: "fork_only"; readonly sourceRunId: OrchestrationV2Run["id"] };
 
 /**
- * How a send refused for a holder, whose choice was to fork, continues: fork from the run before it and send its text there. A message with attachments, which only a fresh upload can carry, or one with no run before it is forked from the refused run, whose recorded message the fork carries.
+ * How a send refused for a holder, whose choice was to fork, continues: fork from the run before it
+ * and send its text there. A message with attachments, which only a fresh upload can carry, or one
+ * with no run before it is forked from the refused run, whose recorded message the fork carries.
  */
 export function planHeldSessionFork(
   projection: Pick<
