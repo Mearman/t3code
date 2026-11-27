@@ -123,9 +123,7 @@ export function ClaudeSessionSyncSection(props: {
               selected={(options.heldSessionSend ?? "default") === choice}
               separated={index > 0}
               disabled={disabled}
-              onPress={() =>
-                update({ heldSessionSend: choice === "default" ? null : choice })
-              }
+              onPress={() => update({ heldSessionSend: choice === "default" ? null : choice })}
             />
           ))}
           <View className="px-4 py-3">

@@ -814,10 +814,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     Effect.gen(function* () {
       yield* (yield* ClaudeHeldSessionForkReactor.ClaudeHeldSessionForkReactor).start();
     }),
-  ).pipe(
-    Layer.provide(ClaudeHeldSessionForkReactor.layer),
-    Layer.provide(ProjectionStoreV2.layer),
-  ),
+  ).pipe(Layer.provide(ClaudeHeldSessionForkReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   Layer.effectDiscard(
     Effect.gen(function* () {
       yield* (yield* OrchestrationMilestones.OrchestrationMilestones).start();

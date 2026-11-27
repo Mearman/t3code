@@ -231,16 +231,10 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
 ): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
   // A failed check or a holder only possibly there may clear on its own (a slow `ps`, an entry
   // being written), so it is checked again before the write is refused.
-  const settledProbe = (
-    sessionId: string,
-    attemptsLeft: number,
-    choice: ClaudeHeldSessionSend,
-  ) => {
+  const settledProbe = (sessionId: string, attemptsLeft: number, choice: ClaudeHeldSessionSend) => {
     const attempt: Effect.Effect<
       (ClaudeSessionRefusal & { readonly continueInFork?: true }) | undefined
-    > = Effect.result(
-      probe(sessionId),
-    ).pipe(
+    > = Effect.result(probe(sessionId)).pipe(
       Effect.flatMap((probed) => {
         if (Result.isSuccess(probed)) {
           const hold = probed.success;

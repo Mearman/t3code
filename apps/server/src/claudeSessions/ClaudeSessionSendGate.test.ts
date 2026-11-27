@@ -663,9 +663,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
       expect(calls).toEqual([]);
       expect([fork, asked, compacted, steered].map(continued)).toEqual([true, false, false, false]);
       const forkError = inUseOf(fork);
-      expect(Predicate.hasProperty(forkError, "message") ? String(forkError.message) : "").toContain(
-        "continues this message in a fork",
-      );
+      expect(
+        Predicate.hasProperty(forkError, "message") ? String(forkError.message) : "",
+      ).toContain("continues this message in a fork");
       expectInUse("startTurn", fork, true);
     }),
   );
