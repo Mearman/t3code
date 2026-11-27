@@ -5,6 +5,7 @@ import {
   CLAUDE_BRIDGE_ROUTE_PREFIX,
   CLAUDE_BRIDGE_SCHEMA_VERSION,
   ClaudeBridgeConnection,
+  type ClaudeBridgePoll,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -19,10 +20,9 @@ import { CLAUDE_BRIDGE_POLL_HOLD, ClaudeBridge, layer as bridgeLayer } from "./C
 
 const layer = bridgeLayer.pipe(Layer.provide(SecureRandom.layerWebCrypto));
 
-const poll = (sessionId: string) => ({
+const poll = (sessionId: string): ClaudeBridgePoll => ({
   schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
   sessionId,
-  busy: false,
 });
 
 it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
@@ -73,7 +73,7 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
 
       const info = yield* fileSystem.stat(file);
       assert.strictEqual(info.mode & 0o777, 0o600);
-      const connection = Schema.decodeUnknownSync(Schema.fromJsonString(ClaudeBridgeConnection))(
+      const connection = yield* Schema.decodeEffect(Schema.fromJsonString(ClaudeBridgeConnection))(
         yield* fileSystem.readFileString(file),
       );
       assert.strictEqual(connection.url, `http://127.0.0.1:3774${CLAUDE_BRIDGE_ROUTE_PREFIX}`);

@@ -30,7 +30,6 @@ interface Attachment {
   readonly commands: Queue.Queue<ClaudeBridgeCommand>;
   readonly openPolls: number;
   readonly lastPollAt: number;
-  readonly busy: boolean;
 }
 
 /**
@@ -78,7 +77,6 @@ export const make = Effect.gen(function* () {
       commands: yield* Queue.unbounded<ClaudeBridgeCommand>(),
       openPolls: 0,
       lastPollAt: 0,
-      busy: false,
     };
     return yield* Ref.modify(sessions, (current) => {
       const raced = current.get(sessionId);
@@ -92,13 +90,14 @@ export const make = Effect.gen(function* () {
       return known === undefined ? current : new Map(current).set(sessionId, change(known));
     });
 
-  const attached: ClaudeBridge["Service"]["attached"] = (sessionId) =>
-    Effect.gen(function* () {
+  const attached: ClaudeBridge["Service"]["attached"] = Effect.fn("ClaudeBridge.attached")(
+    function* (sessionId) {
       const known = (yield* Ref.get(sessions)).get(sessionId);
       if (known === undefined) return false;
       if (known.openPolls > 0) return true;
       return (yield* Clock.currentTimeMillis) - known.lastPollAt <= ATTACHED_GRACE_MILLIS;
-    });
+    },
+  );
 
   const submit: ClaudeBridge["Service"]["submit"] = (input) =>
     Effect.flatMap(attachment(input.sessionId), (known) =>
@@ -111,30 +110,28 @@ export const make = Effect.gen(function* () {
     ).pipe(Effect.asVoid);
 
 
-  const poll: ClaudeBridge["Service"]["poll"] = (request) =>
-    Effect.gen(function* () {
-      const known = yield* attachment(request.sessionId);
-      const now = yield* Clock.currentTimeMillis;
-      yield* update(request.sessionId, (current) => ({
-        ...current,
-        openPolls: current.openPolls + 1,
-        lastPollAt: now,
-        busy: request.busy,
-      }));
-      const taken = yield* Queue.takeAll(known.commands).pipe(
-        Effect.timeoutOption(CLAUDE_BRIDGE_POLL_HOLD),
-        Effect.ensuring(
-          Effect.flatMap(Clock.currentTimeMillis, (ended) =>
-            update(request.sessionId, (current) => ({
-              ...current,
-              openPolls: current.openPolls - 1,
-              lastPollAt: ended,
-            })),
-          ),
+  const poll: ClaudeBridge["Service"]["poll"] = Effect.fn("ClaudeBridge.poll")(function* (request) {
+    const known = yield* attachment(request.sessionId);
+    const now = yield* Clock.currentTimeMillis;
+    yield* update(request.sessionId, (current) => ({
+      ...current,
+      openPolls: current.openPolls + 1,
+      lastPollAt: now,
+    }));
+    const taken = yield* Queue.takeAll(known.commands).pipe(
+      Effect.timeoutOption(CLAUDE_BRIDGE_POLL_HOLD),
+      Effect.ensuring(
+        Effect.flatMap(Clock.currentTimeMillis, (ended) =>
+          update(request.sessionId, (current) => ({
+            ...current,
+            openPolls: current.openPolls - 1,
+            lastPollAt: ended,
+          })),
         ),
-      );
-      return Option.getOrElse(taken, () => []);
-    });
+      ),
+    );
+    return Option.getOrElse(taken, () => []);
+  });
 
   const writeConnection = (home: string, origin: string) =>
     Effect.gen(function* () {

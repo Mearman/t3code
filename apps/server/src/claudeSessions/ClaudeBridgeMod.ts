@@ -22,18 +22,8 @@ const SCHEMA_VERSION = ${CLAUDE_BRIDGE_SCHEMA_VERSION};
 const RETRY_MS = 60_000;
 
 export const register: Register = (on) => {
-  let busy = false;
   let released = false;
   let polling = false;
-
-  on("turn.start", ($, e, next) => {
-    if (e.agentId === undefined) busy = true;
-    return next(e);
-  });
-  on("turn.complete", ($, e, next) => {
-    if (e.agentId === undefined) busy = false;
-    return next(e);
-  });
 
   // One variable by name, never the whole environment, which holds the session's credentials.
   const env = async ($: EngineInterface, name: string) => {
@@ -61,7 +51,7 @@ export const register: Register = (on) => {
         const response = await $.http.fetch(url + "/poll", {
           method: "POST",
           headers: { authorization: "Bearer " + token, "content-type": "application/json" },
-          body: JSON.stringify({ schemaVersion: SCHEMA_VERSION, sessionId, busy }),
+          body: JSON.stringify({ schemaVersion: SCHEMA_VERSION, sessionId }),
         });
         if (!response.ok) throw new Error("T3 Code bridge poll answered " + response.status);
         for (const command of JSON.parse(response.text).commands) {
