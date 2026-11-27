@@ -15,7 +15,8 @@ import {
   canConfirmThreadAccount,
   heldSessionRefusedRunIds,
   heldSessionResendRunId,
-  offersThreadAccountConfirm,
+  latestRunId,
+  threadAccountToConfirm,
   resolveLatestMergeBackRun,
   threadCanSteer,
   threadSupportsProviderHandoff,
@@ -552,23 +553,77 @@ describe("heldSessionForkRunId", () => {
   });
 });
 
-describe("offersThreadAccountConfirm", () => {
-  const row = (visibility: "local" | "inherited" | "synthetic", code: string | null) => ({
-    visibility,
-    item: { failure: { code } },
+describe("threadAccountToConfirm", () => {
+  const account = {
+    apiProvider: "firstParty",
+    email: "work@example.com",
+    organization: null,
+    credentialSource: null,
+  };
+  const row = (
+    visibility: "local" | "inherited" | "synthetic",
+    code: string | null,
+    runId: string,
+    accountChange: { readonly current: typeof account } | null = { current: account },
+  ) =>
+    ({
+      visibility,
+      item: {
+        runId,
+        failure: {
+          code,
+          ...(accountChange === null
+            ? {}
+            : {
+                accountChange: {
+                  recorded: { ...account, email: "personal@example.com" },
+                  ...accountChange,
+                },
+              }),
+        },
+      },
+    }) as never;
+  const latest = "run-2" as never;
+
+  it("offers the account the refusal named, on the thread's own latest run only", () => {
+    expect(
+      threadAccountToConfirm(
+        row("local", CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE, "run-2"),
+        latest,
+      ),
+    ).toEqual(account);
+    expect(
+      threadAccountToConfirm(
+        row("local", CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE, "run-1"),
+        latest,
+      ),
+    ).toBeUndefined();
+    expect(
+      threadAccountToConfirm(
+        row("inherited", CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE, "run-2"),
+        latest,
+      ),
+    ).toBeUndefined();
+    expect(
+      threadAccountToConfirm(row("local", PROVIDER_THREAD_IN_USE_FAILURE_CODE, "run-2"), latest),
+    ).toBeUndefined();
+    expect(
+      threadAccountToConfirm(
+        row("local", CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE, "run-2", null),
+        latest,
+      ),
+    ).toBeUndefined();
   });
 
-  it("offers a confirmation only on the thread's own row with the account-changed code", () => {
+  it("finds the latest run by ordinal", () => {
     expect(
-      offersThreadAccountConfirm(row("local", CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE)),
-    ).toBe(true);
-    expect(
-      offersThreadAccountConfirm(row("inherited", CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE)),
-    ).toBe(false);
-    expect(offersThreadAccountConfirm(row("local", PROVIDER_THREAD_IN_USE_FAILURE_CODE))).toBe(
-      false,
-    );
-    expect(offersThreadAccountConfirm(row("local", null))).toBe(false);
+      latestRunId([
+        { id: "run-1" as never, ordinal: 1 },
+        { id: "run-3" as never, ordinal: 3 },
+        { id: "run-2" as never, ordinal: 2 },
+      ]),
+    ).toBe("run-3");
+    expect(latestRunId([])).toBeUndefined();
   });
 });
 

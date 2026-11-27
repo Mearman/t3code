@@ -1,6 +1,7 @@
 import {
   type ClaudeHeldSessionSend,
   type ChatAttachment,
+  type ClaudeAccountIdentity,
   isCompactionCommandMessage,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderCapabilities,
@@ -294,17 +295,40 @@ export function canConfirmThreadAccount(input: {
 }
 
 /**
- * Whether an error row offers to confirm a changed Claude account: only on the thread's own row,
- * since a confirmation applies to this thread.
+ * The account an error row offers to confirm, if any: only on the thread's own row, only for the
+ * thread's latest run (a later run makes the row history), and only when the refusal named it.
  */
-export function offersThreadAccountConfirm(row: {
-  readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
-  readonly item: { readonly failure: Pick<OrchestrationV2ProviderFailure, "code"> };
-}) {
-  return (
-    row.visibility === "local" &&
+export function threadAccountToConfirm(
+  row: {
+    readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
+    readonly item: {
+      readonly runId: RunId | null;
+      readonly failure: Pick<OrchestrationV2ProviderFailure, "code" | "accountChange">;
+    };
+  },
+  latestRunId: RunId | undefined,
+): ClaudeAccountIdentity | undefined {
+  return row.visibility === "local" &&
+    row.item.runId !== null &&
+    row.item.runId === latestRunId &&
     row.item.failure.code === CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE
-  );
+    ? row.item.failure.accountChange?.current
+    : undefined;
+}
+
+/**
+ * The thread's latest T3 run, the highest ordinal; undefined before its first run. A turn read
+ * back from a terminal does not supersede a refusal, since it says nothing of the account.
+ */
+export function latestRunId(
+  runs: ReadonlyArray<{ readonly id: RunId; readonly ordinal: number }>,
+): RunId | undefined {
+  return runsByOrigin(runs, "t3").reduce<
+    { readonly id: RunId; readonly ordinal: number } | undefined
+  >(
+    (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
+    undefined,
+  )?.id;
 }
 
 /**

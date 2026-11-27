@@ -49,14 +49,18 @@ vi.mock("@expo/ui/community/masked-view", () => ({ MaskedView: () => null }));
 vi.mock("@legendapp/list/reanimated", () => ({ AnimatedLegendList: () => null }));
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
 vi.mock("@effect/atom-react", () => ({
-  // Only the held-session buttons select from an atom: the source thread's projection.
+  // The held-session buttons select the source thread's projection, the account button its
+  // latest run.
   useAtomValue: (_atom: unknown, select?: (thread: unknown) => unknown) =>
     select === undefined
       ? false
       : select({
           projection: {
             thread: { title: "Held", runtimeMode: "full-access" },
-            runs: [],
+            runs: [
+              { id: "run-earlier", ordinal: 1 },
+              { id: "run-refused", ordinal: 2 },
+            ],
             turnItems: [],
           },
         }),
@@ -128,10 +132,17 @@ vi.mock("./work-log-layout", () => {
 
 import { ThreadWorkLog } from "./thread-work-log";
 
+const confirmedAccount = {
+  apiProvider: "firstParty",
+  email: "b@example.com",
+  organization: null,
+  credentialSource: null,
+};
 const failedRow = (
   visibility: OrchestrationV2ProjectedTurnItem["visibility"],
   code: string,
   message: string,
+  runId = "run-refused",
 ) =>
   ({
     id: "row-1",
@@ -143,8 +154,16 @@ const failedRow = (
         type: "error",
         status: "failed",
         threadId: "thread-held",
-        runId: "run-refused",
-        failure: { class: "provider_error", code, message },
+        runId,
+        failure: {
+          class: "provider_error",
+          code,
+          message,
+          accountChange: {
+            recorded: { ...confirmedAccount, email: "a@example.com" },
+            current: confirmedAccount,
+          },
+        },
       },
     },
   }) as unknown as Parameters<typeof ThreadWorkLog>[0]["activities"][number];
@@ -157,7 +176,7 @@ it.each([
   async (visibility, offered) => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     forkFromRun.mockClear();
-    forkFromRun.mockResolvedValueOnce({ _tag: "Success", value: { confirmed: true } });
+    forkFromRun.mockResolvedValueOnce({ _tag: "Success", value: { outcome: "confirmed" } });
     const container = document.createElement("div");
     const root = createRoot(container);
     using _root = { [Symbol.dispose]: () => act(() => root.unmount()) };
@@ -185,7 +204,14 @@ it.each([
     expect(forkFromRun.mock.calls).toEqual(
       offered.length === 0
         ? []
-        : [[{ environmentId: "env-1", input: { threadId: "thread-held" } }]],
+        : [
+            [
+              {
+                environmentId: "env-1",
+                input: { threadId: "thread-held", account: confirmedAccount },
+              },
+            ],
+          ],
     );
   },
 );
@@ -258,3 +284,30 @@ it.each([
     );
   },
 );
+
+it("offers no confirmation on a refused row a later run has superseded", () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  using _root = { [Symbol.dispose]: () => act(() => root.unmount()) };
+  act(() =>
+    root.render(
+      <ThreadWorkLog
+        {...({} as Parameters<typeof ThreadWorkLog>[0])}
+        activities={[
+          failedRow(
+            "local",
+            "claude_thread_account_changed",
+            "This thread was sent as a@example.com, but Claude is now signed in as b@example.com.",
+            "run-earlier",
+          ),
+        ]}
+        anchorKey="row-1"
+        environmentId={"env-1" as EnvironmentId}
+        copiedRowId={null}
+        expandedRows={{}}
+      />,
+    ),
+  );
+  expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([]);
+});
