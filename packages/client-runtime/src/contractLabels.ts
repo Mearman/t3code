@@ -227,6 +227,7 @@ const CLAUDE_HELD_SESSION_SEND_LABELS: Record<ClaudeHeldSessionSend | "default",
   default: msg("Use default", { $context: "held Claude session send" }),
   ask: msg("Ask each time"),
   fork: msg("Continue in a fork"),
+  takeOver: msg("Take over when idle"),
 };
 
 /** @public Labels for `ClaudeHeldSessionSend` values, plus "default" for no setting. */

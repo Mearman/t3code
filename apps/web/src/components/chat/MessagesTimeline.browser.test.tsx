@@ -142,6 +142,8 @@ function baseProps(): Omit<TimelineProps, "timelineEntries"> {
     onForkFromRun: async () => {},
     heldSessionRefusedRuns: new Set(),
     onForkHeldSession: null,
+    heldSessionResendRunId: null,
+    onResendHeldSession: null,
     supportsConversationRollback: false,
     onRevertToTurnCount: () => {},
     isRevertingCheckpoint: false,
