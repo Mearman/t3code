@@ -32,7 +32,8 @@ export class ForkNightlyVersionNotNewerError extends Schema.TaggedError<ForkNigh
 }
 
 /**
- * The version of a fork nightly of `sha`, cut on `date`, given every published release tag. It is newer than every published nightly even after main is rewritten, and fails if it cannot be.
+ * The version of a fork nightly of `sha` cut on `date`, given every published release tag. It is
+ * newer than every published nightly even after main is rewritten, and fails if it cannot be.
  */
 export const resolveForkNightlyRelease = Effect.fn("resolveForkNightlyRelease")(function* (input: {
   readonly date: string;
