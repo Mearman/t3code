@@ -84,11 +84,7 @@ export function wentBesideHolder(
   run: OrchestrationV2Run,
   sawHolder: boolean,
 ): boolean {
-  if (
-    !sawHolder ||
-    run.heldSessionSend !== "send" ||
-    run.manualContinuationOfRunId === undefined
-  ) {
+  if (!sawHolder || run.heldSessionSend !== "send" || run.manualContinuationOfRunId === undefined) {
     return false;
   }
   const continued = projection.runs.find(
@@ -125,9 +121,7 @@ export function heldSessionSendResend(run: OrchestrationV2Run) {
     messageId: MessageId.make(`message:held-session-send:${key}`),
     manualContinuationOfRunId: run.id,
     heldSessionSend: "send",
-    ...(run.heldSessionTerminalAccess === true
-      ? { heldSessionTerminalAccess: true as const }
-      : {}),
+    ...(run.heldSessionTerminalAccess === true ? { heldSessionTerminalAccess: true as const } : {}),
     text: "",
     attachments: [],
     dispatchMode: { type: "start_immediately" },
