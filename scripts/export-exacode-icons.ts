@@ -5,7 +5,11 @@ import * as NodePath from "node:path";
 
 import sharp from "sharp";
 
-import { EXACODE_ICON_PATHS, EXACODE_ICON_SOURCE_SVG } from "./lib/brand-assets.ts";
+import {
+  EXACODE_ICON_BACKGROUND_COLOR,
+  EXACODE_ICON_PATHS,
+  EXACODE_ICON_SOURCE_SVG,
+} from "./lib/brand-assets.ts";
 import { encodePngIco, WINDOWS_ICON_SIZES } from "./lib/icon-export.ts";
 
 const REPO_ROOT = NodePath.resolve(import.meta.dirname, "..");
@@ -16,6 +20,37 @@ const MAC_INSET = (MAC_CANVAS - MAC_BODY) / 2;
 
 const renderSquare = (svg: Buffer, size: number) =>
   sharp(svg, { density: 384 }).resize(size, size).png().toBuffer();
+
+// Android draws EXACODE_ICON_BACKGROUND_COLOR behind the adaptive foreground and masks the
+// central 72dp of 108dp, inside which the logo's mark already sits; the splash shows the whole
+// logo within the inner two thirds of its canvas (scripts/export-android-icons.ts).
+const ANDROID_ADAPTIVE_CANVAS = 432;
+const ANDROID_SPLASH_CANVAS = 1152;
+const ANDROID_SPLASH_BODY = 576;
+
+const withoutBackground = (svg: Buffer) => {
+  const background = `<rect width="1024" height="1024" rx="230" fill="${EXACODE_ICON_BACKGROUND_COLOR}"/>`;
+  const source = svg.toString("utf8");
+  if (source.split(background).length !== 2) {
+    throw new Error(`${EXACODE_ICON_SOURCE_SVG} no longer has exactly one ${background}.`);
+  }
+  return Buffer.from(source.replace(background, ""));
+};
+
+const renderCentred = async (svg: Buffer, canvas: number, body: number) =>
+  sharp({
+    create: {
+      width: canvas,
+      height: canvas,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite([
+      { input: await renderSquare(svg, body), left: (canvas - body) / 2, top: (canvas - body) / 2 },
+    ])
+    .png()
+    .toBuffer();
 
 const renderMacOs = async (svg: Buffer) =>
   sharp({
@@ -48,6 +83,14 @@ export async function renderExacodeIcons(): Promise<ReadonlyMap<string, Buffer>>
     [EXACODE_ICON_PATHS.webFavicon16Png, await renderSquare(svg, 16)],
     [EXACODE_ICON_PATHS.windowsIconIco, ico],
     [EXACODE_ICON_PATHS.webFaviconIco, ico],
+    [
+      EXACODE_ICON_PATHS.androidForegroundPng,
+      await renderSquare(withoutBackground(svg), ANDROID_ADAPTIVE_CANVAS),
+    ],
+    [
+      EXACODE_ICON_PATHS.androidSplashPng,
+      await renderCentred(svg, ANDROID_SPLASH_CANVAS, ANDROID_SPLASH_BODY),
+    ],
   ]);
 }
 
