@@ -111,3 +111,12 @@ it("marks a thread whose latest run came from a terminal, and no other", async (
   await screen.rerender(header("Synced session", false));
   await expect.element(screen.getByText("Terminal", { exact: true })).not.toBeInTheDocument();
 });
+
+it("keeps a gap between the title and the terminal badge", async () => {
+  await using screen = await render(header("Refactor the config parser", true));
+  const title = screen.getByRole("heading", { name: "Refactor the config parser" }).element();
+  const badge = screen.getByText("Terminal", { exact: true }).element().closest("[data-slot=badge]");
+  expect(badge).not.toBeNull();
+  const gap = (badge?.getBoundingClientRect().left ?? 0) - title.getBoundingClientRect().right;
+  expect(gap).toBeGreaterThanOrEqual(8);
+});

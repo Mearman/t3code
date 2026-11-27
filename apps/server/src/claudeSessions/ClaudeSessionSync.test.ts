@@ -1072,7 +1072,7 @@ describe("ClaudeSessionSync", () => {
               threadId: claudeThreadId,
               itemId: TurnItemId.make(`x:${SESSION}:history`),
             }),
-          ).toMatchObject({ type: "system_notice", status: "completed" });
+          ).toMatchObject({ type: "system_notice", status: "completed", level: "info" });
           // Clients translate the notice by recognising its id.
           expect(isClaudeHistoryNoticeId(`x:${SESSION}:history`)).toBe(true);
         }).pipe(Effect.provide(syncLayer(settingsFor([home]))));
@@ -1095,7 +1095,11 @@ describe("ClaudeSessionSync", () => {
             threadId: claudeThreadId,
             itemId: TurnItemId.make(`x:${SESSION}:history`),
           });
-          expect(notice).toMatchObject({ type: "system_notice", status: "failed" });
+          expect(notice).toMatchObject({
+            type: "system_notice",
+            status: "failed",
+            level: "warning",
+          });
           expect(notice?.type === "system_notice" ? notice.message : "").toContain(
             "below the 10 GB",
           );

@@ -12,7 +12,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { T, useGT, Var } from "gt-react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, TerminalIcon } from "lucide-react";
 import {
   memo,
   useEffect,
@@ -333,7 +333,7 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
-        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
+        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1 gap-2">
           {renamingTitle !== null ? (
             <input
               autoFocus
@@ -418,7 +418,10 @@ export const ChatHeader = memo(function ChatHeader({
                 </>
               }
             >
-              <T>Terminal</T>
+              <TerminalIcon aria-hidden className="sm:hidden" />
+              <span className="max-sm:sr-only">
+                <T>Terminal</T>
+              </span>
             </SharedTooltipTrigger>
           ) : null}
         </WorkspaceBreadcrumbItem>
