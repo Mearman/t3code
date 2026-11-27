@@ -48,6 +48,7 @@ it("refuses a product name that releases from upstream's repository", () => {
   expect(() =>
     forkIdentity({ T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode", GITHUB_REPOSITORY: "pingdotgg/t3code" }),
   ).toThrow("upstream's own repository");
+});
 
 it("calls a build upstream's only with upstream's repository and no product name", () => {
   expect(provablyUpstream({ GITHUB_REPOSITORY: "pingdotgg/t3code" })).toBe(true);
