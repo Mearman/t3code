@@ -11,7 +11,7 @@ import {
   type ProviderInstanceMutation,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { TextInput, View } from "react-native";
 import { m } from "../../i18n/messages";
 
@@ -64,47 +64,47 @@ function useProviderInstanceMutation(environment: SettingsTarget) {
   return { run, pending, error, setError };
 }
 
-export function ClaudeAccount({
-  environment,
-  provider,
-}: {
-  readonly environment: SettingsTarget;
-  readonly provider: ServerProvider;
-}) {
+export interface ClaudeAccountEditor {
+  readonly detail: string;
+  readonly actions: ReadonlyArray<MenuAction>;
+  /** Runs an action from `actions`; false for an id this editor does not own. */
+  readonly onAction: (id: string) => boolean;
+  readonly pending: boolean;
+  readonly panel: ReactNode;
+}
+
+/** Name and config-folder editing for a Claude instance, shared by both account rows. */
+export function useClaudeAccountEditor(
+  environment: SettingsTarget,
+  provider: ServerProvider,
+): ClaudeAccountEditor {
   const gt = useGT();
   const [editing, setEditing] = useState(false);
   const { run, pending, error } = useProviderInstanceMutation(environment);
   const instance = environment.serverConfig.settings.providerInstances[provider.instanceId];
   const configDir = claudeConfigDir(instance);
   const name = provider.displayName ?? "Claude";
-  const status = !provider.enabled
-    ? gt("Turned off")
-    : provider.auth.status === "authenticated"
-      ? gt("Signed in")
-      : provider.auth.status === "unauthenticated"
-        ? gt("Not signed in")
-        : !provider.installed
-          ? gt("Not installed")
-          : null;
   const removable =
     provider.instanceId !== DEFAULT_CLAUDE_INSTANCE_ID &&
     !isManagedSettingPath(
       environment.serverConfig.managedPolicy,
       `providerInstances.${provider.instanceId}`,
     );
-  const actions: MenuAction[] = [
-    { id: "edit", title: gt("Edit"), image: "pencil" },
-    ...(removable
-      ? [
-          {
-            id: "remove",
-            title: gt("Remove"),
-            image: "trash",
-            attributes: { destructive: true },
-          } satisfies MenuAction,
-        ]
-      : []),
-  ];
+  const actions: MenuAction[] = editing
+    ? []
+    : [
+        { id: "claude:edit", title: gt("Edit"), image: "pencil" },
+        ...(removable
+          ? [
+              {
+                id: "claude:remove",
+                title: gt("Remove"),
+                image: "trash",
+                attributes: { destructive: true },
+              } satisfies MenuAction,
+            ]
+          : []),
+      ];
   function remove() {
     Dialog.alert(
       gt("Remove {account}?", { account: name }),
@@ -124,6 +124,52 @@ export function ClaudeAccount({
       ],
     );
   }
+  return {
+    detail: configDir || gt("Default config folder"),
+    actions,
+    pending,
+    onAction: (id) => {
+      if (id === "claude:edit") setEditing(true);
+      else if (id === "claude:remove") remove();
+      else return false;
+      return true;
+    },
+    panel: editing ? (
+      <ClaudeAccountForm
+        environment={environment}
+        instanceId={provider.instanceId}
+        initial={{ name: instance?.displayName ?? "", configDir }}
+        signsIn={provider.setup?.canAuthenticate === true}
+        onDone={() => setEditing(false)}
+      />
+    ) : error ? (
+      <Text accessibilityRole="alert" className="px-4 pb-3 text-danger-foreground">
+        {error}
+      </Text>
+    ) : null,
+  };
+}
+
+/** A Claude instance on a server that has no in-app Claude sign-in. */
+export function ClaudeAccount({
+  environment,
+  provider,
+}: {
+  readonly environment: SettingsTarget;
+  readonly provider: ServerProvider;
+}) {
+  const gt = useGT();
+  const editor = useClaudeAccountEditor(environment, provider);
+  const name = provider.displayName ?? "Claude";
+  const status = !provider.enabled
+    ? gt("Turned off")
+    : provider.auth.status === "authenticated"
+      ? gt("Signed in")
+      : provider.auth.status === "unauthenticated"
+        ? gt("Not signed in")
+        : !provider.installed
+          ? gt("Not installed")
+          : null;
   return (
     <View className="border-t border-border-subtle">
       <View className="min-h-16 flex-row items-center gap-3 px-4 py-3">
@@ -132,47 +178,41 @@ export function ClaudeAccount({
             {name}
           </Text>
           <Text textRole="footnote" className="text-foreground-muted" numberOfLines={2}>
-            {[status, configDir || gt("Default config folder")].filter(Boolean).join(" · ")}
+            {[status, editor.detail].filter(Boolean).join(" · ")}
           </Text>
         </View>
-        {editing ? null : (
+        {editor.actions.length === 0 ? null : (
           <Menu
             accessible
             accessibilityRole="button"
             accessibilityLabel={gt("{account} options", { account: name })}
             title={name}
-            actions={actions}
+            actions={[...editor.actions]}
             onPressAction={({ nativeEvent }) => {
-              if (pending) return;
-              if (nativeEvent.event === "edit") setEditing(true);
-              else if (nativeEvent.event === "remove") remove();
+              if (!editor.pending) editor.onAction(nativeEvent.event);
             }}
           >
             <ControlPill
               icon="ellipsis"
               accessibilityLabel={gt("{account} options", { account: name })}
-              disabled={pending}
+              disabled={editor.pending}
             />
           </Menu>
         )}
       </View>
-      {editing ? (
-        <ClaudeAccountForm
-          environment={environment}
-          instanceId={provider.instanceId}
-          initial={{ name: instance?.displayName ?? "", configDir }}
-          onDone={() => setEditing(false)}
-        />
-      ) : error ? (
-        <Text accessibilityRole="alert" className="px-4 pb-3 text-danger-foreground">
-          {error}
-        </Text>
-      ) : null}
+      {editor.panel}
     </View>
   );
 }
 
-export function AddClaudeAccount({ environment }: { readonly environment: SettingsTarget }) {
+/** `signsIn`: the server's Claude instances sign in from the app, so a new folder need not. */
+export function AddClaudeAccount({
+  environment,
+  signsIn,
+}: {
+  readonly environment: SettingsTarget;
+  readonly signsIn: boolean;
+}) {
   const gt = useGT();
   const [adding, setAdding] = useState(false);
   return (
@@ -182,16 +222,25 @@ export function AddClaudeAccount({ environment }: { readonly environment: Settin
           environment={environment}
           instanceId={null}
           initial={{ name: "", configDir: "" }}
+          signsIn={signsIn}
           onDone={() => setAdding(false)}
         />
       ) : (
         <ListActionRow
           icon="plus"
           label={gt("Add {provider} account", { provider: "Claude" })}
-          description={gt(
-            "Use a {provider} config folder that is already signed in on this server.",
-            { provider: "Claude" },
-          )}
+          description={
+            signsIn
+              ? gt(
+                  "Use another {provider} config folder on this server, then sign in to it here.",
+                  {
+                    provider: "Claude",
+                  },
+                )
+              : gt("Use a {provider} config folder that is already signed in on this server.", {
+                  provider: "Claude",
+                })
+          }
           onPress={() => setAdding(true)}
         />
       )}
@@ -203,11 +252,13 @@ function ClaudeAccountForm({
   environment,
   instanceId,
   initial,
+  signsIn,
   onDone,
 }: {
   readonly environment: SettingsTarget;
   readonly instanceId: ProviderInstanceId | null;
   readonly initial: ClaudeAccountDraft;
+  readonly signsIn: boolean;
   readonly onDone: () => void;
 }) {
   const gt = useGT();
@@ -246,15 +297,23 @@ function ClaudeAccountForm({
   return (
     <View className="gap-2 px-4 py-3">
       <Text textRole="footnote" className="text-foreground-muted">
-        {gt(
-          "Point at a {variable} folder on {environment} where {product} is already signed in. Sign in there with the {cli} first.",
-          {
-            variable: "CLAUDE_CONFIG_DIR",
-            environment: environment.label,
-            product: "Claude Code",
-            cli: "Claude CLI",
-          },
-        )}
+        {signsIn
+          ? gt(
+              "Point at a {variable} folder on {environment}. Sign in to it here once it is saved.",
+              {
+                variable: "CLAUDE_CONFIG_DIR",
+                environment: environment.label,
+              },
+            )
+          : gt(
+              "Point at a {variable} folder on {environment} where {product} is already signed in. Sign in there with the {cli} first.",
+              {
+                variable: "CLAUDE_CONFIG_DIR",
+                environment: environment.label,
+                product: "Claude Code",
+                cli: "Claude CLI",
+              },
+            )}
       </Text>
       {field("name", gt("Account name"), gt("Name, e.g. Work"))}
       {field(
