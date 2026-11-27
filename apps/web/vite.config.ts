@@ -285,11 +285,6 @@ export default defineConfig(({ command }) => {
   return {
     run: {
       tasks: {
-        // A fork's product name reaches the bundle only if the cached task passes it through.
-        build: {
-          command: "vp build",
-          env: ["T3CODE_DESKTOP_PRODUCT_NAME"],
-        },
         // A local tsbuildinfo is leftover build state, not a typecheck input.
         typecheck: {
           command: "effect-tsgo tsrs --noEmit",
