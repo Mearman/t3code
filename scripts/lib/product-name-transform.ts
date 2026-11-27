@@ -2,32 +2,57 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-/** A line carrying this marker names upstream's product on purpose and is never renamed. */
+import { renameProduct, UPSTREAM_PRODUCT_PATTERN } from "@t3tools/shared/productName";
+
+/** A line carrying this marker names upstream on purpose and is never renamed. */
 export const KEEP_UPSTREAM_NAME_MARKER = "product-name: keep";
 
-// T3's own GitHub App keeps its real name wherever it is shown.
-const UPSTREAM_NAME = /T3 Code(?! for GitHub)/g; // product-name: keep
-const UPSTREAM_NAME_ANY_SEPARATOR = /T3[ -]Code(?! for GitHub)/g; // product-name: keep
+/** The repository upstream's links and agent instructions name; a fork build names its own. */
+export const UPSTREAM_REPOSITORY = "pingdotgg/t3code"; // product-name: keep
+const UPSTREAM_REPOSITORY_PATTERN = /pingdotgg\/t3code/g; // product-name: keep
+// The bare site address, as in prose or a home link; its paths (installer, schema) are kept.
+const UPSTREAM_SITE_PATTERN = /https:\/\/t3\.codes(?![\w/.-])/g; // product-name: keep
 
-/** `code` with upstream's product name replaced by `name`, except on lines marked to keep it. */
-export function renameProductInSource(code: string, name: string): string {
+export interface ProductIdentity {
+  readonly name: string;
+  /** The `owner/name` repository whose releases and tracker the build belongs to. */
+  readonly repository: string;
+}
+
+/** `code` with upstream's name and repository replaced, except on lines marked to keep them. */
+export function renameProductInSource(code: string, identity: ProductIdentity): string {
   return code
     .split("\n")
     .map((line) =>
-      line.includes(KEEP_UPSTREAM_NAME_MARKER) ? line : line.replace(UPSTREAM_NAME, () => name),
+      line.includes(KEEP_UPSTREAM_NAME_MARKER)
+        ? line
+        : line
+            .replace(UPSTREAM_PRODUCT_PATTERN, () => identity.name)
+            .replace(UPSTREAM_REPOSITORY_PATTERN, () => identity.repository)
+            .replace(UPSTREAM_SITE_PATTERN, () => `https://github.com/${identity.repository}`),
     )
     .join("\n");
 }
 
 type CatalogValue = string | ReadonlyArray<unknown>;
 type Catalog = Readonly<Record<string, CatalogValue>>;
+type DataFormat = "ICU" | "JSX";
 export type HashSource = (input: {
   readonly source: CatalogValue;
-  readonly dataFormat: "ICU" | "JSX";
+  readonly dataFormat: DataFormat;
 }) => string;
 
+export class CatalogKeyNotReproducibleError extends Error {
+  constructor(readonly keys: ReadonlyArray<string>) {
+    super(
+      `GT's hash does not reproduce these catalogue keys from their English source, so a ` +
+        `renamed translation cannot be re-keyed: ${keys.slice(0, 5).join(", ")}`,
+    );
+  }
+}
+
 const renameDeep = (value: unknown, name: string): unknown => {
-  if (typeof value === "string") return value.replace(UPSTREAM_NAME_ANY_SEPARATOR, () => name);
+  if (typeof value === "string") return renameProduct(value, name);
   if (Array.isArray(value)) return value.map((entry) => renameDeep(entry, name));
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
@@ -37,14 +62,16 @@ const renameDeep = (value: unknown, name: string): unknown => {
   return value;
 };
 
-const hashed = (hashSource: HashSource, source: CatalogValue) =>
-  hashSource({ source, dataFormat: typeof source === "string" ? "ICU" : "JSX" });
+// GT keys a string by the format it was extracted with: a `<T>` of plain text is stored as a
+// string but keyed as JSX, so the format cannot be read off the value's type.
+const formatOf = (hashSource: HashSource, source: CatalogValue, key: string) =>
+  (["ICU", "JSX"] as const).find((dataFormat) => hashSource({ source, dataFormat }) === key);
 
 /**
  * A locale catalog for a build whose source names the product `name`: each entry whose English
- * source names upstream moves to the key of the renamed source and carries the renamed
- * translation, so translations still resolve. An entry whose key the hash cannot reproduce (it
- * was keyed with extra context) is dropped, so that text falls back to the English source.
+ * source names upstream moves to the key of the renamed source, in the format the entry was
+ * keyed with, and carries the renamed translation, so translations still resolve. An entry whose
+ * key the hash cannot reproduce fails the build instead of silently losing its translation.
  */
 export function renameCatalog(input: {
   readonly english: Catalog;
@@ -53,16 +80,23 @@ export function renameCatalog(input: {
   readonly hashSource: HashSource;
 }): Catalog {
   const result: Record<string, CatalogValue> = {};
+  const unreproducible: Array<string> = [];
   for (const [key, value] of Object.entries(input.translated)) {
     const source = input.english[key];
     const renamedSource = source === undefined ? undefined : renameDeep(source, input.name);
     const renamedValue = renameDeep(value, input.name) as CatalogValue;
     if (source === undefined || JSON.stringify(renamedSource) === JSON.stringify(source)) {
       result[key] = renamedValue;
-    } else if (hashed(input.hashSource, source) === key) {
-      result[hashed(input.hashSource, renamedSource as CatalogValue)] = renamedValue;
+      continue;
     }
+    const dataFormat = formatOf(input.hashSource, source, key);
+    if (dataFormat === undefined) {
+      unreproducible.push(key);
+      continue;
+    }
+    result[input.hashSource({ source: renamedSource as CatalogValue, dataFormat })] = renamedValue;
   }
+  if (unreproducible.length > 0) throw new CatalogKeyNotReproducibleError(unreproducible);
   return result;
 }
 
@@ -73,12 +107,12 @@ const T3_WORDMARK_SOURCE = NodePath.join("apps", "web", "src", "components", "T3
 const CATALOG_DIRECTORY = /[\\/]src[\\/]i18n[\\/]translations$/;
 
 /**
- * A bundler plugin that names a fork build's own product wherever repository source, a locale
- * catalog, the page shell or the web manifest names upstream's. Desktop source is excluded: it
- * resolves the name at run time (`PRODUCT_NAME`, `brandText`).
+ * A bundler plugin that names a fork build's own product and repository wherever repository
+ * source, a locale catalog, the page shell or the web manifest names upstream's. Desktop source
+ * is excluded: it resolves the name at run time (`PRODUCT_NAME`, `brandText`).
  */
 export function productNameTransformPlugin(options: {
-  readonly name: string;
+  readonly identity: ProductIdentity;
   readonly repositoryRoot: string;
   /** Loads GT's hash; needed only for a build that ships locale catalogs. */
   readonly hashSource?: () => Promise<HashSource>;
@@ -90,6 +124,7 @@ export function productNameTransformPlugin(options: {
     !path.includes(`${NodePath.sep}node_modules${NodePath.sep}`) &&
     !path.startsWith(NodePath.join(root, ".repos")) &&
     !path.startsWith(NodePath.join(root, "apps", "desktop"));
+  const cleanPath = (id: string) => NodePath.resolve(id.split("?")[0] ?? id);
   return {
     name: "t3code:product-name",
     enforce: "pre" as const,
@@ -98,7 +133,7 @@ export function productNameTransformPlugin(options: {
     },
     // A fork build ships none of T3's icon images or its wordmark, which no fork screen shows.
     load(id: string) {
-      const path = NodePath.resolve(id.split("?")[0] ?? id);
+      const path = cleanPath(id);
       if (!isRepositorySource(path)) return null;
       if (T3_ICON_ASSET.test(path)) return { code: 'export default "";', map: null };
       if (path.endsWith(T3_WORDMARK_SOURCE)) {
@@ -107,7 +142,7 @@ export function productNameTransformPlugin(options: {
       return null;
     },
     transform(code: string, id: string) {
-      const path = NodePath.resolve(id.split("?")[0] ?? id);
+      const path = cleanPath(id);
       if (!isRepositorySource(path)) return null;
       if (path.endsWith(".json") && CATALOG_DIRECTORY.test(NodePath.dirname(path))) {
         if (hashSource === undefined) return null;
@@ -115,19 +150,20 @@ export function productNameTransformPlugin(options: {
           NodeFS.readFileSync(NodePath.join(NodePath.dirname(path), "en.json"), "utf8"),
         ) as Catalog;
         const translated = JSON.parse(code) as Catalog;
-        return {
-          code: JSON.stringify(
-            renameCatalog({ english, translated, name: options.name, hashSource }),
-          ),
-          map: null,
-        };
+        const renamed = renameCatalog({
+          english,
+          translated,
+          name: options.identity.name,
+          hashSource,
+        });
+        return { code: JSON.stringify(renamed), map: null };
       }
       if (!SOURCE_FILE.test(path) || NOT_SHIPPED.test(path)) return null;
-      const renamed = renameProductInSource(code, options.name);
+      const renamed = renameProductInSource(code, options.identity);
       return renamed === code ? null : { code: renamed, map: null };
     },
     transformIndexHtml(html: string) {
-      return renameProductInSource(html, options.name);
+      return renameProductInSource(html, options.identity);
     },
     writeBundle(outputOptions: { readonly dir?: string | undefined }) {
       if (outputOptions.dir === undefined) return;
@@ -135,7 +171,7 @@ export function productNameTransformPlugin(options: {
       if (!NodeFS.existsSync(manifestPath)) return;
       NodeFS.writeFileSync(
         manifestPath,
-        renameProductInSource(NodeFS.readFileSync(manifestPath, "utf8"), options.name),
+        renameProductInSource(NodeFS.readFileSync(manifestPath, "utf8"), options.identity),
       );
     },
   };

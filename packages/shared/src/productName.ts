@@ -3,7 +3,12 @@ declare const __T3CODE_DESKTOP_PRODUCT_NAME__: string | undefined;
 
 export const UPSTREAM_PRODUCT_NAME = "T3 Code"; // product-name: keep
 
-const UPSTREAM_PRODUCT_PATTERN = /T3[ -]Code/g; // product-name: keep
+/**
+ * Upstream's product name in any spelling (spaced or hyphenated). T3's own GitHub App keeps its
+ * real name, so "T3 Code for GitHub" is not matched. Global, so use it with `replace` or
+ * `matchAll`, never `test`.
+ */
+export const UPSTREAM_PRODUCT_PATTERN = /T3[ -]Code(?! for GitHub)/g; // product-name: keep
 
 /** The product name this build shows: upstream's, or the fork build's own. */
 export const PRODUCT_NAME: string =

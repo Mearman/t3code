@@ -5,7 +5,7 @@ import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
-import { forkProductName, productNameDefine } from "../../scripts/lib/product-name-define.ts";
+import { forkIdentity, productNameDefine } from "../../scripts/lib/product-name-define.ts";
 import { productNameTransformPlugin } from "../../scripts/lib/product-name-transform.ts";
 import { releaseRepositoryDefine } from "../../scripts/lib/release-repository.ts";
 import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version.ts";
@@ -22,7 +22,7 @@ import {
 export { shouldBundleCliDependency };
 
 const repoEnv = loadRepoEnv();
-const productName = forkProductName(repoEnv);
+const productIdentity = forkIdentity(repoEnv);
 const serverManifestPath = NodePath.join(import.meta.dirname, "package.json");
 // The desktop packager passes APP_VERSION; it can equal the manifest at a commit tagged otherwise.
 const buildVersion =
@@ -102,11 +102,11 @@ export default mergeConfig(
     },
     pack: {
       plugins: [
-        ...(productName === undefined
+        ...(productIdentity === undefined
           ? []
           : [
               productNameTransformPlugin({
-                name: productName,
+                identity: productIdentity,
                 repositoryRoot: NodePath.join(import.meta.dirname, "..", ".."),
               }),
             ]),

@@ -1,4 +1,3 @@
-import * as NodeModule from "node:module";
 import * as NodeURL from "node:url";
 import * as NodeZlib from "node:zlib";
 
@@ -15,11 +14,9 @@ import pdfjsPkg from "pdfjs-dist/package.json" with { type: "json" };
 
 import { DEV_PROXIED_PATH_PREFIXES } from "@t3tools/shared/devProxy";
 
-import { forkProductName, productNameDefine } from "../../scripts/lib/product-name-define";
-import {
-  productNameTransformPlugin,
-  type HashSource,
-} from "../../scripts/lib/product-name-transform";
+import { loadGtHashSource } from "../../scripts/lib/gt-hash";
+import { forkIdentity, productNameDefine } from "../../scripts/lib/product-name-define";
+import { productNameTransformPlugin } from "../../scripts/lib/product-name-transform";
 import { loadRepoEnv } from "../../scripts/lib/public-config";
 import { releaseRepositoryDefine } from "../../scripts/lib/release-repository";
 import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version";
@@ -30,17 +27,8 @@ import { formatAppDisplayName, resolveWebAppStageLabel } from "./src/branding.lo
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
-const productName = forkProductName(repoEnv);
-
-// GT is not a direct dependency here; its hash is the one gt-react keys translations by.
-async function loadGtHashSource(): Promise<HashSource> {
-  const fromWeb = NodeModule.createRequire(import.meta.url);
-  const fromGtReact = NodeModule.createRequire(fromWeb.resolve("gt-react"));
-  const module: { readonly hashSource: HashSource } = await import(
-    NodeURL.pathToFileURL(fromGtReact.resolve("generaltranslation/id")).href
-  );
-  return module.hashSource;
-}
+const productIdentity = forkIdentity(repoEnv);
+const productName = productIdentity?.name;
 
 // Signal single-origin dev explicitly; loadRepoEnv can restore deleted URL keys from .env.
 const isSingleOriginDev = process.env.T3CODE_SINGLE_ORIGIN_DEV === "1";
@@ -312,12 +300,12 @@ export default defineConfig(({ command }) => {
     },
     assetsInclude: ["**/*.wasm"],
     plugins: [
-      productName === undefined
+      productIdentity === undefined
         ? undefined
         : productNameTransformPlugin({
-            name: productName,
+            identity: productIdentity,
             repositoryRoot: NodeURL.fileURLToPath(new URL("../../", import.meta.url)),
-            hashSource: loadGtHashSource,
+            hashSource: () => loadGtHashSource(import.meta.url),
           }),
       bootstrapTitlePlugin(),
       devCompressionPlugin(),
