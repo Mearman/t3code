@@ -28,7 +28,7 @@ import {
   type DesktopBackendAttachConfig,
 } from "./DesktopBackendManager.ts";
 import * as DesktopHomeOwner from "./DesktopHomeOwner.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 const { logWarning: logAttachedWarning } =
   DesktopObservability.makeComponentLogger("desktop-attached-server");
@@ -36,7 +36,7 @@ const { logWarning: logAttachedWarning } =
 // The scopes a spawned desktop backend grants its own window, so attaching changes nothing it can do.
 const ATTACHED_SESSION_SCOPES = AuthAdministrativeClientScopes;
 const ATTACHED_SESSION_TTL = "30d";
-const ATTACHED_SESSION_LABEL = `${APP_BASE_NAME} Desktop`;
+const ATTACHED_SESSION_LABEL = `${PRODUCT_NAME} Desktop`;
 // The CLI opens the home's database and secrets; that takes moments, not minutes.
 const CLI_TIMEOUT = Duration.seconds(30);
 // The watcher probes every 2 s while holding the session lock, so a stalled request must not hold it.

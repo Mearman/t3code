@@ -93,7 +93,7 @@ import {
 } from "./snapShot.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { readImageDimensions } from "@t3tools/shared/imageDimensions";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 const isCaptureSetupRequiredError = Schema.is(CaptureSetupRequiredError);
 
@@ -107,9 +107,9 @@ const FLASH_STATIC_DURATION_MS = 60;
 const FLASH_FRAME_INTERVAL_MS = 16;
 const FLASH_PEAK_OPACITY = 0.08;
 const MAC_SCREEN_CAPTURE_SETTINGS_URL = MAC_PERMISSION_SETTINGS_URLS["screen-recording"];
-const MAC_SCREEN_CAPTURE_PERMISSION_MESSAGE = `Allow Screen Recording in System Settings, then restart ${APP_BASE_NAME}.`;
-const MAC_ACCESSIBILITY_PERMISSION_MESSAGE = `Allow Accessibility in System Settings, then restart ${APP_BASE_NAME}.`;
-const MAC_BOTH_PERMISSIONS_MESSAGE = `Allow Accessibility and Screen Recording in System Settings, then restart ${APP_BASE_NAME}.`;
+const MAC_SCREEN_CAPTURE_PERMISSION_MESSAGE = `Allow Screen Recording in System Settings, then restart ${PRODUCT_NAME}.`;
+const MAC_ACCESSIBILITY_PERMISSION_MESSAGE = `Allow Accessibility in System Settings, then restart ${PRODUCT_NAME}.`;
+const MAC_BOTH_PERMISSIONS_MESSAGE = `Allow Accessibility and Screen Recording in System Settings, then restart ${PRODUCT_NAME}.`;
 const MAC_PERMISSION_MESSAGES = new Set([
   MAC_SCREEN_CAPTURE_PERMISSION_MESSAGE,
   MAC_ACCESSIBILITY_PERMISSION_MESSAGE,
@@ -952,7 +952,7 @@ export const make = Effect.gen(function* () {
       const capturedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
       if (snapshot.linuxActivationFailure) {
         yield* Effect.logWarning(
-          `The compositor could not activate ${APP_BASE_NAME} after the snapshot`,
+          `The compositor could not activate ${PRODUCT_NAME} after the snapshot`,
           snapshot.linuxActivationFailure.cause,
         );
       }
@@ -1070,7 +1070,7 @@ export const make = Effect.gen(function* () {
     if (mode === "portal" && niriSocketPath()) {
       return {
         available: false,
-        message: `Configure the capture shortcut in your Niri config, not in ${APP_BASE_NAME}.`,
+        message: `Configure the capture shortcut in your Niri config, not in ${PRODUCT_NAME}.`,
       };
     }
     if (mode === "portal" && isHyprlandCaptureSession()) {
@@ -1225,7 +1225,7 @@ export const make = Effect.gen(function* () {
           return startNiriCaptureShortcut(linuxAppId, onCurrentShortcut, () => {
             void runPromise(
               setShortcutFailure(
-                `The Niri capture endpoint disconnected. Restart ${APP_BASE_NAME}.`,
+                `The Niri capture endpoint disconnected. Restart ${PRODUCT_NAME}.`,
               ),
             ).catch(() => undefined);
           });
@@ -1250,7 +1250,7 @@ export const make = Effect.gen(function* () {
         shortcutActionRegistered: registered,
         shortcutMessage: registered
           ? "Set up the shortcut to add it to your Niri config."
-          : `Could not start the Niri capture endpoint. Another ${APP_BASE_NAME} instance may be using it.`,
+          : `Could not start the Niri capture endpoint. Another ${PRODUCT_NAME} instance may be using it.`,
         message: null,
       });
       return;

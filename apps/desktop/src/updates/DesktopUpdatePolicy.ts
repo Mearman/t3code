@@ -16,7 +16,7 @@ import * as Layer from "effect/Layer";
 
 import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 export interface UpdatePolicy {
   readonly mode: ManagedUpdatesMode;
@@ -77,7 +77,7 @@ const make = Effect.gen(function* () {
             mode: "off",
             feedUrl: undefined,
             allowNightly: false,
-            message: `Updates are off because ${APP_BASE_NAME} cannot use the managed policy at ${error.path}. Contact your administrator.`,
+            message: `Updates are off because ${PRODUCT_NAME} cannot use the managed policy at ${error.path}. Contact your administrator.`,
           }),
         ),
     }),

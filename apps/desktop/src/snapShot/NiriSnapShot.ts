@@ -10,7 +10,7 @@ import * as Schema from "effect/Schema";
 
 import type { LinuxWindowSnapshot } from "./LinuxSnapShot.ts";
 import { readPortalPng } from "./linuxCaptureSession.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 const TIMEOUT_MS = 5_000;
@@ -174,7 +174,7 @@ async function activateNiriWindow(path: string, title: string, signal: AbortSign
         (window) => window.pid === process.pid && window.title === title,
       );
       if (matches.length > 1)
-        throw new Error(`More than one ${APP_BASE_NAME} window matches the capture destination.`);
+        throw new Error(`More than one ${PRODUCT_NAME} window matches the capture destination.`);
       return matches[0];
     });
     connection.send("EventStream");

@@ -17,7 +17,7 @@ import {
   SSH_PASSWORD_PROMPT_CHANNEL,
   SSH_PASSWORD_PROMPT_SETTLED_CHANNEL,
 } from "../ipc/channels.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 const DEFAULT_SSH_PASSWORD_PROMPT_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -68,7 +68,7 @@ export class DesktopSshPromptWindowUnavailableError extends Schema.TaggedError<D
 ) {
   override get message(): string {
     const request = this.requestId === null ? "before a request id was assigned" : this.requestId;
-    return `${APP_BASE_NAME} window is unavailable during ${this.stage} for SSH authentication to ${this.destination} (request: ${request}).`;
+    return `${PRODUCT_NAME} window is unavailable during ${this.stage} for SSH authentication to ${this.destination} (request: ${request}).`;
   }
 }
 

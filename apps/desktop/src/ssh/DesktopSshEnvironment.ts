@@ -34,7 +34,7 @@ import serverPackageJson from "../../../server/package.json" with { type: "json"
 import type * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
 import * as DesktopSshPasswordPrompts from "./DesktopSshPasswordPrompts.ts";
-import { APP_BASE_NAME } from "../app/DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 export type DesktopSshEnvironmentRuntimeServices =
   | ChildProcessSpawner.ChildProcessSpawner
@@ -148,7 +148,7 @@ function toSshPasswordPromptError(
       break;
     case "DesktopSshPromptWindowUnavailableError":
     case "DesktopSshPromptPresentationError":
-      message = `${APP_BASE_NAME} window is not available for SSH authentication.`;
+      message = `${PRODUCT_NAME} window is not available for SSH authentication.`;
       break;
     case "DesktopSshPromptTimedOutError":
       message = `SSH authentication timed out for ${cause.destination}.`;

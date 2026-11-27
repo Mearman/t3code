@@ -12,7 +12,7 @@ import { msg } from "gt-i18n";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import { m, onLocaleChange } from "../i18n/messages.ts";
 import * as DesktopAssets from "./DesktopAssets.ts";
-import { UPSTREAM_APP_BASE_NAME } from "./DesktopAppName.ts";
+import { UPSTREAM_PRODUCT_NAME } from "@t3tools/shared/productName";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 
@@ -21,13 +21,13 @@ import * as DesktopUserData from "./DesktopUserData.ts";
  * the source text names upstream through a variable so the product-name swap cannot rewrite it.
  */
 export function unofficialForkNotice(baseName: string): string | undefined {
-  return baseName === UPSTREAM_APP_BASE_NAME
+  return baseName === UPSTREAM_PRODUCT_NAME
     ? undefined
     : m(
         msg(
           "An unofficial fork based on the {upstream} source code. Not affiliated with, endorsed by or maintained by T3 Tools, Inc.",
         ),
-        { upstream: UPSTREAM_APP_BASE_NAME },
+        { upstream: UPSTREAM_PRODUCT_NAME },
       );
 }
 

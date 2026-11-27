@@ -30,7 +30,7 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import { DesktopAppActivationBroker } from "./DesktopAppActivationBroker.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
-import { APP_BASE_NAME } from "./DesktopAppName.ts";
+import { PRODUCT_NAME } from "@t3tools/shared/productName";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -165,7 +165,7 @@ export async function startDesktopAppControlServer(input: {
         finish(
           invalidResponse(
             parsed.requestId,
-            `${APP_BASE_NAME} could not process the desktop app request.`,
+            `${PRODUCT_NAME} could not process the desktop app request.`,
           ),
         );
       });

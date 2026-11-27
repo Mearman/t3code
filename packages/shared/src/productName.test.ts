@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 
-import { brandText, renameProduct, UPSTREAM_APP_BASE_NAME } from "./DesktopAppName.ts";
+import { brandText, IS_FORK_PRODUCT, renameProduct, UPSTREAM_PRODUCT_NAME } from "./productName.ts";
 
 it("renames every spelling of upstream's product", () => {
   assert.equal(
@@ -11,5 +11,6 @@ it("renames every spelling of upstream's product", () => {
 
 it("keeps upstream's text when no product name is defined", () => {
   assert.equal(brandText("Update T3 Code, then reopen it."), "Update T3 Code, then reopen it.");
-  assert.equal(UPSTREAM_APP_BASE_NAME, "T3 Code");
+  assert.isFalse(IS_FORK_PRODUCT);
+  assert.equal(UPSTREAM_PRODUCT_NAME, "T3 Code");
 });
