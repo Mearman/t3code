@@ -67,6 +67,7 @@ it.each([
       entry.type === "activity-group" ? entry.activities : [],
     )[0];
     expect(activity?.summary).toBe(label);
+    expect(workEntryRowLabel(activity!.workEntry)).toBe(label);
   },
 );
 
