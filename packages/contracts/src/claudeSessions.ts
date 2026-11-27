@@ -14,6 +14,7 @@ export const ClaudeHeldSessionAgentSend = Schema.Literals(["ask", "fork"]);
 
 /** Choices that act on the other process, so they need the sender to hold `terminal:operate`. */
 export const CLAUDE_HELD_SESSION_TERMINAL_CHOICES: ReadonlySet<ClaudeHeldSessionSend> = new Set([
+  "send",
   "takeOver",
 ]);
 
