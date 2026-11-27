@@ -101,7 +101,7 @@ export function ClaudeSessionSyncSettings() {
             settingKeys={["claudeSessionSync"]}
             {...setting("claude-session-held-send")}
             description={gt(
-              "What a message you send does when another Claude Code process, such as a terminal, has the session open. Ask each time offers the choices on the refused message.",
+              "What a message you send does when another Claude Code process, such as a terminal, has the session open. Ask each time offers the choices on the refused message; Send anyway writes beside an idle terminal, which branches the session.",
             )}
             resetAction={
               options.heldSessionSend !== DEFAULTS.heldSessionSend ? (
