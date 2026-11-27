@@ -9,6 +9,7 @@ import {
   EnvironmentId,
   type LocalApi,
   ProjectId,
+  ProviderInstanceId,
   RunId,
   ThreadId,
   type ScopedThreadRef,
@@ -600,12 +601,24 @@ describe("sidebar terminal origin badge", () => {
         projectId: activeProject.id,
         id: ThreadId.make("app-thread"),
         title: "Started in the app",
-        latestRun: run,
+        latestRun: { ...run, status: "running", completedAt: null },
+        runtime: {
+          status: "running",
+          activeRunId: run.runId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerName: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
       }),
     ];
     vi.mocked(useProjects).mockReturnValue([activeProject]);
     vi.mocked(useQuietThreadShells).mockReturnValue(threads);
-    vi.mocked(useThreadRouteTarget).mockReturnValue(null);
+    const routeThreadRef: ScopedThreadRef = {
+      environmentId: activeProject.environmentId,
+      threadId: threads[0]!.id,
+    };
+    vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef: routeThreadRef });
     vi.mocked(useHandleNewThread).mockReturnValue({
       activeDraftThread: null,
       activeThread: null,
@@ -616,14 +629,17 @@ describe("sidebar terminal origin badge", () => {
       defaultProjectFallbackReady: true,
       handleNewThread: vi.fn().mockResolvedValue(null),
       routeDraftId: null,
-      routeThreadRef: null,
+      routeThreadRef,
     });
     await using screen = await render(
       <SidebarProvider>
         <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
       </SidebarProvider>,
+      { router: "/local/terminal-thread" },
     );
 
+    await expect.element(screen.getByText("Started in a terminal").first()).toBeInTheDocument();
+    await screen.getByRole("button", { name: "Working2" }).click();
     await expect.element(screen.getByText("Started in the app").first()).toBeInTheDocument();
     await expect.element(screen.getByText("Terminal", { exact: true })).toBeInTheDocument();
     expect(screen.getByText("Terminal", { exact: true }).elements()).toHaveLength(1);
