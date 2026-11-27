@@ -387,6 +387,14 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(persistence)),
 );
 
+it.effect("reports an import a folder that did not answer left incomplete", () =>
+  Effect.gen(function* () {
+    const source = candidate(CODEX_MODEL_SELECTION, "unanswered-folder");
+    const importer = yield* makeImporter([source, { _tag: "Unanswered" }]);
+    expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0, unanswered: true });
+  }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
+
 it.effect("tolerates a missing transcript owner but propagates failed ownership reads", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;

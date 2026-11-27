@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
@@ -38,6 +39,7 @@ const onMac = <A, E>(
   signals: {
     readonly closed: Deferred.Deferred<void>;
     readonly reopened: Deferred.Deferred<void>;
+    readonly errors: Array<string>;
   },
   environment: NodeJS.ProcessEnv = {},
 ) =>
@@ -49,8 +51,9 @@ const onMac = <A, E>(
     Effect.provide(
       Logger.layer(
         [
-          Logger.make(({ message }) => {
+          Logger.make(({ message, logLevel }) => {
             const text = Array.isArray(message) ? String(message[0]) : String(message);
+            if (logLevel === "Error") signals.errors.push(text);
             if (text.startsWith("A folder read did not return")) {
               Deferred.doneUnsafe(signals.closed, Effect.void);
             }
@@ -67,6 +70,7 @@ const onMac = <A, E>(
 const makeSignals = Effect.all({
   closed: Deferred.make<void>(),
   reopened: Deferred.make<void>(),
+  errors: Effect.sync((): Array<string> => []),
 });
 
 describe("userPathLane", () => {
@@ -82,12 +86,25 @@ describe("userPathLane", () => {
       "lane",
     ],
     ["darwin", "/Volumes/Backup/x", "/volumes/backup", "lane"],
-    ["darwin", "/Network/Servers/host/x", "/network/servers", "lane"],
+    ["darwin", "/Network/Servers/host/x", "/network/servers/host", "lane"],
     ["darwin", "/net/host/x", "/net/host", "lane"],
     ["darwin", "/Users/me/code/a", "local", "path"],
     ["darwin", "/Users/me/Pictures/a", "local", "path"],
     ["linux", "/mnt/nas/x", "/mnt/nas", "lane"],
     ["linux", "/media/me/usb/x", "/media/me/usb", "lane"],
+
+    ["linux", "/media/usb0/proj", "/media/usb0", "lane"],
+
+    ["linux", "/media/usb0", "/media/usb0", "lane"],
+
+    ["linux", "/media/other/usb/x", "/media/other", "lane"],
+
+    [
+      "linux",
+      "/run/user/1000/gvfs/smb-share:server=nas/x",
+      "/run/user/1000/gvfs/smb-share:server=nas",
+      "lane",
+    ],
     ["linux", "/run/media/me/usb/x", "/run/media/me/usb", "lane"],
     ["linux", "/home/me/Documents/a", "local", "path"],
     ["win32", "\\\\server\\share\\x", "\\\\server\\share", "lane"],
@@ -243,6 +260,155 @@ describe("readUserPath", () => {
         }),
         signals,
         { UV_THREADPOOL_SIZE: "2" },
+      );
+    }),
+  );
+
+  it.effect("counts reads running in every lane against the cap, not only stuck ones", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      const started = yield* Queue.unbounded<string>();
+      const answered = yield* Deferred.make<void>();
+      const runs = { count: 0 };
+      yield* onMac(
+        Effect.gen(function* () {
+          const readers = ["/Users/me/Documents/a", "/Users/me/Desktop/b", "/Volumes/Backup/c"].map(
+            (target) =>
+              Effect.forkChild(readUserPath(target, promptedRead(target, started, answered, runs))),
+          );
+          const [first, second, third] = yield* Effect.all(readers);
+          yield* Queue.take(started);
+          yield* Queue.take(started);
+          yield* TestClock.adjust("2 seconds");
+          expect(yield* Fiber.join(first!)).toEqual({ _tag: "Unavailable" });
+          expect(yield* Fiber.join(second!)).toEqual({ _tag: "Unavailable" });
+          expect(yield* Fiber.join(third!)).toEqual({ _tag: "Unavailable" });
+          expect(runs.count).toBe(2);
+        }),
+        signals,
+      );
+    }),
+  );
+
+  it.effect("lets a read wait for room under the cap while another lane's read returns", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      const started = yield* Queue.unbounded<string>();
+      const answered = yield* Deferred.make<void>();
+      const runs = { count: 0 };
+      yield* onMac(
+        Effect.gen(function* () {
+          const holder = yield* Effect.forkChild(
+            readUserPath("/Users/me/Documents/a", promptedRead("a", started, answered, runs)),
+          );
+          yield* Queue.take(started);
+          const waiting = yield* Effect.forkChild(
+            readUserPath("/Volumes/Backup/b", promptedRead("b", started, answered, runs)),
+          );
+          yield* Effect.yieldNow;
+          expect(runs.count).toBe(1);
+          yield* Deferred.succeed(answered, undefined);
+          expect(yield* Fiber.join(holder)).toEqual(Exit.succeed("a"));
+          expect(yield* Fiber.join(waiting)).toEqual(Exit.succeed("b"));
+        }),
+        signals,
+
+        { UV_THREADPOOL_SIZE: "2" },
+
+      );
+    }),
+  );
+
+  it.effect("leaves queued reads alone when a caller waiting for room is interrupted", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      const started = yield* Queue.unbounded<string>();
+      const answered = yield* Deferred.make<void>();
+      const runs = { count: 0 };
+      const cancelledRuns = { count: 0 };
+      yield* onMac(
+        Effect.gen(function* () {
+          const holder = yield* Effect.forkChild(
+            readUserPath("/Users/me/Documents/a", promptedRead("a", started, answered, runs)),
+          );
+          yield* Queue.take(started);
+          const cancelled = yield* Effect.forkChild(
+            readUserPath("/Volumes/Backup/b", promptedRead("b", started, answered, cancelledRuns)),
+          );
+          yield* Effect.yieldNow;
+          const behind = yield* Effect.forkChild(
+            readUserPath("/Volumes/Backup/c", Effect.succeed("c")),
+          );
+          yield* Effect.yieldNow;
+          yield* Fiber.interrupt(cancelled);
+          yield* Deferred.succeed(answered, undefined);
+          yield* Fiber.join(holder);
+          expect(yield* Fiber.join(behind)).toEqual(Exit.succeed("c"));
+          expect(cancelledRuns.count).toBe(0);
+        }),
+        signals,
+
+        { UV_THREADPOOL_SIZE: "2" },
+
+      );
+    }),
+  );
+
+  it.effect("closes only the stuck path of an ordinary folder", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      const started = yield* Queue.unbounded<string>();
+      const answered = yield* Deferred.make<void>();
+      const runs = { count: 0 };
+      yield* onMac(
+        Effect.gen(function* () {
+          const stuck = yield* Effect.forkChild(
+            readUserPath("/Users/me/code/a", promptedRead("a", started, answered, runs)),
+          );
+          yield* Queue.take(started);
+          yield* TestClock.adjust("2 seconds");
+          yield* Fiber.join(stuck);
+          expect(yield* readUserPath("/Users/me/code/a/sub", Effect.succeed("x"))).toEqual({
+            _tag: "Unavailable",
+          });
+          expect(yield* readUserPath("/Users/me/code/b", Effect.succeed("b"))).toEqual(
+            Exit.succeed("b"),
+          );
+        }),
+        signals,
+      );
+    }),
+  );
+
+  it.effect("logs a defect in a read and rethrows it, leaving the lane open", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      yield* onMac(
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            readUserPath("/Users/me/Documents/a", Effect.die("stat blew up")),
+          );
+          expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+          expect(signals.errors).toEqual(["A folder read failed unexpectedly"]);
+          expect(yield* readUserPath("/Users/me/Documents/b", Effect.succeed("b"))).toEqual(
+            Exit.succeed("b"),
+          );
+        }),
+        signals,
+      );
+    }),
+  );
+
+  it.effect("passes an ordinary failure through as an exit", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      yield* onMac(
+        Effect.gen(function* () {
+          const outcome = yield* readUserPath("/Users/me/code/a", Effect.fail("missing"));
+          expect(outcome).toEqual(Exit.fail("missing"));
+          expect(signals.errors).toEqual([]);
+        }),
+        signals,
       );
     }),
   );
