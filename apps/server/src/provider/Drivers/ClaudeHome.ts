@@ -63,6 +63,12 @@ const CLAUDE_HOST_SESSION_VARIABLES = [
 ];
 
 /**
+ * The `CLAUDE_CODE_ENTRYPOINT` of T3 Code's own Claude processes, which Claude Code records in its
+ * session registry.
+ */
+export const T3_CODE_ENTRYPOINT = "t3-code";
+
+/**
  * Base env for the Claude processes T3 Code runs, before `makeClaudeEnvironment`.
  * Claude Code reads its entrypoint from the process env, not its settings `env`, so T3 Code applies that override itself.
  */
@@ -73,7 +79,7 @@ export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnviro
 ) {
   const baseEnvironment: NodeJS.ProcessEnv = {
     ...hostEnvironment,
-    CLAUDE_CODE_ENTRYPOINT: "t3-code",
+    CLAUDE_CODE_ENTRYPOINT: T3_CODE_ENTRYPOINT,
   };
   for (const name of CLAUDE_HOST_SESSION_VARIABLES) delete baseEnvironment[name];
   // The desktop runs the server as Node through Electron. Commands Claude runs inherit its env, so
