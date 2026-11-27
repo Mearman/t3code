@@ -107,12 +107,9 @@ const FLASH_STATIC_DURATION_MS = 60;
 const FLASH_FRAME_INTERVAL_MS = 16;
 const FLASH_PEAK_OPACITY = 0.08;
 const MAC_SCREEN_CAPTURE_SETTINGS_URL = MAC_PERMISSION_SETTINGS_URLS["screen-recording"];
-const MAC_SCREEN_CAPTURE_PERMISSION_MESSAGE =
-  `Allow Screen Recording in System Settings, then restart ${APP_BASE_NAME}.`;
-const MAC_ACCESSIBILITY_PERMISSION_MESSAGE =
-  `Allow Accessibility in System Settings, then restart ${APP_BASE_NAME}.`;
-const MAC_BOTH_PERMISSIONS_MESSAGE =
-  `Allow Accessibility and Screen Recording in System Settings, then restart ${APP_BASE_NAME}.`;
+const MAC_SCREEN_CAPTURE_PERMISSION_MESSAGE = `Allow Screen Recording in System Settings, then restart ${APP_BASE_NAME}.`;
+const MAC_ACCESSIBILITY_PERMISSION_MESSAGE = `Allow Accessibility in System Settings, then restart ${APP_BASE_NAME}.`;
+const MAC_BOTH_PERMISSIONS_MESSAGE = `Allow Accessibility and Screen Recording in System Settings, then restart ${APP_BASE_NAME}.`;
 const MAC_PERMISSION_MESSAGES = new Set([
   MAC_SCREEN_CAPTURE_PERMISSION_MESSAGE,
   MAC_ACCESSIBILITY_PERMISSION_MESSAGE,
@@ -1227,7 +1224,9 @@ export const make = Effect.gen(function* () {
           const { startNiriCaptureShortcut } = await import("./NiriCaptureShortcut.ts");
           return startNiriCaptureShortcut(linuxAppId, onCurrentShortcut, () => {
             void runPromise(
-              setShortcutFailure(`The Niri capture endpoint disconnected. Restart ${APP_BASE_NAME}.`),
+              setShortcutFailure(
+                `The Niri capture endpoint disconnected. Restart ${APP_BASE_NAME}.`,
+              ),
             ).catch(() => undefined);
           });
         },

@@ -85,7 +85,10 @@ export async function staleExacodeIcons(): Promise<ReadonlyArray<string>> {
   const stale: Array<string> = [];
   for (const [path, expected] of await renderExacodeIcons()) {
     const absolute = NodePath.join(REPO_ROOT, path);
-    if (!NodeFS.existsSync(absolute) || !(await matches(path, expected, NodeFS.readFileSync(absolute)))) {
+    if (
+      !NodeFS.existsSync(absolute) ||
+      !(await matches(path, expected, NodeFS.readFileSync(absolute)))
+    ) {
       stale.push(path);
     }
   }
@@ -96,7 +99,9 @@ if (import.meta.main) {
   if (process.argv.includes("--check")) {
     const stale = await staleExacodeIcons();
     if (stale.length > 0) {
-      console.error(`These ExaCode icons are stale; run vp run icons:export:exacode:\n${stale.join("\n")}`);
+      console.error(
+        `These ExaCode icons are stale; run vp run icons:export:exacode:\n${stale.join("\n")}`,
+      );
       process.exit(1);
     }
   } else {

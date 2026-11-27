@@ -2900,7 +2900,10 @@ export function renderLinuxMetainfo(template: string, listing: DesktopListing): 
       /<p>\s*T3 Code is an open-source desktop app for coding agents\. Work with your\s+existing agent subscriptions, review code changes, and run commands in\s+your projects\.\s*<\/p>/,
       `<p>${listing.description}</p>`,
     )
-    .replace('<url type="homepage">https://t3.codes</url>', `<url type="homepage">${listing.homepage}</url>`)
+    .replace(
+      '<url type="homepage">https://t3.codes</url>',
+      `<url type="homepage">${listing.homepage}</url>`,
+    )
     .replace(
       '<url type="bugtracker">https://github.com/pingdotgg/t3code/issues</url>',
       `<url type="bugtracker">${listing.bugTracker}</url>`,
@@ -3016,24 +3019,15 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       extendInfo: {
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
-        NSLocalNetworkUsageDescription:
-          `${listing.appName} connects to devices on your local network for remote environments and commands run by terminals and coding agents.`,
-        NSCalendarsUsageDescription:
-          `Commands you run in ${listing.appName} may need access to your calendars.`,
-        NSCalendarsFullAccessUsageDescription:
-          `Commands you run in ${listing.appName} may need to read and write your calendar events.`,
-        NSCalendarsWriteOnlyAccessUsageDescription:
-          `Commands you run in ${listing.appName} may need to add events to your calendars.`,
-        NSScreenCaptureUsageDescription:
-          `${listing.appName} captures the active window when you use the window capture shortcut.`,
-        NSCameraUsageDescription:
-          `${listing.appName} lets commands run by terminals and coding agents use the camera.`,
-        NSMicrophoneUsageDescription:
-          `${listing.appName} lets commands run by terminals and coding agents use the microphone.`,
-        NSAppleEventsUsageDescription:
-          `${listing.appName} lets commands run by terminals and coding agents control other apps.`,
-        NSSpeechRecognitionUsageDescription:
-          `${listing.appName} transcribes your dictation on this Mac when you choose Apple Speech.`,
+        NSLocalNetworkUsageDescription: `${listing.appName} connects to devices on your local network for remote environments and commands run by terminals and coding agents.`,
+        NSCalendarsUsageDescription: `Commands you run in ${listing.appName} may need access to your calendars.`,
+        NSCalendarsFullAccessUsageDescription: `Commands you run in ${listing.appName} may need to read and write your calendar events.`,
+        NSCalendarsWriteOnlyAccessUsageDescription: `Commands you run in ${listing.appName} may need to add events to your calendars.`,
+        NSScreenCaptureUsageDescription: `${listing.appName} captures the active window when you use the window capture shortcut.`,
+        NSCameraUsageDescription: `${listing.appName} lets commands run by terminals and coding agents use the camera.`,
+        NSMicrophoneUsageDescription: `${listing.appName} lets commands run by terminals and coding agents use the microphone.`,
+        NSAppleEventsUsageDescription: `${listing.appName} lets commands run by terminals and coding agents control other apps.`,
+        NSSpeechRecognitionUsageDescription: `${listing.appName} transcribes your dictation on this Mac when you choose Apple Speech.`,
         // macOS lists an app under Default web browser only when it opens web
         // pages as documents as well as http and https links (see protocols).
         CFBundleDocumentTypes: [
