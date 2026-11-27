@@ -14,7 +14,11 @@ import {
 } from "@t3tools/provider-core/client";
 import * as DateTime from "effect/DateTime";
 
-import { planHeldSessionFork, wentBesideHolder } from "./ClaudeHeldSessionReactor.ts";
+import {
+  heldSessionSendResend,
+  planHeldSessionFork,
+  wentBesideHolder,
+} from "./ClaudeHeldSessionReactor.ts";
 
 const instanceId = ProviderInstanceId.make("claudeAgent");
 const at = DateTime.makeUnsafe("2026-11-27T12:00:00.000Z");
@@ -164,4 +168,15 @@ it("notes a branch only on a resend with `send` whose prompt reached Claude", ()
       true,
     ),
   );
+});
+
+it("resends a send-beside refusal with the access the person's send had, and no more", () => {
+  const withAccess = heldSessionSendResend(
+    run(2, { status: "failed", heldSessionSend: "send", heldSessionTerminalAccess: true }),
+  );
+  const without = heldSessionSendResend(run(2, { status: "failed", heldSessionSend: "send" }));
+
+  assert.deepInclude(withAccess, { heldSessionTerminalAccess: true });
+  assert.isFalse("heldSessionTerminalAccess" in without);
+  assert.strictEqual(withAccess.manualContinuationOfRunId, RunId.make("run:2"));
 });
