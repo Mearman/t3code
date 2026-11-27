@@ -1,6 +1,13 @@
 import { expect, it } from "vite-plus/test";
 
-import { forkIdentity, forkProductName, productNameDefine } from "./product-name-define.ts";
+import {
+  buildKindDefine,
+  forkIdentity,
+  forkProductName,
+  productNameDefine,
+  provablyUpstream,
+  telemetryEndpointDefine,
+} from "./product-name-define.ts";
 
 it("defines the product name as a string literal for the bundle", () => {
   expect(productNameDefine({ T3CODE_DESKTOP_PRODUCT_NAME: " ExaCode " })).toEqual({
@@ -41,4 +48,39 @@ it("refuses a product name that releases from upstream's repository", () => {
   expect(() =>
     forkIdentity({ T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode", GITHUB_REPOSITORY: "pingdotgg/t3code" }),
   ).toThrow("upstream's own repository");
+
+it("calls a build upstream's only with upstream's repository and no product name", () => {
+  expect(provablyUpstream({ GITHUB_REPOSITORY: "pingdotgg/t3code" })).toBe(true);
+  expect(provablyUpstream({ GITHUB_REPOSITORY: "owner/fork" })).toBe(false);
+  expect(provablyUpstream({})).toBe(false);
+  expect(
+    provablyUpstream({ GITHUB_REPOSITORY: "pingdotgg/t3code", T3CODE_DESKTOP_PRODUCT_NAME: "X" }),
+  ).toBe(false);
+});
+
+it("always defines the build kind", () => {
+  expect(buildKindDefine({})).toEqual({ __T3CODE_BUILD_PROVABLY_UPSTREAM__: "false" });
+  expect(buildKindDefine({ GITHUB_REPOSITORY: "pingdotgg/t3code" })).toEqual({
+    __T3CODE_BUILD_PROVABLY_UPSTREAM__: "true",
+  });
+});
+
+it("bakes a valid collector in, and none from an empty key or a host without a scheme", () => {
+  expect(
+    telemetryEndpointDefine({
+      T3CODE_TELEMETRY_KEY: " phc_own ",
+      T3CODE_TELEMETRY_HOST: "https://ingest.example.com",
+    }),
+  ).toEqual({
+    __T3CODE_BUILD_TELEMETRY_KEY__: '"phc_own"',
+    __T3CODE_BUILD_TELEMETRY_HOST__: '"https://ingest.example.com"',
+  });
+  for (const env of [
+    { T3CODE_TELEMETRY_KEY: "", T3CODE_TELEMETRY_HOST: "https://ingest.example.com" },
+    { T3CODE_TELEMETRY_KEY: "phc_own", T3CODE_TELEMETRY_HOST: "ingest.example.com" },
+    { T3CODE_TELEMETRY_KEY: "phc_own", T3CODE_TELEMETRY_HOST: "" },
+    {},
+  ]) {
+    expect(telemetryEndpointDefine(env)).toEqual({});
+  }
 });

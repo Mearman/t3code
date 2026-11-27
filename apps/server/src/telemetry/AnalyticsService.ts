@@ -1,6 +1,6 @@
-// T3 ingest retains events and deduplicates retries by UUID.
-import { CLI_RELEASE_REPOSITORY, isUpstreamReleaseRepository } from "@t3tools/shared/cliRelease";
+// A collector must retain events and deduplicate retries by UUID, as T3 ingest does.
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { IS_PROVABLY_UPSTREAM_BUILD } from "@t3tools/shared/productName";
 import { isCiEnvironment, isDoNotTrackSet } from "@t3tools/shared/otelEnvironment";
 import type { ClientOs } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -82,25 +82,73 @@ const TelemetryEnvConfig = Config.all({
 const UPSTREAM_INGEST_KEY = "phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m";
 const UPSTREAM_INGEST_HOST = "https://ingest.t3.codes";
 
+// Set by scripts/lib/product-name-define.ts when the build names its own collector.
+declare const __T3CODE_BUILD_TELEMETRY_KEY__: string | undefined;
+declare const __T3CODE_BUILD_TELEMETRY_HOST__: string | undefined;
+
+/** What a build decides about usage data, apart from the run-time environment. */
+export interface AnalyticsBuild {
+  /** Whether the build is provably upstream's, the only kind that defaults to T3's collector. */
+  readonly upstreamBuild: boolean;
+  /** A collector the build was given at build time, if any. */
+  readonly bakedKey: Option.Option<string>;
+  readonly bakedHost: Option.Option<string>;
+}
+
+export const currentBuild: AnalyticsBuild = {
+  upstreamBuild: IS_PROVABLY_UPSTREAM_BUILD,
+  bakedKey: Option.fromNullishOr(
+    typeof __T3CODE_BUILD_TELEMETRY_KEY__ === "undefined"
+      ? undefined
+      : __T3CODE_BUILD_TELEMETRY_KEY__,
+  ),
+  bakedHost: Option.fromNullishOr(
+    typeof __T3CODE_BUILD_TELEMETRY_HOST__ === "undefined"
+      ? undefined
+      : __T3CODE_BUILD_TELEMETRY_HOST__,
+  ),
+};
+
+export type IngestEndpointResolution =
+  | { readonly _tag: "Endpoint"; readonly key: string; readonly host: string }
+  | { readonly _tag: "None" }
+  | { readonly _tag: "Invalid"; readonly reason: string };
+
+const isHttpUrl = (value: string): boolean => {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+};
+
 /**
- * Where usage events go. Only upstream's own builds default to its collector; a build of any
- * other repository has no collector of its own, so it sends nothing until both
- * `T3CODE_TELEMETRY_KEY` and `T3CODE_TELEMETRY_HOST` name one.
+ * Where usage events go: the run-time environment's key and host, else the build's own, else
+ * (only for a build provably upstream's) T3's collector. Any other build has no collector, so
+ * it sends nothing. A key that is empty or a host that is not an http(s) URL is `Invalid`, not
+ * an endpoint, so a misconfigured collector is reported instead of retried forever.
  */
 export function resolveIngestEndpoint(input: {
   readonly key: Option.Option<string>;
   readonly host: Option.Option<string>;
-  readonly upstreamBuild: boolean;
-}): { readonly key: string; readonly host: string } | undefined {
-  const key = input.upstreamBuild
-    ? Option.orElseSome(input.key, () => UPSTREAM_INGEST_KEY)
-    : input.key;
-  const host = input.upstreamBuild
-    ? Option.orElseSome(input.host, () => UPSTREAM_INGEST_HOST)
-    : input.host;
-  return Option.isSome(key) && Option.isSome(host)
-    ? { key: key.value, host: host.value }
-    : undefined;
+  readonly build: AnalyticsBuild;
+}): IngestEndpointResolution {
+  const { build } = input;
+  const key = input.key.pipe(
+    Option.orElse(() => build.bakedKey),
+    Option.orElse(() => (build.upstreamBuild ? Option.some(UPSTREAM_INGEST_KEY) : Option.none())),
+  );
+  const host = input.host.pipe(
+    Option.orElse(() => build.bakedHost),
+    Option.orElse(() => (build.upstreamBuild ? Option.some(UPSTREAM_INGEST_HOST) : Option.none())),
+  );
+  if (Option.isNone(key) || Option.isNone(host)) return { _tag: "None" };
+  if (key.value.trim() === "") return { _tag: "Invalid", reason: "the telemetry key is empty" };
+  if (!isHttpUrl(host.value.trim())) {
+    return { _tag: "Invalid", reason: "the telemetry host is not an http(s) URL" };
+  }
+  return { _tag: "Endpoint", key: key.value.trim(), host: host.value.trim() };
 }
 
 export class AnalyticsService extends Context.Service<
@@ -142,18 +190,23 @@ function serverOsFromNodePlatform(platform: string): ClientOs {
   }
 }
 
-/** @public */
-/** @public */
-export const make = Effect.gen(function* () {
+/** The service for a build of the given kind (see `currentBuild`). */
+export const makeFor = Effect.fnUntraced(function* (build: AnalyticsBuild) {
   const telemetryConfig = yield* TelemetryEnvConfig;
   const hostEnvironment = yield* HostProcess.Environment;
   const awaitingShellConsent = hostEnvironment.T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING === "1";
   const enabledByDefault = !isCiEnvironment(hostEnvironment);
-  const endpoint = resolveIngestEndpoint({
+  const resolution = resolveIngestEndpoint({
     key: telemetryConfig.ingestKey,
     host: telemetryConfig.ingestHost,
-    upstreamBuild: isUpstreamReleaseRepository(CLI_RELEASE_REPOSITORY),
+    build,
   });
+  const endpoint = resolution._tag === "Endpoint" ? resolution : undefined;
+  if (resolution._tag === "Invalid") {
+    yield* Effect.logWarning("Usage data is off: the configured collector is not usable", {
+      reason: resolution.reason,
+    });
+  }
   // No endpoint, no events: an explicit opt-in cannot send them anywhere.
   const enabledAtStartup =
     endpoint !== undefined && Option.getOrElse(telemetryConfig.enabled, () => enabledByDefault);
@@ -415,5 +468,10 @@ export const make = Effect.gen(function* () {
 
   return AnalyticsService.of({ record, flush, recordOwners });
 });
+
+/** @public */
+export const make = makeFor(currentBuild);
+
+export const layerFor = (build: AnalyticsBuild) => Layer.effect(AnalyticsService, makeFor(build));
 
 export const layer = Layer.effect(AnalyticsService, make);

@@ -1,10 +1,10 @@
 # Product usage data and diagnostics
 
-T3 Code sends lightweight product usage events and relay connection traces to keep the app reliable and fast. Prompts, responses, file contents, and credentials are never included (unless you explicitly approve an [agent feedback](#agent-feedback) card with conversation text attached).
+Builds of T3 Code itself send lightweight product usage events and relay connection traces to keep the app reliable and fast. A build of a fork does not: see [Forks](#forks). Prompts, responses, file contents, and credentials are never included (unless you explicitly approve an [agent feedback](#agent-feedback) card with conversation text attached).
 
 ## Product usage events
 
-A build of a fork (a build whose release repository is not `pingdotgg/t3code`) sends nothing: it has no collector of its own and never defaults to T3's. It sends usage events only if the build is given both `T3CODE_TELEMETRY_KEY` and `T3CODE_TELEMETRY_HOST` for a collector of its own; an explicit `T3CODE_TELEMETRY_ENABLED=true` cannot send events without them. The rest of this page describes what a build with a collector sends.
+The rest of this page describes what a build with a collector sends; a fork's build has none unless it sets one up (see [Forks](#forks)).
 
 The server sends usage events to `ingest.t3.codes` (T3's own builds) under a hashed random install ID (plus a hashed T3 Connect account ID when signed in, and random client device IDs). Events contain provider, catalog model name (non-catalog models report as custom), reasoning effort, permission mode, turn/request outcome, duration, release channel, and token counts.
 
@@ -17,7 +17,16 @@ The server sends usage events to `ingest.t3.codes` (T3's own builds) under a has
 
 ## Relay connection diagnostics
 
-T3 Connect sends connection timings, request paths, environment/thread IDs, and error types (no addresses, logs, or stack frames) to Axiom. Disabled by the server telemetry opt-outs above or by `T3CODE_OTEL_SDK_DISABLED` / `OTEL_SDK_DISABLED`.
+In T3 Code's own builds, T3 Connect sends connection timings, request paths, environment/thread IDs, and error types (no addresses, logs, or stack frames) to Axiom. Disabled by the server telemetry opt-outs above or by `T3CODE_OTEL_SDK_DISABLED` / `OTEL_SDK_DISABLED`.
+
+## Forks
+
+Only a build that is provably T3 Code's own (built with T3's release repository and no product name of its own) defaults to T3's collector. Any other build, including one built outside CI where nothing says which it is, records and sends nothing, and `T3CODE_TELEMETRY_ENABLED=true` cannot change that. It sends usage events only to a collector of its own, set up in one of two ways:
+
+- At build time, with both `T3CODE_TELEMETRY_KEY` and `T3CODE_TELEMETRY_HOST` set for the build. The pair is baked into the server, which the desktop app and its WSL backend run, so they need no run-time setting.
+- At run time, with both variables in the environment of a server or CLI you start yourself. They override a baked pair.
+
+A key that is empty, or a host that is not an `http(s)` URL, is not a collector: the server logs a warning at start and sends nothing. The opt-outs in [Disable telemetry](#disable-telemetry) still apply.
 
 ## Agent feedback
 

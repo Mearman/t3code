@@ -1,6 +1,19 @@
 // Bundles define this from the build's product name (scripts/lib/product-name-define.ts).
 declare const __T3CODE_DESKTOP_PRODUCT_NAME__: string | undefined;
 
+// Set by scripts/lib/product-name-define.ts: true only for a build that is provably upstream's.
+declare const __T3CODE_BUILD_PROVABLY_UPSTREAM__: boolean | undefined;
+
+/**
+ * Whether this build is provably upstream's: built with no product name of its own and with
+ * upstream's release repository. Anything else, including a build with no such fact at all, is
+ * not, so a feature that must stay off outside upstream (usage data) fails closed.
+ */
+export const IS_PROVABLY_UPSTREAM_BUILD: boolean =
+  typeof __T3CODE_BUILD_PROVABLY_UPSTREAM__ === "undefined"
+    ? false
+    : __T3CODE_BUILD_PROVABLY_UPSTREAM__;
+
 export const UPSTREAM_PRODUCT_NAME = "T3 Code"; // product-name: keep
 
 /**

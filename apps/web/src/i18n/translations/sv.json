@@ -13051,5 +13051,12 @@
   "5d7f6f4f7a7719ed": "Läser in den här sessionens historik",
   "d25e309d89bcf285": "Historiken har lästs in",
   "669d9a6e03b3e6f2": "Senaste aktiviteten i den här tråden kom från Claude Code i en terminal.",
-  "b0e84e35de44a0c3": "Terminal"
+  "b0e84e35de44a0c3": "Terminal",
+  "ab9c53fd44bfd052": [
+    "T3 Code skickar inga användningsdata om inte ett bygge är inställt med en egen insamlingsslutpunkt. Se",
+    " ",
+    { "t": "a", "i": 1, "c": "anteckningarna om telemetri" },
+    "."
+  ],
+  "7730df1de2817d26": "Vad T3 Code skickar, om något, och hur du slår på eller av det."
 }

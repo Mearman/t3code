@@ -65,7 +65,7 @@ No. T3 Code focuses on frontier coding agents.
 
 No. Code and prompts go directly from your machine to your chosen provider. With T3 Connect, traffic travels over a Cloudflare tunnel (`cloudflared` on your machine); T3's relay coordinates the link without proxying your HTTP/WebSocket sessions.
 
-T3 Code sends basic product usage events (provider, model, token totals—no prompts or file contents). Disable with `T3CODE_TELEMETRY_ENABLED=false` or `DO_NOT_TRACK=1`. See [Product usage data](./telemetry.md).
+T3 Code's own builds send basic product usage events (provider, model, token totals—no prompts or file contents); a fork's build sends none unless it sets up its own collector. Disable with `T3CODE_TELEMETRY_ENABLED=false` or `DO_NOT_TRACK=1`. See [Product usage data](./telemetry.md).
 
 ## Worktrees are eating my disk. How do I clean them up?
 
