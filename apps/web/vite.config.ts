@@ -1,3 +1,6 @@
+import * as NodeModule from "node:module";
+import * as NodePath from "node:path";
+import * as NodeUrl from "node:url";
 import * as NodeZlib from "node:zlib";
 
 import react from "@vitejs/plugin-react";
@@ -13,7 +16,11 @@ import pdfjsPkg from "pdfjs-dist/package.json" with { type: "json" };
 
 import { DEV_PROXIED_PATH_PREFIXES } from "@t3tools/shared/devProxy";
 
-import { desktopProductNameDefine } from "../../scripts/lib/desktop-product-name";
+import { forkProductName, productNameDefine } from "../../scripts/lib/product-name-define";
+import {
+  productNameTransformPlugin,
+  type HashSource,
+} from "../../scripts/lib/product-name-transform";
 import { loadRepoEnv } from "../../scripts/lib/public-config";
 import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version";
 import { thirdPartyLicensesPlugin } from "../../scripts/lib/third-party-licenses";
@@ -23,6 +30,17 @@ import { formatAppDisplayName, resolveWebAppStageLabel } from "./src/branding.lo
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
+const productName = forkProductName(repoEnv);
+
+// GT is not a direct dependency here; its hash is the one gt-react keys translations by.
+async function loadGtHashSource(): Promise<HashSource> {
+  const fromWeb = NodeModule.createRequire(NodePath.join(import.meta.dirname, "package.json"));
+  const fromGtReact = NodeModule.createRequire(fromWeb.resolve("gt-react"));
+  const module: { readonly hashSource: HashSource } = await import(
+    NodeUrl.pathToFileURL(fromGtReact.resolve("generaltranslation/id")).href
+  );
+  return module.hashSource;
+}
 
 // Signal single-origin dev explicitly; loadRepoEnv can restore deleted URL keys from .env.
 const isSingleOriginDev = process.env.T3CODE_SINGLE_ORIGIN_DEV === "1";
@@ -261,7 +279,7 @@ function bootstrapTitlePlugin(): Plugin {
         hostedAppChannel: configuredHostedAppChannel,
         development,
       });
-      const title = formatAppDisplayName({ baseName: "T3 Code", stageLabel });
+      const title = formatAppDisplayName({ baseName: productName ?? "T3 Code", stageLabel });
       return html.replace(/<title>[^<]*<\/title>/, `<title>${title}</title>`);
     },
   };
@@ -294,6 +312,13 @@ export default defineConfig(({ command }) => {
     },
     assetsInclude: ["**/*.wasm"],
     plugins: [
+      productName === undefined
+        ? undefined
+        : productNameTransformPlugin({
+            name: productName,
+            repositoryRoot: NodePath.join(import.meta.dirname, "..", ".."),
+            hashSource: loadGtHashSource,
+          }),
       bootstrapTitlePlugin(),
       devCompressionPlugin(),
       chunkCycleGuardPlugin(),
@@ -328,7 +353,7 @@ export default defineConfig(({ command }) => {
       ],
     },
     define: {
-      ...desktopProductNameDefine(repoEnv),
+      ...productNameDefine(repoEnv),
       "import.meta.env.VITE_WS_URL": JSON.stringify(configuredWsUrl ?? ""),
       // Override .env URLs with empty values in single-origin dev so clients use window.location.origin.
       "import.meta.env.VITE_HTTP_URL": JSON.stringify(configuredHttpUrl ?? ""),
