@@ -13,11 +13,10 @@ export const CLAUDE_BRIDGE_PLUGIN_ID = `${CLAUDE_BRIDGE_MOD_NAME}@${CLAUDE_BRIDG
 export const CLAUDE_BRIDGE_MIN_CLAUDE_VERSION = "2.1.287";
 
 /**
- * The mod's hooks module. It runs only in an interactive session, so never in T3 Code's own Agent
- * SDK sessions or a `-p` run. A timer polls every T3 Code server named in its Claude home's
- * connection directory, checks each answer's proof, submits each prompt only into the session it
- * names, and acknowledges each one, so the server keeps a prompt until it is taken. Claude remains
- * the only writer of the session.
+ * The mod's hooks module, inert outside an interactive session (so in T3 Code's own SDK sessions
+ * and `-p` runs). A timer polls each server in the Claude home's connection directory, checks the
+ * proof, submits a prompt only into the session it names and acknowledges it. Claude stays the
+ * only writer of the session.
  */
 const REGISTER_SOURCE = `import type { EngineInterface, Register } from "claude-code";
 
