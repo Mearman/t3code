@@ -354,7 +354,8 @@ export default defineConfig(({ command }) => {
     },
     define: {
       ...productNameDefine(repoEnv),
-      ...releaseRepositoryDefine(repoEnv),
+      // Only a fork build points its links at its own repository; tests and upstream keep T3's.
+      ...(productName === undefined ? {} : releaseRepositoryDefine(repoEnv)),
       "import.meta.env.VITE_WS_URL": JSON.stringify(configuredWsUrl ?? ""),
       // Override .env URLs with empty values in single-origin dev so clients use window.location.origin.
       "import.meta.env.VITE_HTTP_URL": JSON.stringify(configuredHttpUrl ?? ""),
