@@ -2823,6 +2823,12 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
+// A fork's release build names its own app and bundle id (exacode-release.yml); unset keeps these.
+const DesktopIdentityConfig = Config.all({
+  productName: Config.String("T3CODE_DESKTOP_PRODUCT_NAME").pipe(Config.option),
+  appId: Config.String("T3CODE_DESKTOP_APP_ID").pipe(Config.option),
+});
+
 export function resolveDesktopProductName(version: string): string {
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
@@ -2845,11 +2851,20 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
 ) {
+  const identity = yield* DesktopIdentityConfig;
+  const productName = Option.getOrElse(identity.productName, () =>
+    resolveDesktopProductName(version),
+  );
+  // Asset names drop the product name's spaces; upstream's stay "T3-Code" on every channel.
+  const artifactPrefix = Option.match(identity.productName, {
+    onNone: () => "T3-Code",
+    onSome: (name) => name.replaceAll(" ", "-"),
+  });
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
-    appId: DESKTOP_APP_ID,
-    productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    appId: Option.getOrElse(identity.appId, () => DESKTOP_APP_ID),
+    productName,
+    artifactName: `${artifactPrefix}-\${version}-\${arch}.\${ext}`,
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     // runAsNode stays on: the app starts its server, helpers and the `t3` shim by running this
     // binary as Node, and that mode still accepts inspector flags.
@@ -2960,7 +2975,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac" && target === "dmg") {
     buildConfig.dmg = {
       // Finder caches DMG backgrounds by volume name; give each installer its own.
-      title: `${resolveDesktopProductName(version)} ${version} Installer`,
+      title: `${productName} ${version} Installer`,
       background: `dmg/dmg-background-${updateChannel}.png`,
       window: {
         width: 640,
@@ -3006,7 +3021,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     if (buildConfig.publish) {
       buildConfig.appImage = {
         artifactName:
-          updateChannel === "nightly" ? "T3-Code-Nightly-${arch}.${ext}" : "T3-Code-${arch}.${ext}",
+          updateChannel === "nightly"
+            ? `${artifactPrefix}-Nightly-\${arch}.\${ext}`
+            : `${artifactPrefix}-\${arch}.\${ext}`,
       };
     }
     buildConfig.deb = {

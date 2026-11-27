@@ -508,6 +508,56 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect.each([
+    {
+      env: {},
+      productName: "T3 Code (Nightly)",
+      appId: "com.t3tools.t3code",
+      artifactName: "T3-Code-${version}-${arch}.${ext}",
+      appImageName: "T3-Code-Nightly-${arch}.${ext}",
+    },
+    {
+      env: { T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode", T3CODE_DESKTOP_APP_ID: "io.exadev.exacode" },
+      productName: "ExaCode",
+      appId: "io.exadev.exacode",
+      artifactName: "ExaCode-${version}-${arch}.${ext}",
+      appImageName: "ExaCode-Nightly-${arch}.${ext}",
+    },
+  ])("names the app $productName ($appId)", (expected) =>
+    Effect.gen(function* () {
+      const version = "0.1.13-nightly.20261127.14171";
+      const mac = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        version,
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.equal(mac.productName, expected.productName);
+      assert.equal(mac.appId, expected.appId);
+      assert.equal(mac.artifactName, expected.artifactName);
+      assert.nestedPropertyVal(mac, "dmg.title", `${expected.productName} ${version} Installer`);
+      const linux = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        version,
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.nestedPropertyVal(linux, "appImage.artifactName", expected.appImageName);
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "owner/fork", ...expected.env } }),
+        ),
+      ),
+    ),
+  );
+
   it.effect("omits update feeds for pull request preview builds", () =>
     Effect.gen(function* () {
       const preview = yield* createBuildConfig(

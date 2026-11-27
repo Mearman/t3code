@@ -83,6 +83,16 @@ on:
         required: false
         default: ""
         type: string
+      # The app's product name and bundle id; empty keeps the names set in
+      # scripts/build-desktop-artifact.ts. Asset names follow the product name.
+      product_name:
+        required: false
+        default: ""
+        type: string
+      app_id:
+        required: false
+        default: ""
+        type: string
       # Minutes the build job may take off Windows. GitHub-hosted runners have fewer cores
       # than the runners this was sized on.
       timeout_minutes:
@@ -660,6 +670,8 @@ jobs:
           CSC_LINK: ${{ steps.self_signed.outputs.p12 || secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           SELF_SIGNED: ${{ steps.self_signed.outputs.enabled }}
+          T3CODE_DESKTOP_PRODUCT_NAME: ${{ inputs.product_name }}
+          T3CODE_DESKTOP_APP_ID: ${{ inputs.app_id }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -674,6 +686,9 @@ jobs:
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: |
+          # The build reads an empty value as a name; unset keeps the default names.
+          [[ -n "$T3CODE_DESKTOP_PRODUCT_NAME" ]] || unset T3CODE_DESKTOP_PRODUCT_NAME
+          [[ -n "$T3CODE_DESKTOP_APP_ID" ]] || unset T3CODE_DESKTOP_APP_ID
           args=(
             --platform "${{ inputs.platform }}"
             --target "${{ inputs.target }}"
