@@ -29,6 +29,7 @@ import {
   type ClaudeProcessRow,
 } from "./ClaudeProcessTable.ts";
 import { T3_CODE_ENTRYPOINT } from "../provider/Drivers/ClaudeHome.ts";
+import { ClaudeBridgeSubmitError } from "./ClaudeBridge.ts";
 import { ClaudeSessionRegistryEntry } from "./ClaudeSessionRegistry.ts";
 import {
   gateHeldClaudeSessionRuntime,
@@ -542,6 +543,8 @@ describe("gateHeldClaudeSessionRuntime", () => {
     readonly onProbe?: (state: { hold: ClaudeSessionHold | undefined }, before: number) => void;
     /** Whether the holder runs the bridge mod. */
     readonly bridgeAttached?: boolean;
+    /** The bridge refuses every prompt for this reason. */
+    readonly bridgeRefuses?: string;
   }) => {
     const calls: Array<string> = [];
     const probes: Array<string> = [];
@@ -615,9 +618,11 @@ describe("gateHeldClaudeSessionRuntime", () => {
       {
         attached: () => Effect.succeed(input.bridgeAttached === true),
         submit: (submitted) =>
-          Effect.sync(() => {
-            calls.push(`bridge:${submitted.asUser ? "user" : "mod"}:${submitted.text}`);
-          }),
+          input.bridgeRefuses !== undefined
+            ? Effect.fail(new ClaudeBridgeSubmitError({ reason: input.bridgeRefuses }))
+            : Effect.sync(() => {
+                calls.push(`bridge:${submitted.asUser ? "user" : "mod"}:${submitted.text}`);
+              }),
       },
     );
     return { runtime, calls, probes, state };
@@ -740,12 +745,20 @@ describe("gateHeldClaudeSessionRuntime", () => {
 
   describe("adopt through the bridge", () => {
     const held: ClaudeSessionHold = { _tag: "held", pid: 200, source: "terminal", idle: false };
+    // A sender with terminal:operate, unless a test says otherwise.
     const turn = (
       now: DateTime.Utc,
       message: Partial<ProviderAdapter.ProviderAdapterV2TurnMessage>,
     ) => {
       const base = turnInput(providerThread(now), now);
-      return { ...base, message: { ...base.message, ...message } };
+      return {
+        ...base,
+        message: { ...base.message, heldSessionTerminalAccess: true as const, ...message },
+      };
+    };
+    const detailOf = (refusal: unknown) => {
+      const inUse = Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
+      return Predicate.hasProperty(inUse, "message") ? String(inUse.message) : "";
     };
     const adoptedOf = (refusal: unknown) => {
       const inUse = Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
@@ -790,6 +803,56 @@ describe("gateHeldClaudeSessionRuntime", () => {
           "t3 claude bridge install",
         );
         expectInUse("startTurn", chosen, true);
+      }),
+    );
+
+    it.effect("hands nothing to the terminal for a sender without terminal:operate", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({ hold: held, bridgeAttached: true });
+        const withoutAccess = { heldSessionTerminalAccess: undefined };
+
+        // Neither the default nor an adopt that reached the gate some other way gets through.
+        const unchosen = yield* Effect.flip(runtime.startTurn(turn(now, withoutAccess)));
+        const chosen = yield* Effect.flip(
+          runtime.startTurn(turn(now, { ...withoutAccess, heldSessionSend: "adopt" })),
+        );
+
+        expect(calls).toEqual([]);
+        expect([unchosen, chosen].map(adoptedOf)).toEqual([false, false]);
+        expectInUse("startTurn", chosen, true);
+      }),
+    );
+
+    it.effect("refuses a person's slash command, saying so, instead of losing it", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({ hold: held, bridgeAttached: true });
+
+        const refusal = yield* Effect.flip(
+          runtime.startTurn(
+            turn(now, { heldSessionSend: "adopt", adoptAsUser: true, text: "  /compact" }),
+          ),
+        );
+
+        expect(calls).toEqual([]);
+        expect(adoptedOf(refusal)).toBe(false);
+        expect(detailOf(refusal)).toContain("slash command");
+      }),
+    );
+
+    it.effect("refuses, naming why, when the bridge does not take the prompt", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime } = makeGate({ hold: held, bridgeAttached: true, bridgeRefuses: "full" });
+
+        const refusal = yield* Effect.flip(
+          runtime.startTurn(turn(now, { heldSessionSend: "adopt" })),
+        );
+
+        expect(adoptedOf(refusal)).toBe(false);
+        expect(detailOf(refusal)).toContain("did not take it: full");
+        expectInUse("startTurn", refusal, true);
       }),
     );
 
