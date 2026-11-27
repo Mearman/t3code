@@ -1,4 +1,4 @@
-import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { ClaudeSettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import type * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -37,12 +37,16 @@ import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
+  acquireClaudeIdleQuery,
   checkClaudeProviderStatus,
   makePendingClaudeProvider,
+  prepareClaudeIdleQuery,
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
+  runClaudeCommand,
   type ClaudeCapabilitiesProbe,
 } from "../ClaudeProvider.ts";
+import { makeClaudeAuth, makeClaudeQueryLoginSession } from "../ClaudeAuth.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import {
@@ -68,6 +72,7 @@ import {
 import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
+  makeClaudeEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
@@ -158,13 +163,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ? configDir
         : undefined,
     );
-    const stampIdentity = withInstanceIdentity({
+    const withIdentity = withInstanceIdentity({
       instanceId,
       driverKind: DRIVER_KIND,
       displayName,
       accentColor,
       continuationGroupKey,
     });
+    // Sign-in runs through `auth` below, so every Claude snapshot advertises it.
+    const stampIdentity = (draft: Parameters<typeof withIdentity>[0]) =>
+      withIdentity({ ...draft, setup: { canAuthenticate: true, canInstall: false } });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
     // The SDK's user source is the host's home, not a custom one; same rule as the adapter.
@@ -380,6 +388,41 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     );
 
+    const setupFailure = (operation: string, detail: string) => (cause: unknown) =>
+      new ProviderSetupError({ instanceId, operation, detail, cause });
+    const auth = yield* makeClaudeAuth({
+      instanceId,
+      configDir,
+      openLoginSession: Effect.gen(function* () {
+        const prepared = yield* prepareClaudeIdleQuery(effectiveConfig, processEnv, stateDir);
+        const query = yield* acquireClaudeIdleQuery(prepared.open);
+        yield* Effect.tryPromise({
+          try: () => query.initializationResult(),
+          catch: setupFailure("start", "Claude Code did not start for sign-in."),
+        });
+        return makeClaudeQueryLoginSession(instanceId, query);
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      ),
+      runCommand: (args) =>
+        runClaudeCommand(effectiveConfig, args, processEnv, stateDir).pipe(
+          Effect.map(({ stdout, code }) => ({ stdout, code })),
+          Effect.mapError(setupFailure("command", "Claude Code could not run.")),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(Path.Path, path),
+        ),
+      terminal: {
+        shell: effectiveConfig.binaryPath,
+        cwd: stateDir,
+        env: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+      },
+      onChanged: Cache.invalidateAll(capabilitiesProbeCache).pipe(
+        Effect.andThen(snapshot.refresh),
+        Effect.asVoid,
+      ),
+    });
+
     // Same rules as Codex: serialised on the config directory that holds the
     // login, one request id kept until Claude answers (a cooldown or rate
     // limit is an answer), then a re-probe.
@@ -489,6 +532,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       orchestrationAdapter: sendGatedAdapter,
       textGeneration,
       consumeResetCredit,
+      auth,
     } satisfies ProviderInstance;
   }),
 };

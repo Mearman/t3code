@@ -29,6 +29,7 @@ import {
   query as claudeQuery,
   type ModelInfo as ClaudeModelInfo,
   type Options as ClaudeQueryOptions,
+  type Query as ClaudeQuery,
   type SlashCommand as ClaudeSlashCommand,
   type SDKControlGetUsageResponse,
   type SDKUserMessage,
@@ -485,7 +486,57 @@ class ClaudeCapabilitiesProbeSdkError extends Schema.TaggedError<ClaudeCapabilit
   }
 }
 
-/** A never-yielding prompt allows local initialization IPC without sending an Anthropic request. */
+/**
+ * Resolves how to start a Claude query whose prompt never yields, so control requests and
+ * initialization IPC run without sending an Anthropic request.
+ */
+export const prepareClaudeIdleQuery = Effect.fn("prepareClaudeIdleQuery")(function* (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv | undefined,
+  cwd: string | undefined,
+) {
+  const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+  const executablePath = yield* resolveClaudeSdkExecutablePath(
+    claudeSettings.binaryPath,
+    claudeEnvironment,
+  );
+  const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
+  const platform = yield* HostProcess.Platform;
+  const spawnVia =
+    platform === "win32"
+      ? "launcher-thread"
+      : platform === "linux" && (yield* Effect.promise(supportsEnvChdir))
+        ? "env"
+        : undefined;
+  return {
+    claudeEnvironment,
+    open: (abort: AbortController) =>
+      claudeQuery({
+        // oxlint-disable-next-line require-yield -- never yields, so no prompt reaches the API
+        prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+          await waitForAbortSignal(abort.signal);
+        })(),
+        options: buildClaudeCapabilitiesProbeQueryOptions({
+          executablePath,
+          abortController: abort,
+          environment: claudeEnvironment,
+          cwd,
+          managedMcpConfig,
+          spawnVia,
+        }),
+      }),
+  };
+});
+
+/** Opens an idle query that is aborted when the surrounding scope closes. */
+export const acquireClaudeIdleQuery = (open: (abort: AbortController) => ClaudeQuery) => {
+  const abort = new AbortController();
+  return Effect.acquireRelease(
+    Effect.sync(() => open(abort)),
+    () => Effect.sync(() => abort.abort()),
+  );
+};
+
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
   environment?: NodeJS.ProcessEnv,
@@ -497,42 +548,17 @@ const probeClaudeCapabilities = (
     if (!abort.signal.aborted) abort.abort();
   });
   return Effect.gen(function* () {
-    const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-    const executablePath = yield* resolveClaudeSdkExecutablePath(
-      claudeSettings.binaryPath,
-      claudeEnvironment,
-    );
-    const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
+    const prepared = yield* prepareClaudeIdleQuery(claudeSettings, environment, cwd);
     // Workspace probes (no usage) discard models; the machine probe refreshes the shared cache.
     const graceMs = includeStatus
       ? claudeGatewayDiscoveryGraceMs({
-          ...claudeEnvironment,
-          ...(yield* readClaudeSettingsEnv(claudeSettings, cwd, claudeEnvironment)),
+          ...prepared.claudeEnvironment,
+          ...(yield* readClaudeSettingsEnv(claudeSettings, cwd, prepared.claudeEnvironment)),
         })
       : 0;
-    const platform = yield* HostProcess.Platform;
-    const spawnVia =
-      platform === "win32"
-        ? "launcher-thread"
-        : platform === "linux" && (yield* Effect.promise(supportsEnvChdir))
-          ? "env"
-          : undefined;
     return yield* Effect.tryPromise({
       try: async () => {
-        const q = claudeQuery({
-          // oxlint-disable-next-line require-yield -- never yields, so no prompt reaches the API
-          prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
-            await waitForAbortSignal(abort.signal);
-          })(),
-          options: buildClaudeCapabilitiesProbeQueryOptions({
-            executablePath,
-            abortController: abort,
-            environment: claudeEnvironment,
-            cwd,
-            managedMcpConfig,
-            spawnVia,
-          }),
-        });
+        const q = prepared.open(abort);
         const init = await q.initializationResult();
         return { q, init, graceMs };
       },
@@ -619,7 +645,8 @@ const probeClaudeCapabilities = (
 
 type ClaudeCapabilitiesProbeError = Effect.Error<ReturnType<typeof probeClaudeCapabilities>>;
 
-const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
+/** Runs the Claude CLI with an instance's environment and collects its output. */
+export const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
   args: ReadonlyArray<string>,
   environment?: NodeJS.ProcessEnv,

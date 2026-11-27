@@ -83,7 +83,7 @@ Open **Settings → Providers** (web or desktop), select the environment, and en
 | Provider         | Install and authenticate                                                                                                 | Guide                                     |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
 | **Codex**        | Connect with ChatGPT in Settings, or install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`. | [Codex](./providers-codex.md)             |
-| **Claude**       | Install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`.                               | [Claude](./providers-claude.md)           |
+| **Claude**       | Install [Claude Code](https://claude.com/product/claude-code), then sign in in Settings or run `claude auth login`.      | [Claude](./providers-claude.md)           |
 | **Cursor**       | Sign in in Settings or install [Cursor CLI](https://cursor.com/cli) and run `agent login`.                               | [Cursor](./cursor.md)                     |
 | **Grok Build**   | Install [Grok Build CLI](https://x.ai/cli) and run `grok login`.                                                         | [Grok](./providers-grok.md)               |
 | **Antigravity**  | Install managed runtime and sign in with Google in Settings.                                                             | [Antigravity](./providers-antigravity.md) |
