@@ -33,11 +33,9 @@ export interface ClaudeLocalTranscript {
 }
 
 /**
- * What to do with one session's replica. `fresh` and `fast-forward` copy the owner's transcript,
- * the latter starting from the local bytes it already has; `local-ahead` means Claude appended
- * here while the owner did not move, so ownership can follow; `diverged` means the copy holds
- * lines the owner lacks and the owner moved too, so those lines must become their own session;
- * `replace` is a diverged copy whose lines a fork already holds, so only the copy remains to do.
+ * What to do with one replica: copy (`fresh`, or `fast-forward` from its own bytes); claim it
+ * (`local-ahead`: lines added here only); fork its own lines first (`diverged`: both moved); or
+ * replace it once a fork already holds them (`replace`).
  */
 export type ClaudeReplicaPlan =
   | { readonly kind: "current" }
