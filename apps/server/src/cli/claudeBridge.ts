@@ -56,17 +56,32 @@ const run = Effect.fn("claudeBridge.run")(function* (
     );
 });
 
-const installCommand = Command.make("install", {
+const bridgeFlags = {
   baseDir: baseDirFlag,
   home: Flag.String("home").pipe(
-    Flag.withDescription("Claude home to install into (CLAUDE_CONFIG_DIR). Defaults to ~/.claude."),
+    Flag.withDescription("Claude home to act on (CLAUDE_CONFIG_DIR). Defaults to ~/.claude."),
     Flag.optional,
   ),
   binary: Flag.String("binary").pipe(
     Flag.withDescription("The claude executable. Defaults to claude on PATH."),
     Flag.withDefault("claude"),
   ),
-}).pipe(
+};
+
+const homeEnv = (home: Option.Option<string>) =>
+  Option.match(home, {
+    onNone: () => ({}),
+    onSome: (value) => ({ CLAUDE_CONFIG_DIR: value }),
+  });
+
+const marketplaceRoot = Effect.fn("claudeBridge.marketplaceRoot")(function* (
+  baseDir: Option.Option<string>,
+) {
+  const path = yield* Path.Path;
+  return path.join(yield* resolveBaseDir(Option.getOrUndefined(baseDir)), "claude-bridge");
+});
+
+const installCommand = Command.make("install", bridgeFlags).pipe(
   Command.withDescription(
     "Install the T3 bridge mod into a Claude home, so T3 Code can send to a session a terminal holds. A running claude loads it after /reload-plugins.",
   ),
@@ -74,10 +89,7 @@ const installCommand = Command.make("install", {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const env = Option.match(flags.home, {
-        onNone: () => ({}),
-        onSome: (home) => ({ CLAUDE_CONFIG_DIR: home }),
-      });
+      const env = homeEnv(flags.home);
       const version = yield* run("read the claude version", flags.binary, ["--version"], env);
       if (!claudeVersionAtLeast(version, CLAUDE_BRIDGE_MIN_CLAUDE_VERSION)) {
         return yield* new ClaudeBridgeInstallError({
@@ -85,10 +97,7 @@ const installCommand = Command.make("install", {
           detail: `it needs Claude Code ${CLAUDE_BRIDGE_MIN_CLAUDE_VERSION} or later, found ${version.trim()}`,
         });
       }
-      const root = path.join(
-        yield* resolveBaseDir(Option.getOrUndefined(flags.baseDir)),
-        "claude-bridge",
-      );
+      const root = yield* marketplaceRoot(flags.baseDir);
       for (const [relative, text] of claudeBridgeMarketplaceFiles(packageJson.version)) {
         const file = path.join(root, relative);
         yield* fileSystem.makeDirectory(path.dirname(file), { recursive: true });
@@ -114,6 +123,35 @@ const installCommand = Command.make("install", {
   ),
 );
 
+const uninstallCommand = Command.make("uninstall", bridgeFlags).pipe(
+  Command.withDescription(
+    "Remove the T3 bridge mod and its marketplace from a Claude home. A running claude drops it after /reload-plugins.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const env = homeEnv(flags.home);
+      yield* run(
+        "uninstall the bridge mod",
+        flags.binary,
+        ["plugin", "uninstall", CLAUDE_BRIDGE_PLUGIN_ID],
+        env,
+      );
+      yield* run(
+        "remove the T3 Code marketplace",
+        flags.binary,
+        ["plugin", "marketplace", "remove", CLAUDE_BRIDGE_MARKETPLACE],
+        env,
+      );
+      const root = yield* marketplaceRoot(flags.baseDir);
+      yield* fileSystem.remove(root, { recursive: true, force: true });
+      yield* Console.log(
+        `Removed ${CLAUDE_BRIDGE_PLUGIN_ID} and the ${CLAUDE_BRIDGE_MARKETPLACE} marketplace. Run /reload-plugins in a claude that is already running.`,
+      );
+    }),
+  ),
+);
+
 export const claudeCommand = Command.make("claude").pipe(
   Command.withDescription("Claude Code integration."),
   Command.withSubcommands([
@@ -121,7 +159,7 @@ export const claudeCommand = Command.make("claude").pipe(
       Command.withDescription(
         "The T3 bridge mod that lets T3 Code drive a session a terminal holds.",
       ),
-      Command.withSubcommands([installCommand]),
+      Command.withSubcommands([installCommand, uninstallCommand]),
     ),
   ]),
 );

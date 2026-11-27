@@ -152,6 +152,7 @@ export const T3_CLI_COMMANDS: ReadonlyArray<string> = [
   "t3 claude",
   "t3 claude bridge",
   "t3 claude bridge install",
+  "t3 claude bridge uninstall",
   "t3 project",
   "t3 project add",
   "t3 project remove",
