@@ -32,8 +32,11 @@ it.layer(layer)("ClaudeSessionReplicaRepository", (it) => {
       yield* replicas.remove("s-1");
 
       assert.isUndefined(yield* replicas.get("s-1"));
-      assert.strictEqual(yield* replicas.placedCwd("s-1"), "/checkouts/repo");
-      assert.isUndefined(yield* replicas.placedCwd("never-placed"));
+      assert.deepStrictEqual(yield* replicas.placed("s-1"), {
+        cwd: "/checkouts/repo",
+        transcriptPath: "/home/me/.claude/projects/-checkouts-repo/s-1.jsonl",
+      });
+      assert.isUndefined(yield* replicas.placed("never-placed"));
     }),
   );
 });

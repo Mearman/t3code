@@ -29,12 +29,15 @@ export class ClaudeSessionReplicaRepository extends Context.Service<
       sessionId: string,
     ) => Effect.Effect<ClaudeSessionReplicaRow | undefined, ReplicaRepositoryError>;
     readonly list: Effect.Effect<ReadonlyArray<ClaudeSessionReplicaRow>, ReplicaRepositoryError>;
-    /** Records the replica and, when it has one, the directory it was placed under here. */
+    /** Records the replica and where it was placed here. */
     readonly upsert: (row: ClaudeSessionReplicaRow) => Effect.Effect<void, ReplicaRepositoryError>;
-    /** The directory a session was placed under here, whether still a replica or owned since. */
-    readonly placedCwd: (
+    /** Where a session was placed here, whether still a replica or owned since. */
+    readonly placed: (
       sessionId: string,
-    ) => Effect.Effect<string | undefined, ReplicaRepositoryError>;
+    ) => Effect.Effect<
+      { readonly cwd: string | null; readonly transcriptPath: string } | undefined,
+      ReplicaRepositoryError
+    >;
     /** Forgets a replica: the session is this environment's own from then on. */
     readonly remove: (sessionId: string) => Effect.Effect<void, ReplicaRepositoryError>;
     /** Marks every replica of an owner stale, keeping each one's last sync point. */
@@ -118,20 +121,22 @@ const make = Effect.gen(function* () {
     upsert: Effect.fn("ClaudeSessionReplicaRepository.upsert")(
       function* (row: ClaudeSessionReplicaRow) {
         yield* upsertRow(row);
-        if (row.cwd === null) return;
         yield* sql`
-          INSERT INTO fork_claude_session_places (session_id, cwd)
-          VALUES (${row.sessionId}, ${row.cwd})
-          ON CONFLICT (session_id) DO UPDATE SET cwd = excluded.cwd
+          INSERT INTO fork_claude_session_places (session_id, cwd, transcript_path)
+          VALUES (${row.sessionId}, ${row.cwd}, ${row.transcriptPath})
+          ON CONFLICT (session_id) DO UPDATE SET
+            cwd = excluded.cwd,
+            transcript_path = excluded.transcript_path
         `;
       },
       Effect.mapError(toRepositoryError("ClaudeSessionReplicaRepository.upsert")),
     ),
-    placedCwd: Effect.fn("ClaudeSessionReplicaRepository.placedCwd")(function* (sessionId: string) {
-      const rows = yield* sql<{ readonly cwd: string }>`
-        SELECT cwd FROM fork_claude_session_places WHERE session_id = ${sessionId}
-      `.pipe(Effect.mapError(toRepositoryError("ClaudeSessionReplicaRepository.placedCwd")));
-      return rows[0]?.cwd;
+    placed: Effect.fn("ClaudeSessionReplicaRepository.placed")(function* (sessionId: string) {
+      const rows = yield* sql<{ readonly cwd: string | null; readonly transcriptPath: string }>`
+        SELECT cwd, transcript_path AS "transcriptPath" FROM fork_claude_session_places
+        WHERE session_id = ${sessionId}
+      `.pipe(Effect.mapError(toRepositoryError("ClaudeSessionReplicaRepository.placed")));
+      return rows[0];
     }),
     remove: Effect.fn("ClaudeSessionReplicaRepository.remove")(function* (sessionId: string) {
       yield* sql`DELETE FROM fork_claude_session_replicas WHERE session_id = ${sessionId}`.pipe(

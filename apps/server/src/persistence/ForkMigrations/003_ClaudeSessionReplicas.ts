@@ -20,12 +20,13 @@ export default Effect.gen(function* () {
       kept_sha256 TEXT
     )
   `;
-  // The directory each session was placed under here, kept after ownership moves here, since
-  // the session's own lines still name the directory it ran in on another machine.
+  // Where each session was placed here, kept after ownership moves here: its lines still name
+  // the directory it ran in elsewhere, and the sync may not have found its new file yet.
   yield* sql`
     CREATE TABLE IF NOT EXISTS fork_claude_session_places (
       session_id TEXT PRIMARY KEY,
-      cwd TEXT NOT NULL
+      cwd TEXT,
+      transcript_path TEXT NOT NULL
     )
   `;
   yield* sql`

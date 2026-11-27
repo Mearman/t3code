@@ -220,17 +220,31 @@ const make = Effect.gen(function* () {
 
   const locate = Effect.fn("ClaudeSessionReplication.locate")(function* (sessionId: string) {
     if (!isClaudeSessionId(sessionId)) return yield* notFound(sessionId);
+    const held = yield* replicas
+      .get(sessionId)
+      .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
+    if (held !== undefined) return yield* notFound(sessionId);
+    // A session taken in or claimed here is served from where it was placed, which the sync may
+    // not have found yet; its lines still name the directory it ran in elsewhere.
+    const placed = yield* replicas
+      .placed(sessionId)
+      .pipe(Effect.mapError(storage("Could not read where the session was placed here.")));
+    if (
+      placed !== undefined &&
+      (yield* fileSystem.exists(placed.transcriptPath).pipe(Effect.orElseSucceed(() => false)))
+    ) {
+      return {
+        layout: layoutOf(placed.transcriptPath),
+        transcriptPath: placed.transcriptPath,
+        cwd: placed.cwd,
+      } satisfies LocatedSession;
+    }
     const row = (yield* ownedRows({ sessionId }))[0];
     if (row === undefined) return yield* notFound(sessionId);
-    // A session copied or moved here keeps its old directory in its lines; where it was
-    // placed here is the directory to describe it by.
-    const placedHere = yield* replicas
-      .placedCwd(sessionId)
-      .pipe(Effect.mapError(storage("Could not read where the session was placed here.")));
     return {
       layout: layoutOf(row.filePath),
       transcriptPath: row.filePath,
-      cwd: placedHere ?? row.cwd,
+      cwd: row.cwd,
     } satisfies LocatedSession;
   });
 
