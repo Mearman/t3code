@@ -1,7 +1,9 @@
 name: ExaCode Release
 
-# Fork-only nightly release for Mearman/t3code. release.yml stays identical to upstream and skips outside pingdotgg/t3code, so this workflow builds the desktop apps and server archives on GitHub-hosted runners and publishes them as prereleases here.
-# A publish needs the self-signed macOS certificate in CSC_LINK and CSC_KEY_PASSWORD (see release-desktop.yml), so every macOS release carries the signature installed apps accept updates from. Only runs from main get it; dry runs elsewhere are signed ad hoc.
+# Fork-only nightly release for Mearman/t3code on GitHub-hosted runners. release.yml stays as
+# upstream's and skips outside pingdotgg/t3code. See docs/operations/03_release.md#fork-releases.
+# A publish needs the self-signed macOS certificate in CSC_LINK and CSC_KEY_PASSWORD, so every
+# macOS release keeps the signature installed apps accept; only runs from main receive it.
 
 on:
   # Ships only commits whose CI passed on a push to main.
@@ -50,7 +52,8 @@ jobs:
       tag: ${{ steps.release_meta.outputs.tag }}
       release_name: ${{ steps.release_meta.outputs.name }}
     steps:
-      # Only main's tip is released: a CI run that finishes late, or a re-run of an older commit's CI, never ships older code as the newest release.
+      # Only main's tip is released: a CI run that finishes late, or a re-run of an older
+      # commit's CI, never ships older code as the newest release.
       - id: source
         name: Resolve release source
         env:
@@ -106,7 +109,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ steps.source.outputs.ref }}
-          # The version counts main's commits, so this needs every commit but no file history.
+          # The version counts main's commits: every commit, no file history.
           fetch-depth: 0
           filter: tree:0
           sparse-checkout: |
@@ -124,21 +127,27 @@ jobs:
         with:
           install-args: --filter=@t3tools/scripts...
 
-      # The build number is the release commit's first-parent depth on main, not the run number, which follows the order CI runs finish. With only main's tip released, each release is a descendant of the last, so (date, depth) only grows.
+      # Above every published nightly, even after main is rewritten: the build number is the
+      # commit's first-parent depth on main or one more than that day's newest published build.
       - id: release_meta
         name: Resolve nightly version
         if: steps.source.outputs.build == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           NIGHTLY_SHA: ${{ steps.source.outputs.ref }}
         run: |
           set -euo pipefail
-          node scripts/resolve-nightly-release.ts \
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft | not) | .tag_name' > "$RUNNER_TEMP/published-tags"
+          node scripts/resolve-fork-nightly-release.ts \
             --date "$(date -u +%Y%m%d)" \
-            --run-number "$(git rev-list --count --first-parent "$NIGHTLY_SHA")" \
             --sha "$NIGHTLY_SHA" \
+            --published-tags "$RUNNER_TEMP/published-tags" \
             --github-output
 
-  # The platform-independent JS, built once for every package job (release.yml's build_bundle without the relay tracing config or npm launcher). Empty relay and Clerk values turn T3 Connect off.
+  # The platform-independent JS, built once for every package job: release.yml's build_bundle
+  # without the relay tracing config or npm launcher. Empty relay and Clerk values turn off
+  # T3 Connect.
   build_bundle:
     name: Build JS bundle
     needs: [preflight]
@@ -174,6 +183,17 @@ jobs:
           T3CODE_TELEMETRY_CHANNEL: dev
         run: vp run build:desktop:bundle
 
+      # The bundles must update from this repository (scripts/lib/release-repository.ts).
+      - name: Check the bundles' release repository
+        run: |
+          set -euo pipefail
+          for dir in apps/server/dist apps/desktop/dist-electron; do
+            if ! grep -rqE "\"$GITHUB_REPOSITORY\"|github\.com/$GITHUB_REPOSITORY/releases" "$dir"; then
+              echo "::error::$dir does not update from $GITHUB_REPOSITORY."
+              exit 1
+            fi
+          done
+
       - name: Stage web asset manifest
         run: |
           manifest=apps/server/dist/client/.vite/manifest.json
@@ -191,8 +211,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # One release-desktop.yml call per host platform the fleet runs. Hosted runners have fewer cores than release.yml's, so each build gets twice its time limit.
-  # The signing certificate goes only to runs from main, so a dry run of another branch's code is signed ad hoc.
+  # One release-desktop.yml call per host platform the fleet runs. Hosted runners have fewer
+  # cores than release.yml's, so each build gets twice its time limit. The signing certificate
+  # goes only to runs from main, so a dry run of another branch's code is signed ad hoc.
   desktop_mac_arm64:
     name: Desktop macOS arm64
     needs: [preflight, build_bundle]
@@ -223,7 +244,8 @@ jobs:
       launch_check: true
       timeout_minutes: 60
 
-  # No CLI archive: Node single executables do not run on x64 macOS (see release.yml). An Intel runner packages it natively: under Rosetta on a hosted arm64 runner, generating the server compile cache outlasts its limit.
+  # No CLI archive: Node single executables do not run on x64 macOS (see release.yml). Built on
+  # Intel: under Rosetta on a hosted arm64 runner, the server compile cache outlasts its limit.
   desktop_mac_x64:
     name: Desktop macOS x64
     needs: [preflight, build_bundle]
@@ -314,8 +336,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
-    outputs:
-      published: ${{ steps.undraft.outcome == 'success' }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -384,7 +404,8 @@ jobs:
           EOF
           sh -n release-assets/install.sh
 
-      # Written last, from the bytes that get uploaded, over every asset, so hosts can verify the desktop zips the way install.sh and `t3 update` verify CLI archives.
+      # Written last, over every uploaded asset, so hosts can verify the desktop zips the way
+      # install.sh and `t3 update` verify CLI archives.
       - name: Write checksums
         run: |
           set -euo pipefail
@@ -398,7 +419,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Preflight's check again, since main can move while the builds run; the newer commit's run then releases instead.
+      # Preflight's check again, since main can move while the builds run; the newer commit's
+      # run then releases instead.
       - id: tip
         name: Confirm the release commit is still main's tip
         if: needs.preflight.outputs.publish == 'true'
@@ -415,7 +437,25 @@ jobs:
             echo "::notice::main has moved on from $RELEASE_REF to $tip, whose CI releases it."
           fi
 
-      # A draft until every asset is attached: connected clients update from a release as soon as it is public.
+      # A published release is never edited: the action would keep it published and replace its
+      # assets in place. A draft left by an earlier attempt of this run is reused.
+      - name: Refuse an existing release of this version
+        if: steps.tip.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tags="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" \
+            --jq "[.[] | select(.ref == \"refs/tags/$RELEASE_TAG\")] | length")"
+          published="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and (.draft | not)) | .id")"
+          if [[ "$tags" != "0" || -n "$published" ]]; then
+            echo "::error::$RELEASE_TAG is already tagged or published; a release is never replaced."
+            exit 1
+          fi
+
+      # A draft until every asset is attached: clients update from a release once it is public.
       - name: Publish release
         if: steps.tip.outputs.current == 'true'
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
@@ -431,8 +471,7 @@ jobs:
           fail_on_unmatched_files: true
           token: ${{ github.token }}
 
-      - id: undraft
-        name: Publish prerelease
+      - name: Publish prerelease
         if: steps.tip.outputs.current == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -440,37 +479,56 @@ jobs:
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         run: gh release edit "$RELEASE_TAG" --draft=false
 
-  # The `update-feed` release's nightly.json is the pointer fork builds read instead of releases.atom, which lists upstream's tags too (see updateFeedPointerOnly in apps/desktop and docs/operations/03_release.md#update-feed).
-  # It moves only forward: a published release is the newest by construction, but a re-run must never point it back.
+  # The `update-feed` release's nightly.json is the pointer fork clients read instead of
+  # releases.atom, which lists upstream's tags too (docs/operations/03_release.md#fork-releases).
+  # Every publishing run, including one that released nothing, points it at the newest published
+  # nightly, so a re-run repairs a pointer an earlier run left behind. It never moves back.
   update_feed:
-    name: Point the update feed at this release
+    name: Point the update feed at the newest nightly
     needs: [preflight, release]
-    if: needs.release.outputs.published == 'true'
+    if: >-
+      !cancelled() && needs.preflight.result == 'success' &&
+      needs.preflight.outputs.publish == 'true' &&
+      contains(fromJSON('["success", "skipped"]'), needs.release.result)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - name: Point the update feed at this release
+      - name: Point the update feed at the newest nightly
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          if gh release view update-feed > /dev/null 2>&1; then
-            current="$(gh release download update-feed --pattern nightly.json --output - 2>/dev/null | jq -r '.tag_name // empty' || true)"
+          newest="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select((.draft | not) and (.tag_name | test("^v[0-9]+[.][0-9]+[.][0-9]+-nightly[.]"))) | .tag_name' \
+            | sort -V | tail -n 1)"
+          if [[ -z "$newest" ]]; then
+            echo "::notice::No nightly is published yet."
+            exit 0
+          fi
+          if gh release view update-feed > /dev/null; then
+            assets="$(gh release view update-feed --json assets --jq '.assets[].name')"
+            current=""
+            if grep -qx nightly.json <<< "$assets"; then
+              gh release download update-feed --pattern nightly.json --output pointer.json
+              current="$(jq -er '.tag_name' pointer.json)"
+            fi
           else
             gh release create update-feed --prerelease --latest=false --title "Update feed" \
               --notes "The desktop updater reads this release to find the newest nightly. Do not delete it. See docs/operations/03_release.md."
             current=""
           fi
-          newest="$(printf '%s\n' "$current" "$RELEASE_TAG" | sed '/^$/d' | sort -V | tail -n 1)"
-          if [[ "$current" == "$RELEASE_TAG" || "$newest" != "$RELEASE_TAG" ]]; then
-            echo "::notice::The update feed already points at ${current}, which is not older than $RELEASE_TAG."
+          if [[ "$current" == "$newest" ]]; then
+            echo "::notice::The update feed already points at $newest."
+          elif [[ -n "$current" && "$(printf '%s\n' "$current" "$newest" | sort -V | tail -n 1)" != "$newest" ]]; then
+            echo "::error::The update feed points at $current, newer than every published nightly ($newest)."
+            exit 1
           else
-            gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq '{tag_name, name, body}' > nightly.json
+            gh api "repos/$GH_REPO/releases/tags/$newest" --jq '{tag_name, name, body}' > nightly.json
             gh release upload update-feed nightly.json --clobber
+            echo "Pointed the update feed at $newest (was ${current:-unset})."
           fi
           gh release edit update-feed --draft=false --prerelease --latest=false
