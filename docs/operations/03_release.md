@@ -49,7 +49,7 @@ Windows packages the bundled server and its unpacked native modules in `resource
 
 Builds take their release repository from `T3CODE_DESKTOP_UPDATE_REPOSITORY`, else `GITHUB_REPOSITORY`, for the desktop updater feed, `t3 update`, the remote SSH runner and install hints (`scripts/lib/release-repository.ts`), so a fork's CI build updates from the fork. The installers read `T3CODE_RELEASE_REPOSITORY`.
 
-macOS fork builds are signed ad hoc unless `CSC_LINK` and `CSC_KEY_PASSWORD` are set without the App Store Connect keys: `release-desktop.yml` then trusts that certificate on the runner and signs with it, without notarization or passkey entitlements. Export the certificate as a legacy-encrypted `.p12` (`openssl pkcs12 -export -legacy`), because macOS `security import` rejects OpenSSL 3's default encryption.
+macOS fork builds are signed ad hoc unless `CSC_LINK` and `CSC_KEY_PASSWORD` are set without the App Store Connect keys: `release-desktop.yml` then trusts that certificate on the runner and signs with it, without notarization or passkey entitlements. The workflow re-encodes the `.p12` for macOS `security import`, which cannot read OpenSSL 3's default encryption, so either export works.
 
 ## One-time credentials setup
 
