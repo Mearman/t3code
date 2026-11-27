@@ -91,6 +91,8 @@ export const ProviderAdapterV2TurnMessage = Schema.Struct({
   resendsHeldRefusal: Schema.optional(Schema.Literal(true)),
   /** A person chose `adopt` for this send, so the bridge may submit it as their own words. */
   adoptAsUser: Schema.optional(Schema.Literal(true)),
+  /** The sender held `terminal:operate`; without it nothing reaches a terminal's claude. */
+  heldSessionTerminalAccess: OrchestrationV2Run.fields.heldSessionTerminalAccess,
 });
 export type ProviderAdapterV2TurnMessage = typeof ProviderAdapterV2TurnMessage.Type;
 

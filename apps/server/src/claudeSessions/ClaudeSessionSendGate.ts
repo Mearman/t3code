@@ -1,4 +1,5 @@
 import {
+  claudeBridgeIsCommandText,
   type ClaudeHeldSessionSend,
   defaultClaudeHeldSessionSend,
   type OrchestrationV2ProviderThread,
@@ -10,6 +11,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { T3_CODE_ENTRYPOINT } from "../provider/Drivers/ClaudeHome.ts";
+import type { ClaudeBridge } from "./ClaudeBridge.ts";
 import type { ClaudeSecondWriterRuns } from "./ClaudeSecondWriterRuns.ts";
 import {
   indexClaudeProcessTable,
@@ -229,15 +231,7 @@ function uncheckedRefusal(
 }
 
 /** The T3 bridge mod as the gate sees it: which sessions it runs in, and handing it a prompt. */
-export interface ClaudeSessionBridge {
-  readonly attached: (sessionId: string) => Effect.Effect<boolean>;
-  readonly submit: (input: {
-    readonly sessionId: string;
-    readonly commandId: string;
-    readonly text: string;
-    readonly asUser: boolean;
-  }) => Effect.Effect<void>;
-}
+export type ClaudeSessionBridge = Pick<ClaudeBridge["Service"], "attached" | "submit">;
 
 /** SIGTERM could not be sent to a holder T3 Code chose to take over. */
 export class ClaudeTakeOverSignalError extends Schema.TaggedError<ClaudeTakeOverSignalError>()(
@@ -455,51 +449,73 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   };
   // Hands the prompt to a holder running the bridge mod; Claude writes it, so nothing branches.
   // Without the mod attached it refuses as `ask` does, naming what is missing.
+  // Hands the prompt to a holder running the bridge mod; Claude writes it, so nothing branches.
+  // Anything it cannot hand over refuses as `ask` does, saying why, so no message is lost.
   const adoptHeld = (
-    providerThread: OrchestrationV2ProviderThread,
-    runId: string,
-    message: Pick<ProviderAdapter.ProviderAdapterV2TurnMessage, "text" | "adoptAsUser">,
+    input: Pick<ProviderAdapter.ProviderAdapterV2TurnInput, "threadId" | "runId" | "providerThread">,
+    message: Pick<
+      ProviderAdapter.ProviderAdapterV2TurnMessage,
+      "text" | "adoptAsUser" | "heldSessionTerminalAccess"
+    >,
   ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
+    const { providerThread } = input;
     const sessionId = providerThread.nativeThreadRef?.nativeId;
     if (sessionId === undefined || sessionId === null) return Effect.void;
+    const refuseNaming = (reason: string) =>
+      Effect.mapError(
+        refuseHeld(providerThread, "ask"),
+        (refusal) =>
+          new ProviderAdapter.ProviderAdapterThreadInUseError({
+            driver: refusal.driver,
+            providerThreadId: refusal.providerThreadId,
+            detail: `${refusal.detail} ${reason}`,
+            cause: refusal,
+            ...(refusal.holderObserved === true ? { holderObserved: true } : {}),
+          }),
+      );
     return Effect.flatMap(Effect.result(probe(sessionId)), (probed) => {
       if (Result.isFailure(probed)) return refuseHeld(providerThread, "ask");
       const hold = probed.success;
       if (hold === undefined) return Effect.void;
       if (hold._tag !== "held") return refuseHeld(providerThread, "ask");
+      if (message.heldSessionTerminalAccess !== true) {
+        return refuseNaming("Handing it to the terminal needs a connection allowed to use terminals.");
+      }
+      // Claude Code refuses a slash command a mod submits, so it is refused here, not lost there.
+      if (message.adoptAsUser === true && claudeBridgeIsCommandText(message.text)) {
+        return refuseNaming(
+          "A slash command cannot be handed to the terminal; type it in that terminal, or fork.",
+        );
+      }
       return Effect.flatMap(bridge.attached(sessionId), (attached) =>
         attached
           ? bridge
               .submit({
                 sessionId,
-                commandId: runId,
+                threadId: input.threadId,
+                runId: input.runId,
                 text: message.text,
                 asUser: message.adoptAsUser === true,
               })
               .pipe(
-                Effect.andThen(
-                  Effect.fail(
-                    new ProviderAdapter.ProviderAdapterThreadInUseError({
-                      driver: runtime.driver,
-                      providerThreadId: providerThread.id,
-                      detail: `T3 Code handed this message to the Claude Code process (pid ${hold.pid}) holding this session, through the T3 bridge. Its reply follows in this thread as that process's turn.`,
-                      cause: "adopted",
-                      holderObserved: true,
-                      adopted: true,
-                    }),
-                  ),
-                ),
-              )
-          : Effect.mapError(
-              refuseHeld(providerThread, "ask"),
-              (refusal) =>
-                new ProviderAdapter.ProviderAdapterThreadInUseError({
-                  driver: refusal.driver,
-                  providerThreadId: refusal.providerThreadId,
-                  detail: `${refusal.detail} The T3 bridge mod is not loaded in it: install it with \`t3 claude bridge install\` and run /reload-plugins in that terminal.`,
-                  cause: refusal,
-                  ...(refusal.holderObserved === true ? { holderObserved: true } : {}),
+                Effect.matchEffect({
+                  onFailure: (failure) =>
+                    refuseNaming(`The T3 bridge did not take it: ${failure.reason}.`),
+                  onSuccess: () =>
+                    Effect.fail(
+                      new ProviderAdapter.ProviderAdapterThreadInUseError({
+                        driver: runtime.driver,
+                        providerThreadId: providerThread.id,
+                        detail: `T3 Code handed this message to the Claude Code process (pid ${hold.pid}) holding this session, through the T3 bridge. Its reply follows in this thread as that process's turn.`,
+                        cause: "adopted",
+                        holderObserved: true,
+                        adopted: true,
+                      }),
+                    ),
                 }),
+              )
+          : refuseNaming(
+              "The T3 bridge mod is not loaded in it: install it with `t3 claude bridge install` and run /reload-plugins in that terminal.",
             ),
       );
     });
@@ -511,7 +527,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     > & {
       readonly message?: Pick<
         ProviderAdapter.ProviderAdapterV2TurnMessage,
-        "heldSessionSend" | "resendsHeldRefusal" | "text" | "adoptAsUser"
+        "heldSessionSend" | "resendsHeldRefusal" | "text" | "adoptAsUser" | "heldSessionTerminalAccess"
       >;
     },
   ) => {
@@ -529,7 +545,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
           : Effect.map(bridge.attached(sessionId), defaultClaudeHeldSessionSend);
     return Effect.flatMap(choose, (choice) =>
       choice === "adopt" && message !== undefined
-        ? adoptHeld(input.providerThread, input.runId, message)
+        ? adoptHeld(input, message)
         : choice === "takeOver"
           ? takeOverHeld(input.providerThread)
           : choice === "send" && resend

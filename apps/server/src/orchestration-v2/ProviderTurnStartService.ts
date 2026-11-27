@@ -2547,9 +2547,14 @@ export const layer: Layer.Layer<
             : { senderThreadId: message.senderThreadId }),
           ...(heldSessionSend === undefined ? {} : { heldSessionSend }),
           ...(resendsHeldRefusal ? { resendsHeldRefusal: true as const } : {}),
+          ...(run.heldSessionTerminalAccess === true
+            ? { heldSessionTerminalAccess: true as const }
+            : {}),
           // Only a person's own choice of `adopt`, which needs terminal:operate to dispatch, goes
           // to the holder as their words; a setting or the default submits it under the mod's name.
-          ...(run.heldSessionSend === "adopt" && message.createdBy === "user"
+          ...(run.heldSessionSend === "adopt" &&
+          message.createdBy === "user" &&
+          run.heldSessionTerminalAccess === true
             ? { adoptAsUser: true as const }
             : {}),
         },
