@@ -185,9 +185,8 @@ jobs:
       cli_archive: true
       launch_check: true
       timeout_minutes: 60
-      save_pnpm_store: false
 
-  # No CLI archive: Node single executables do not run on x64 macOS (see release.yml).
+  # No CLI archive: Node single executables do not run on x64 macOS (see release.yml). An Intel runner packages it natively: under Rosetta on a hosted arm64 runner, generating the server compile cache outlasts its limit.
   desktop_mac_x64:
     name: Desktop macOS x64
     needs: [preflight, build_bundle]
@@ -208,7 +207,7 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: macOS x64
-      runner: macos-26
+      runner: macos-26-intel
       platform: mac
       target: dmg
       arch: x64
