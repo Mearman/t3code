@@ -4,6 +4,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ClaudeSecondWriterRuns from "../claudeSessions/ClaudeSecondWriterRuns.ts";
+import * as ClaudeSessionOwnershipGate from "../claudeSessions/ClaudeSessionOwnershipGate.ts";
 import type { ClaudeSpawnedProcesses } from "../claudeSessions/ClaudeSpawnedProcesses.ts";
 import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as CodexAdapterV2 from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -19,6 +20,7 @@ export type ProviderOrchestrationAdapterInfrastructure =
   | ClaudeAdapterV2.ClaudeAgentSdkQueryRunner
   | ClaudeSecondWriterRuns.ClaudeSecondWriterRuns
   | ClaudeSpawnedProcesses
+  | ClaudeSessionOwnershipGate.ClaudeSessionOwnershipGate
   | CodexAdapterV2.CodexAppServerClientFactory
   | CursorAgentSdk.CursorAgentSdkRunner
   | CursorSdk.CursorSdk
@@ -78,4 +80,5 @@ export const layer = Layer.mergeAll(
   CursorSdk.layer,
   layerIdAllocator,
   ProviderContinuationRequests.layer,
+  ClaudeSessionOwnershipGate.layer,
 );

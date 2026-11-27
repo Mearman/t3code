@@ -41,7 +41,8 @@ export type ClaudeSessionHolderSource =
 /**
  * Why T3 Code must not write to a Claude session: a live process outside its own tree holds it
  * (with how it was started); a live process's entry names it but the process could be matched by
- * pid alone (`unconfirmed`); or a live process's entry stays unreadable, so it may hold it.
+ * pid alone (`unconfirmed`); a live process's entry stays unreadable, so it may hold it; or the
+ * session is a copy another environment owns and ownership could not move here (`replica`).
  */
 export type ClaudeSessionHold =
   | {
@@ -52,7 +53,8 @@ export type ClaudeSessionHold =
       readonly idle: boolean;
     }
   | { readonly _tag: "unconfirmed"; readonly pid: number }
-  | { readonly _tag: "unreadable"; readonly pid: number };
+  | { readonly _tag: "unreadable"; readonly pid: number }
+  | { readonly _tag: "replica"; readonly message: string };
 
 const candidatesFor = (
   registry: {
@@ -206,6 +208,8 @@ function holdRefusal(
         detail: `Claude Code's registry says a running process (pid ${hold.pid}) has this session open, but T3 Code cannot confirm that process is Claude, so it sent nothing. ${RETRY_OPTION}`,
         holderObserved: false,
       };
+    case "replica":
+      return { detail: hold.message, holderObserved: true };
     case "unreadable":
       return {
         detail: `Claude Code's registry entry for a running process (pid ${hold.pid}) could not be read, so T3 Code cannot tell whether it has this session open and sent nothing. ${RETRY_OPTION}`,
