@@ -50,7 +50,11 @@ export const EXACODE_ICON_PATHS = {
   webAppleTouchIconPng: "assets/exacode/exacode-web-apple-touch-180.png",
   webIcon192Png: "assets/exacode/exacode-web-icon-192x192.png",
   webIcon512Png: "assets/exacode/exacode-web-icon-512x512.png",
+  androidForegroundPng: "assets/exacode/exacode-android-foreground.png",
+  androidSplashPng: "assets/exacode/exacode-android-splash.png",
 } as const;
+/** The logo's background, which Android draws behind the adaptive icon's foreground. */
+export const EXACODE_ICON_BACKGROUND_COLOR = "#1B2A5E";
 
 export type WebAssetBrand = "development" | "nightly" | "production" | "fork";
 
