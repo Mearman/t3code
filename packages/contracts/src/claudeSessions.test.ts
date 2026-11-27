@@ -5,9 +5,9 @@ import { resolveClaudeHeldSessionSend } from "./claudeSessions.ts";
 describe("resolveClaudeHeldSessionSend", () => {
   it("takes the send's own choice over the configured one, whoever sent it", () => {
     for (const sentByPerson of [true, false]) {
-      expect(resolveClaudeHeldSessionSend({ chosen: "ask", sentByPerson, configured: "fork" })).toBe(
-        "ask",
-      );
+      expect(
+        resolveClaudeHeldSessionSend({ chosen: "ask", sentByPerson, configured: "fork" }),
+      ).toBe("ask");
     }
   });
 

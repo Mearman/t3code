@@ -129,7 +129,9 @@ export function ClaudeSessionSyncSettings() {
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
-                  <SelectItem value="default">{claudeHeldSessionSendLabel("default", m)}</SelectItem>
+                  <SelectItem value="default">
+                    {claudeHeldSessionSendLabel("default", m)}
+                  </SelectItem>
                   {HELD_SESSION_SEND_CHOICES.map((choice) => (
                     <SelectItem key={choice} value={choice}>
                       {claudeHeldSessionSendLabel(choice, m)}
