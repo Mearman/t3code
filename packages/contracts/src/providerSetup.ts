@@ -40,6 +40,8 @@ export const ProviderAuthInteraction = Schema.Union([
     acceptsCallback: Schema.optionalKey(Schema.Boolean),
     // "code": the field takes the code the provider's page shows, which is not a URL.
     callbackInput: Schema.optionalKey(Schema.Literals(["url", "code"])),
+    /** The page that shows that code; clients that read it open it instead of `url`. */
+    codeUrl: Schema.optionalKey(SignInUrl),
   }),
   Schema.Struct({
     type: Schema.Literal("deviceCode"),

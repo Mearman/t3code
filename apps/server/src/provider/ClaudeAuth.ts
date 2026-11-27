@@ -31,6 +31,8 @@ export interface ClaudeLoginSession {
     authorizationCode: string,
     state: string,
   ) => Effect.Effect<void, ProviderSetupError>;
+  /** Ends when the sign-in completes through the automatic link's local redirect. */
+  readonly awaitAutomaticCompletion: Effect.Effect<void, ProviderSetupError>;
 }
 
 /** The CLI or SDK cannot run sign-in through control requests; the terminal is the fallback. */
@@ -46,18 +48,31 @@ const decodeClaudeAuthStatus = Schema.decodeUnknownOption(
 
 const UNSUPPORTED_SUBTYPE = "Unsupported control request subtype";
 
+const pageOf = (url: URL) => `${url.origin}${url.pathname}`;
+
 /**
- * Reads a pasted sign-in answer: the bare code Claude's page shows, `code#state`, or a redirect URL
- * carrying `code` and `state`. The state must match the link this flow issued.
+ * Reads a pasted sign-in answer: the bare code Claude's page shows, `code#state`, or the redirect
+ * URL carrying `code` and `state`. The state must match this flow's; a pasted sign-in link
+ * (`signInLinks`) is not an answer, though it also carries a `code` and the state.
  */
 export function parseClaudeAuthorizationPaste(
   pasted: string,
   expectedState: string,
-): { readonly authorizationCode: string; readonly state: string } | "invalid" | "wrongFlow" {
+  signInLinks: ReadonlyArray<string>,
+):
+  | { readonly authorizationCode: string; readonly state: string }
+  | "invalid"
+  | "wrongFlow"
+  | "signInLink" {
   const text = pasted.trim();
   const url = URL.canParse(text) ? new URL(text) : undefined;
+  if (
+    url !== undefined &&
+    signInLinks.some((link) => URL.canParse(link) && pageOf(new URL(link)) === pageOf(url))
+  )
+    return "signInLink";
   const [code, state] = url
-    ? [url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? expectedState]
+    ? [url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? ""]
     : text.includes("#")
       ? [text.slice(0, text.indexOf("#")), text.slice(text.indexOf("#") + 1)]
       : [text, expectedState];
@@ -88,16 +103,17 @@ export const makeClaudeQueryLoginSession = (
   instanceId: ProviderInstanceId,
   query: object,
 ): ClaudeLoginSession => {
-  const failure = (operation: string, detail: string, cause: unknown) =>
-    new ProviderSetupError({
+  // The SDK's error can quote the link or the code, so only its redacted text is kept, in both
+  // the detail and the cause that spans and logs record.
+  const failure = (operation: string, detail: string, cause: unknown) => {
+    const reason = ProviderAuthTerminal.redactSignInSecrets(reasonOf(cause));
+    return new ProviderSetupError({
       instanceId,
       operation,
-      detail: ProviderAuthTerminal.appendDetail(
-        detail,
-        ProviderAuthTerminal.redactSignInSecrets(reasonOf(cause)),
-      ),
-      cause,
+      detail: ProviderAuthTerminal.appendDetail(detail, reason),
+      cause: reason,
     });
+  };
   return {
     authenticate: Effect.fn("ClaudeQueryLoginSession.authenticate")(function* (
       loginWithClaudeAi: boolean,
@@ -138,6 +154,16 @@ export const makeClaudeQueryLoginSession = (
         try: () => callback(authorizationCode, state),
         catch: (cause) => failure("respond", "Claude did not accept the sign-in code.", cause),
       });
+    }),
+    awaitAutomaticCompletion: Effect.suspend(() => {
+      const wait = controlMethod(query, "claudeOAuthWaitForCompletion");
+      // Without the request the flow can still finish through a pasted code.
+      return wait === undefined
+        ? Effect.never
+        : Effect.tryPromise({
+            try: () => wait(),
+            catch: (cause) => failure("verify", "Claude could not finish signing in.", cause),
+          }).pipe(Effect.asVoid);
     }),
   };
 };
@@ -225,18 +251,31 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: Cl
       readonly state: string;
     }>();
     // The exchange runs on the flow fiber, not inside `complete`, which holds the flow's lock.
+    // `url` is the automatic link: a browser on this machine finishes through the CLI's local
+    // redirect, and a client without `codeUrl` takes the failed redirect's address as a URL.
     yield* context.setInteraction(
       {
         type: "browser",
         id: "claude-oauth",
-        url: urls.manualUrl,
+        url: urls.automaticUrl,
+        codeUrl: urls.manualUrl,
         requiresConsent: false,
         acceptsCallback: true,
         callbackInput: "code",
       },
       undefined,
       (pasted) => {
-        const parsed = parseClaudeAuthorizationPaste(pasted, expectedState);
+        const parsed = parseClaudeAuthorizationPaste(pasted, expectedState, [
+          urls.manualUrl,
+          urls.automaticUrl,
+        ]);
+        if (parsed === "signInLink")
+          return Effect.fail(
+            fail(
+              "complete",
+              "That is the sign-in link. Open it, sign in, then paste the code the page shows.",
+            ),
+          );
         if (parsed === "invalid")
           return Effect.fail(fail("complete", "Paste the code shown after you sign in."));
         if (parsed === "wrongFlow")
@@ -249,9 +288,14 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: Cl
         return Deferred.succeed(answer, parsed).pipe(Effect.asVoid);
       },
     );
-    const { authorizationCode, state } = yield* Deferred.await(answer);
-    yield* context.verifying;
-    yield* session.submitCode(authorizationCode, state);
+    yield* Effect.raceFirst(
+      session.awaitAutomaticCompletion,
+      Effect.gen(function* () {
+        const { authorizationCode, state } = yield* Deferred.await(answer);
+        yield* context.verifying;
+        yield* session.submitCode(authorizationCode, state);
+      }),
+    );
   });
 
   const authenticate = Effect.fn("ClaudeAuth.authenticate")(function* (
