@@ -21,6 +21,7 @@ import {
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
+  CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE,
 } from "../client.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import type { ProviderAdapterFailureReason } from "./ProviderAdapter.ts";
@@ -158,6 +159,12 @@ function curatedCauseMessages(cause: unknown): {
         case "ProviderSetupError":
         case "ProviderCompactionUnsupportedError":
           return { known: stringField(cause, "message"), category: categoryMessage() };
+        case "ClaudeThreadAccountChangedError":
+          return {
+            known: stringField(cause, "message"),
+            category: categoryMessage(),
+            code: CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE,
+          };
         case "ProviderAdapterThreadInUseError": {
           const known = stringField(cause, "message");
           // Clients offer a fork only where a holder was seen, not where one is only possible.

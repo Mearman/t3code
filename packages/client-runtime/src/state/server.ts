@@ -1603,6 +1603,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:claude-account-create",
       tag: WS_METHODS.claudeAccountCreate,
     }),
+    confirmClaudeThreadAccount: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:claude-thread-account-confirm",
+      tag: WS_METHODS.claudeThreadAccountConfirm,
+    }),
     providerInstallState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:provider:install-state",
       tag: WS_METHODS.providerInstallSubscribe,

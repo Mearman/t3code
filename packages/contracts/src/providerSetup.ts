@@ -5,6 +5,7 @@ import {
   ForwardCompatibleArray,
   ForwardCompatibleOptional,
   IsoDateTime,
+  ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
@@ -156,6 +157,13 @@ export const ClaudeAccountCreateInput = Schema.Struct({
 export type ClaudeAccountCreateInput = typeof ClaudeAccountCreateInput.Type;
 export const ClaudeAccountCreateResult = Schema.Struct({ instanceId: ProviderInstanceId });
 export type ClaudeAccountCreateResult = typeof ClaudeAccountCreateResult.Type;
+
+/** Lets a thread send as the account its last refused send found, after the user saw both. */
+export const ClaudeThreadAccountConfirmInput = Schema.Struct({ threadId: ThreadId });
+export const ClaudeThreadAccountConfirmResult = Schema.Struct({
+  /** False when the thread had no refused account to confirm. */
+  confirmed: Schema.Boolean,
+});
 
 export const ProviderAuthCancelInput = Schema.Struct({
   instanceId: ProviderInstanceId,
