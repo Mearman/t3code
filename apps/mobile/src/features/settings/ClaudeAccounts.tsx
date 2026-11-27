@@ -1,3 +1,4 @@
+import { claudeShareSource } from "@t3tools/client-runtime/claudeAccounts";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { useGT } from "gt-react-native";
 import type { MenuAction } from "@react-native-menu/menu";
@@ -290,10 +291,10 @@ function ManagedClaudeAccountForm({
     reportDefect: false,
   });
   const [name, setName] = useState("");
-  const [shareWith, setShareWith] = useState(() => claudeInstances[0]?.instanceId ?? "");
+  const [shareWith, setShareWith] = useState<string | undefined>(undefined);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const source = claudeInstances.find((candidate) => candidate.instanceId === shareWith);
+  const source = claudeShareSource(claudeInstances, shareWith);
   async function save() {
     const displayName = name.trim();
     if (pending) return;
