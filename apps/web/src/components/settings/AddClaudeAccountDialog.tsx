@@ -1,4 +1,5 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { claudeShareSource } from "@t3tools/client-runtime/claudeAccounts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -47,13 +48,13 @@ export function AddClaudeAccountDialog({
     (provider) => provider.driver === CLAUDE_DRIVER_KIND,
   );
   const [name, setName] = useState("");
-  const [shareWith, setShareWith] = useState<string>(() => claudeInstances[0]?.instanceId ?? "");
+  const [shareWith, setShareWith] = useState<string | undefined>(undefined);
   const [instanceId, setInstanceId] = useState<ProviderInstanceId | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const provider = providers?.find((candidate) => candidate.instanceId === instanceId);
   const signedIn = provider?.auth.status === "authenticated";
-  const source = claudeInstances.find((candidate) => candidate.instanceId === shareWith);
+  const source = claudeShareSource(claudeInstances, shareWith);
 
   const createAccount = async () => {
     const displayName = name.trim();
