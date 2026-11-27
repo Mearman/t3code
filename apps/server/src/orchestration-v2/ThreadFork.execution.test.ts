@@ -940,29 +940,6 @@ it.effect("a latest stable fork skips a refused run and starts from the last tra
       threadId: parentId,
       runId: RunId.make("transcript-fork-run-2"),
     });
-    yield* orchestrator.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make("transcript-fork-send"),
-      threadId: forkId,
-      messageId: MessageId.make("transcript-fork-send"),
-      text: "Continue",
-      attachments: [],
-      dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
-    });
-    const target = yield* orchestrator.getThreadProjection(forkId);
-    const transfer = target.contextTransfers.find((candidate) => candidate.type === "fork");
-    assert.include(["native_fork", "portable_context"], transfer?.resolution?.strategy);
-    const handoff = target.contextHandoffs[0];
-    const history = `${handoff?.summaryText ?? ""}\n${
-      handoff?.history?.messages.map((message) => message.text).join("\n") ?? ""
-    }`;
-    if (transfer?.resolution?.strategy === "portable_context") {
-      assert.include(history, "FIRST_TRANSCRIPT_MARKER");
-      assert.include(history, "LAST_TRANSCRIPT_MARKER");
-      assert.notInclude(history, "REFUSED_MARKER");
-    }
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
@@ -2044,7 +2021,11 @@ it.effect("merge-back rejects a second fork's context until the first is consume
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
-const runForkWithFailingNativeSource = (forkFailures: number) => {
+/**
+ * With `latestStable`, the source's only completed run was read back from a transcript and a
+ * later run was refused, and the fork starts from `latest_stable` instead of that run's id.
+ */
+const runForkWithFailingNativeSource = (forkFailures: number, latestStable = false) => {
   const driver = ProviderDriverKind.make("claudeAgent");
   const instanceId = ProviderInstanceId.make("claudeAgent");
   const modelSelection = { instanceId, model: "test-model" };
@@ -2182,8 +2163,46 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
             completedAt: now,
             checkpointId: null,
             contextHandoffId: null,
+            ...(latestStable
+              ? {
+                  nativeOrigin: {
+                    kind: "claude_transcript" as const,
+                    nativeSessionId: "native-deleted-source",
+                    promptUuid: "fork-missing-prompt",
+                  },
+                }
+              : {}),
           },
         },
+        ...(latestStable
+          ? [
+              {
+                id: EventId.make("fork-missing-refused-run"),
+                type: "run.created" as const,
+                threadId: sourceThreadId,
+                runId: RunId.make("fork-missing-refused-run"),
+                occurredAt: now,
+                payload: {
+                  id: RunId.make("fork-missing-refused-run"),
+                  threadId: sourceThreadId,
+                  ordinal: 2,
+                  providerInstanceId: instanceId,
+                  modelSelection,
+                  providerThreadId: null,
+                  userMessageId: MessageId.make("fork-missing-refused-message"),
+                  rootNodeId: null,
+                  activeAttemptId: null,
+                  status: "failed" as const,
+                  queuePosition: null,
+                  requestedAt: now,
+                  startedAt: now,
+                  completedAt: now,
+                  checkpointId: null,
+                  contextHandoffId: null,
+                },
+              },
+            ]
+          : []),
         {
           id: EventId.make("fork-missing-user-item"),
           type: "turn-item.updated",
@@ -2221,7 +2240,7 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
       commandId: CommandId.make("fork-missing-fork"),
       sourceThreadId,
       targetThreadId,
-      sourcePoint: { type: "run", runId: sourceRunId },
+      sourcePoint: latestStable ? { type: "latest_stable" } : { type: "run", runId: sourceRunId },
       createdBy: "user",
       creationSource: "web",
     });
@@ -2283,5 +2302,26 @@ it.effect("a native fork that fails before its last attempt still forks natively
     assert.equal(forkCalls, 2);
     assert.equal(projection.contextTransfers[0]?.status, "consumed");
     assert.equal(projection.contextTransfers[0]?.resolution?.strategy, "native_fork");
+  }),
+);
+
+it.effect("a latest stable fork past a refused run carries the transcript history natively", () =>
+  Effect.gen(function* () {
+    const { projection, forkCalls } = yield* runForkWithFailingNativeSource(0, true);
+    assert.equal(forkCalls, 1);
+    assert.equal(projection.contextTransfers[0]?.status, "consumed");
+    assert.equal(projection.contextTransfers[0]?.resolution?.strategy, "native_fork");
+    assert.equal(projection.thread.forkedFrom?.runId, RunId.make("fork-missing-source-run"));
+  }),
+);
+
+it.effect("a latest stable fork past a refused run carries the transcript history portably", () =>
+  Effect.gen(function* () {
+    const { projection, turn } = yield* runForkWithFailingNativeSource(
+      Number.POSITIVE_INFINITY,
+      true,
+    );
+    assert.equal(projection.contextTransfers[0]?.status, "resolved_portable");
+    assert.include(JSON.stringify(turn), "FORKED_SOURCE_MARKER");
   }),
 );
