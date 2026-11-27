@@ -318,7 +318,9 @@ export class ProviderAdapterThreadInUseError extends Schema.TaggedError<Provider
     cause: Schema.Defect(),
     /** Another process was seen holding the thread; unset when it may, or may not, be held. */
     holderObserved: Schema.optional(Schema.Literal(true)),
-    /** The send chose to continue in a fork, which the server makes once the refusal is recorded. */
+    /**
+     * The send chose to continue in a fork, which the server makes once the refusal is recorded.
+     */
     continueInFork: Schema.optional(Schema.Literal(true)),
   },
 ) {
