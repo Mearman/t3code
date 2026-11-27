@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 
 import {
+  PROVIDER_THREAD_IN_USE_ADOPTED_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
@@ -163,6 +164,13 @@ function curatedCauseMessages(cause: unknown): {
           // Clients offer a fork only where a holder was seen, not where one is only possible.
           if (!Predicate.hasProperty(cause, "holderObserved") || cause.holderObserved !== true) {
             return { known, category: categoryMessage() };
+          }
+          if (Predicate.hasProperty(cause, "adopted") && cause.adopted === true) {
+            return {
+              known,
+              category: categoryMessage(),
+              code: PROVIDER_THREAD_IN_USE_ADOPTED_FAILURE_CODE,
+            };
           }
           const continueAs = Predicate.hasProperty(cause, "continueAs")
             ? cause.continueAs

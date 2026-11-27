@@ -1,6 +1,6 @@
 import {
   type ClaudeHeldSessionSend,
-  DEFAULT_CLAUDE_HELD_SESSION_SEND,
+  defaultClaudeHeldSessionSend,
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -228,6 +228,17 @@ function uncheckedRefusal(
   };
 }
 
+/** The T3 bridge mod as the gate sees it: which sessions it runs in, and handing it a prompt. */
+export interface ClaudeSessionBridge {
+  readonly attached: (sessionId: string) => Effect.Effect<boolean>;
+  readonly submit: (input: {
+    readonly sessionId: string;
+    readonly commandId: string;
+    readonly text: string;
+    readonly asUser: boolean;
+  }) => Effect.Effect<void>;
+}
+
 /** SIGTERM could not be sent to a holder T3 Code chose to take over. */
 export class ClaudeTakeOverSignalError extends Schema.TaggedError<ClaudeTakeOverSignalError>()(
   "ClaudeTakeOverSignalError",
@@ -275,6 +286,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   processTableRequirement: string,
   takeOver: ClaudeSessionTakeOver,
   secondWriters: Pick<ClaudeSecondWriterRuns["Service"], "record">,
+  bridge: ClaudeSessionBridge,
 ): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
   // A failed check or a holder only possibly there may clear on its own (a slow `ps`, an entry
   // being written), so it is checked again before the write is refused.
@@ -441,6 +453,57 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
         : refuseHeld(providerThread, "send", true);
     });
   };
+  // Hands the prompt to a holder running the bridge mod; Claude writes it, so nothing branches.
+  // Without the mod attached it refuses as `ask` does, naming what is missing.
+  const adoptHeld = (
+    providerThread: OrchestrationV2ProviderThread,
+    runId: string,
+    message: Pick<ProviderAdapter.ProviderAdapterV2TurnMessage, "text" | "adoptAsUser">,
+  ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
+    const sessionId = providerThread.nativeThreadRef?.nativeId;
+    if (sessionId === undefined || sessionId === null) return Effect.void;
+    return Effect.flatMap(Effect.result(probe(sessionId)), (probed) => {
+      if (Result.isFailure(probed)) return refuseHeld(providerThread, "ask");
+      const hold = probed.success;
+      if (hold === undefined) return Effect.void;
+      if (hold._tag !== "held") return refuseHeld(providerThread, "ask");
+      return Effect.flatMap(bridge.attached(sessionId), (attached) =>
+        attached
+          ? bridge
+              .submit({
+                sessionId,
+                commandId: runId,
+                text: message.text,
+                asUser: message.adoptAsUser === true,
+              })
+              .pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapter.ProviderAdapterThreadInUseError({
+                      driver: runtime.driver,
+                      providerThreadId: providerThread.id,
+                      detail: `T3 Code handed this message to the Claude Code process (pid ${hold.pid}) holding this session, through the T3 bridge. Its reply follows in this thread as that process's turn.`,
+                      cause: "adopted",
+                      holderObserved: true,
+                      adopted: true,
+                    }),
+                  ),
+                ),
+              )
+          : Effect.mapError(
+              refuseHeld(providerThread, "ask"),
+              (refusal) =>
+                new ProviderAdapter.ProviderAdapterThreadInUseError({
+                  driver: refusal.driver,
+                  providerThreadId: refusal.providerThreadId,
+                  detail: `${refusal.detail} The T3 bridge mod is not loaded in it: install it with \`t3 claude bridge install\` and run /reload-plugins in that terminal.`,
+                  cause: refusal,
+                  ...(refusal.holderObserved === true ? { holderObserved: true } : {}),
+                }),
+            ),
+      );
+    });
+  };
   const refuseBeforePrompt = (
     input: Pick<
       ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -448,18 +511,30 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     > & {
       readonly message?: Pick<
         ProviderAdapter.ProviderAdapterV2TurnMessage,
-        "heldSessionSend" | "resendsHeldRefusal"
+        "heldSessionSend" | "resendsHeldRefusal" | "text" | "adoptAsUser"
       >;
     },
   ) => {
-    const choice = input.message?.heldSessionSend ?? DEFAULT_CLAUDE_HELD_SESSION_SEND;
-    const resend = input.message?.resendsHeldRefusal === true;
-    return (
-      choice === "takeOver"
-        ? takeOverHeld(input.providerThread)
-        : choice === "send" && resend
-          ? sendBeside(input.providerThread, input.runId)
-          : refuseHeld(input.providerThread, choice)
+    const { message } = input;
+    const sessionId = input.providerThread.nativeThreadRef?.nativeId;
+    const resend = message?.resendsHeldRefusal === true;
+    // The default hands the prompt to the bridge only for a sender who may act on the terminal.
+    const choose =
+      message?.heldSessionSend !== undefined
+        ? Effect.succeed(message.heldSessionSend)
+        : message?.heldSessionTerminalAccess !== true ||
+            sessionId === undefined ||
+            sessionId === null
+          ? Effect.succeed<ClaudeHeldSessionSend>("ask")
+          : Effect.map(bridge.attached(sessionId), defaultClaudeHeldSessionSend);
+    return Effect.flatMap(choose, (choice) =>
+      choice === "adopt" && message !== undefined
+        ? adoptHeld(input.providerThread, input.runId, message)
+        : choice === "takeOver"
+          ? takeOverHeld(input.providerThread)
+          : choice === "send" && resend
+            ? sendBeside(input.providerThread, input.runId)
+            : refuseHeld(input.providerThread, choice),
     ).pipe(
       Effect.mapError(
         (cause) =>
@@ -551,6 +626,7 @@ export function gateHeldClaudeSessions(
   processTableRequirement: string,
   takeOver: ClaudeSessionTakeOver,
   secondWriters: Pick<ClaudeSecondWriterRuns["Service"], "record">,
+  bridge: ClaudeSessionBridge,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     ...adapter,
@@ -565,6 +641,7 @@ export function gateHeldClaudeSessions(
               processTableRequirement,
               takeOver,
               secondWriters,
+              bridge,
             ),
           ),
         ),

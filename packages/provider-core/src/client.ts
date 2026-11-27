@@ -10,6 +10,9 @@ export const PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE = "provider_thread_in_use_
 /** The same refusal where the send chose to go beside the holder, which the server resends. */
 export const PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE = "provider_thread_in_use_send";
 
+/** The prompt went to the holder through the T3 bridge mod; its reply follows as its own turn. */
+export const PROVIDER_THREAD_IN_USE_ADOPTED_FAILURE_CODE = "provider_thread_in_use_adopted";
+
 /** Whether a failure code is a refusal because another process was seen holding the session. */
 export function isHeldRefusalCode(code: string | null | undefined): boolean {
   return (

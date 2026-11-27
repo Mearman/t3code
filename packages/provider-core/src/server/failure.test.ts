@@ -23,6 +23,7 @@ import {
   ContextHandoffBackgroundWorkError,
 } from "./failure.ts";
 import {
+  PROVIDER_THREAD_IN_USE_ADOPTED_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
@@ -325,6 +326,22 @@ it("explains a native thread another client is writing to", () => {
   assert.equal(continuedCode("send", true), PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE);
   assert.equal(continuedCode("fork", false), null);
   assert.equal(continuedCode("send", false), null);
+  // A prompt the bridge took is no refusal to act on: clients show it, and nobody forks.
+  assert.equal(
+    makeProviderFailure({
+      cause: Cause.fail(
+        new ProviderAdapter.ProviderAdapterThreadInUseError({
+          driver: inUse.driver,
+          providerThreadId: inUse.providerThreadId,
+          detail: inUse.detail,
+          cause: inUse.cause,
+          holderObserved: true,
+          adopted: true,
+        }),
+      ),
+    }).code,
+    PROVIDER_THREAD_IN_USE_ADOPTED_FAILURE_CODE,
+  );
 });
 
 it("keeps every curated message without a failure code", () => {

@@ -9,6 +9,8 @@ import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
+import * as ClaudeBridge from "./claudeSessions/ClaudeBridge.ts";
+import * as ClaudeBridgeHttp from "./claudeSessions/ClaudeBridgeHttp.ts";
 import * as ClaudeHeldSessionReactor from "./claudeSessions/ClaudeHeldSessionReactor.ts";
 import * as ClaudeSecondWriterRuns from "./claudeSessions/ClaudeSecondWriterRuns.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
@@ -973,6 +975,8 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
     GuestHttp.layer,
+    // The same infrastructure layer as the drivers', so the routes and gates share one bridge.
+    ClaudeBridgeHttp.layer.pipe(Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer)),
     LinkThreadHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
@@ -1468,8 +1472,21 @@ const layerMakeServer = Layer.unwrap(
       withRootRequestSpans,
       Layer.tap(() => Deferred.succeed(routesReady, undefined).pipe(Effect.orDie)),
     );
+    // The bridge mod finds this server through a file in each Claude home, once it listens.
+    const layerClaudeBridgeOrigin = Layer.effectDiscard(
+      ServerActivation.forkParked(
+        Effect.gen(function* () {
+          const server = yield* HttpServer.HttpServer;
+          const address = server.address;
+          if (typeof address === "string" || !("port" in address)) return;
+          const bridge = yield* ClaudeBridge.ClaudeBridge;
+          yield* bridge.serveAt(`http://${loopbackUrlHostForAddress(address)}:${address.port}`);
+        }),
+      ),
+    ).pipe(Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer));
     const layerServerApplication = Layer.mergeAll(
       layerRoutes,
+      layerClaudeBridgeOrigin,
       layerHttpListening,
       layerDesktopReadySignal,
       layerRuntimeState.pipe(Layer.provide(layerLauncher)),

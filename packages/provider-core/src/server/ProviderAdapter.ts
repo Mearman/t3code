@@ -89,6 +89,8 @@ export const ProviderAdapterV2TurnMessage = Schema.Struct({
   heldSessionSend: OrchestrationV2Run.fields.heldSessionSend,
   /** The send resends a message refused for a holder, after a person or the server chose. */
   resendsHeldRefusal: Schema.optional(Schema.Literal(true)),
+  /** A person chose `adopt` for this send, so the bridge may submit it as their own words. */
+  adoptAsUser: Schema.optional(Schema.Literal(true)),
 });
 export type ProviderAdapterV2TurnMessage = typeof ProviderAdapterV2TurnMessage.Type;
 
@@ -322,6 +324,8 @@ export class ProviderAdapterThreadInUseError extends Schema.TaggedError<Provider
     holderObserved: Schema.optional(Schema.Literal(true)),
     /** What the server does once the refusal is recorded: fork, or resend beside the holder. */
     continueAs: Schema.optional(Schema.Literals(["fork", "send"])),
+    /** The prompt was handed to the holder through the T3 bridge mod instead. */
+    adopted: Schema.optional(Schema.Literal(true)),
   },
 ) {
   override get message(): string {

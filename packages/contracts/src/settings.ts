@@ -1106,7 +1106,7 @@ export const ClaudeSessionSyncSettings = Schema.Struct({
   ),
   /**
    * What a person's send to a session another process holds does when the send names no choice;
-   * null takes `DEFAULT_CLAUDE_HELD_SESSION_SEND`.
+   * null takes `defaultClaudeHeldSessionSend`: `adopt` where the bridge mod is attached, else `ask`.
    */
   heldSessionSend: ForwardCompatibleNullable(ClaudeHeldSessionSend).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
