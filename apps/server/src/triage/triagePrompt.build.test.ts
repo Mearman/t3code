@@ -37,7 +37,12 @@ it("gives a fork build's session the fork's playbook, never upstream's", async (
 
 it("points a fork build's step references at the renumbered clone step", async () => {
   const { buildTriageContext } = await loadBuild(forkDefines);
-  const context = buildTriageContext({ ...contextInput, entry: cli, server: "stopped", sourceClone: failedClone });
+  const context = buildTriageContext({
+    ...contextInput,
+    entry: cli,
+    server: "stopped",
+    sourceClone: failedClone,
+  });
   assert.include(context, "Clone it as step 3 describes.");
   assert.notInclude(context, "step 4");
   assert.include(context, "- Repo: https://github.com/owner/fork");
@@ -47,7 +52,12 @@ it("keeps an unbranded build on upstream's playbook and repository, whatever rep
   const { buildTriageContext, buildTriageSeedPrompt } = await loadBuild({
     __T3CODE_RELEASE_REPOSITORY__: "owner/fork",
   });
-  const context = buildTriageContext({ ...contextInput, entry: cli, server: "stopped", sourceClone: failedClone });
+  const context = buildTriageContext({
+    ...contextInput,
+    entry: cli,
+    server: "stopped",
+    sourceClone: failedClone,
+  });
   assert.include(context, "- Repo: https://github.com/pingdotgg/t3code");
   assert.include(context, "Clone it as step 4 describes.");
   const prompt = buildTriageSeedPrompt({ contextFilePath: "/x/context.md", entry: cli });
