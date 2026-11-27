@@ -13040,5 +13040,9 @@
   "d7bd140afc367aef": "claude code sessões espaço disco armazenamento limite",
   "e2ba25992774347f": "Pastas do Claude adicionais",
   "f04c3d73e1bc1bb1": "claude code sessões histórico preenchimento ocioso",
-  "f7a1136e93716b32": "Mostrar cada sessão do Claude Code das pastas do Claude desta máquina como uma conversa e acompanhar as sessões que um terminal está executando."
+  "f7a1136e93716b32": "Mostrar cada sessão do Claude Code das pastas do Claude desta máquina como uma conversa e acompanhar as sessões que um terminal está executando.",
+  "5d7f6f4f7a7719ed": "Carregando o histórico desta sessão",
+  "d25e309d89bcf285": "Histórico carregado",
+  "669d9a6e03b3e6f2": "A atividade mais recente deste thread veio do Claude Code em um terminal.",
+  "b0e84e35de44a0c3": "Terminal"
 }

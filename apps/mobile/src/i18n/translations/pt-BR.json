@@ -5716,5 +5716,9 @@
   "a2925da227d38e1b": "Espaço livre mínimo em disco (GB)",
   "a863c1fb1edfc155": "Ler em segundo plano as sessões não abertas",
   "e2ba25992774347f": "Pastas do Claude adicionais",
-  "f7a1136e93716b32": "Mostrar cada sessão do Claude Code das pastas do Claude desta máquina como uma conversa e acompanhar as sessões que um terminal está executando."
+  "f7a1136e93716b32": "Mostrar cada sessão do Claude Code das pastas do Claude desta máquina como uma conversa e acompanhar as sessões que um terminal está executando.",
+  "5d7f6f4f7a7719ed": "Carregando o histórico desta sessão",
+  "d25e309d89bcf285": "Histórico carregado",
+  "68d2385c8448c944": "Terminal",
+  "adaeea93edfcc632": "de um terminal"
 }

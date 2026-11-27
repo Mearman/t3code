@@ -5716,5 +5716,9 @@
   "a2925da227d38e1b": "Espace disque libre minimal (Go)",
   "a863c1fb1edfc155": "Lire en arrière-plan les sessions non ouvertes",
   "e2ba25992774347f": "Dossiers Claude supplémentaires",
-  "f7a1136e93716b32": "Afficher chaque session Claude Code des dossiers Claude de cette machine comme un fil, et suivre les sessions qu’un terminal exécute."
+  "f7a1136e93716b32": "Afficher chaque session Claude Code des dossiers Claude de cette machine comme un fil, et suivre les sessions qu’un terminal exécute.",
+  "5d7f6f4f7a7719ed": "Chargement de l'historique de cette session",
+  "d25e309d89bcf285": "Historique chargé",
+  "68d2385c8448c944": "Terminal",
+  "adaeea93edfcc632": "depuis un terminal"
 }
