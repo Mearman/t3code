@@ -327,6 +327,12 @@ describe("systemNoticeLabel", () => {
     expect(systemNoticeLabel({ id, status: "completed", message })).toBe("History loaded");
   });
 
+  it("words the note on a send beside a holder itself, whatever the server wrote", () => {
+    expect(
+      systemNoticeLabel({ id: "x:held-send:run-1", status: "completed", message: "English." }),
+    ).toContain("Its next prompt continues from before this reply");
+  });
+
   it("keeps the reason a history load failed with, and the text of every other notice", () => {
     const reason = "History not loaded: the disk is below the 10 GB the sync keeps free.";
     expect(

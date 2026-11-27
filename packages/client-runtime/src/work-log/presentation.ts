@@ -23,7 +23,10 @@ import { isWorkspaceImagePreviewPath } from "@t3tools/shared/mediaPreview";
 import { formatTokens } from "@t3tools/shared/usageFormat";
 import { classifyToolActivity } from "@t3tools/shared/toolActivity";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
-import { isClaudeHistoryNoticeId } from "@t3tools/shared/claudeSyncNotice";
+import {
+  isClaudeHistoryNoticeId,
+  isClaudeSecondWriterNoticeId,
+} from "@t3tools/shared/claudeSyncNotice";
 
 import {
   summarizeT3ToolCalls,
@@ -102,6 +105,13 @@ export function systemNoticeLabel(
   item: SystemNoticeLabelItem,
   resolve: MFunctionType = mFallback,
 ): string {
+  if (isClaudeSecondWriterNoticeId(item.id)) {
+    return resolve(
+      msg(
+        "Sent beside another Claude Code process that has this session open. Its next prompt continues from before this reply, so `claude --resume` follows one side of the branch; fork or take over to keep one line.",
+      ),
+    );
+  }
   if (!isClaudeHistoryNoticeId(item.id)) return item.message;
   if (item.status === "running") return resolve(msg("Loading this session's history"));
   if (item.status === "completed") return resolve(msg("History loaded"));

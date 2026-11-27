@@ -7,10 +7,7 @@ import {
   type OrchestrationV2ProviderFailure,
   type RunId,
 } from "@t3tools/contracts";
-import {
-  PROVIDER_THREAD_IN_USE_FAILURE_CODE,
-  PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
-} from "@t3tools/provider-core/client";
+import { isHeldRefusalCode, PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
 import {
   latestRootProviderFailure,
   latestT3ExecutedRun,
@@ -275,13 +272,10 @@ export function canForkProjectedAssistantItem(input: {
 
 /**
  * Whether a failure is a refusal because another process was seen holding the session, including
- * one the server continues in a fork, whose button stays a way to fork again.
+ * one the server continues in a fork or beside the holder; its fork button stays a way out.
  */
 export function isHeldSessionFailure(failure: Pick<OrchestrationV2ProviderFailure, "code">) {
-  return (
-    failure.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE ||
-    failure.code === PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE
-  );
+  return isHeldRefusalCode(failure.code);
 }
 
 /**
@@ -341,6 +335,7 @@ export function heldSessionResendRunId(
 
 /** Choices a held session's refused message offers besides a fork; each acts on the terminal. */
 export const HELD_SESSION_RESEND_CHOICES = [
+  "send",
   "takeOver",
 ] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
 
