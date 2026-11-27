@@ -1,4 +1,6 @@
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import { CLAUDE_HELD_SESSION_TERMINAL_CHOICES, ClaudeHeldSessionSend } from "./claudeSessions.ts";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
   AuthAccessWriteScope,
@@ -111,6 +113,7 @@ export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 const decodeLinkPairing = Schema.decodeUnknownSync(PeerLinkLinkPairingInput);
+const isHeldSessionSend = Schema.is(ClaudeHeldSessionSend);
 
 export function clientRpcRequiredScopes(
   method: string,
@@ -133,6 +136,15 @@ export function clientRpcRequiredScopes(
   if (method === WS_METHODS.peerLinksPairLink && input !== undefined) {
     const held = mcpClientScopes(decodeLinkPairing(input).access);
     return [AuthAccessWriteScope, ...held];
+  }
+  // A send that stops or writes to a terminal's claude acts on that terminal.
+  if (
+    method === ORCHESTRATION_V2_WS_METHODS.dispatchCommand &&
+    Predicate.hasProperty(input, "heldSessionSend") &&
+    isHeldSessionSend(input.heldSessionSend) &&
+    CLAUDE_HELD_SESSION_TERMINAL_CHOICES.has(input.heldSessionSend)
+  ) {
+    return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
   }
   if (method === WS_METHODS.guestShareCreate) {
     return [AuthAccessWriteScope, AuthOrchestrationReadScope];

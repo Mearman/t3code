@@ -3771,13 +3771,6 @@ const make = Effect.gen(function* () {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
-      // Stopping a terminal's claude is a person's call, never an agent's in another thread.
-      if (input.heldSessionSend === "takeOver" && parent !== undefined) {
-        return yield* failure(
-          "invalid_request",
-          "An agent cannot take over a Claude session another process holds; send with `fork` or `ask`.",
-        );
-      }
 
       const mode = input.mode ?? "auto";
       const key = yield* requestKey(input.clientRequestId);

@@ -19,6 +19,7 @@ import {
   AuthSourceControlWriteScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
+  type ClaudeHeldSessionSend,
   CommandId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
@@ -1027,5 +1028,63 @@ it.effect("requires provider management to send /logout through chat", () =>
       "kept-attachments-edit",
       "manager",
     ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("requires the terminal scope for a send that acts on a terminal's claude", () =>
+  Effect.gen(function* () {
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof RPC_REQUIRED_SCOPES,
+          typeof ORCHESTRATION_V2_WS_METHODS.dispatchCommand
+        > => tag !== ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+      ),
+    );
+    const handled: string[] = [];
+    const handler = group.toLayerHandler(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, (command) =>
+      Effect.sync(() => {
+        handled.push(command.commandId);
+        return { sequence: 1 };
+      }),
+    );
+    const message = (commandId: string, heldSessionSend?: ClaudeHeldSessionSend) => ({
+      type: "message.dispatch" as const,
+      createdBy: "user" as const,
+      creationSource: "web" as const,
+      commandId: CommandId.make(commandId),
+      threadId: ThreadId.make("thread"),
+      messageId: MessageId.make(commandId),
+      text: "hello",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" as const },
+      ...(heldSessionSend === undefined ? {} : { heldSessionSend }),
+    });
+    const operator = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handler, RpcAuthorization.layer([AuthOrchestrationOperateScope]))),
+    );
+    const dispatch = operator[ORCHESTRATION_V2_WS_METHODS.dispatchCommand];
+    yield* dispatch(message("plain"));
+    yield* dispatch(message("ask", "ask"));
+    yield* dispatch(message("fork", "fork"));
+    for (const choice of ["takeOver"] as const) {
+      expect(yield* dispatch(message(choice, choice)).pipe(Effect.flip)).toMatchObject({
+        requiredPermission: AuthTerminalOperateScope,
+      });
+    }
+    const terminalOperator = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          handler,
+          RpcAuthorization.layer([AuthOrchestrationOperateScope, AuthTerminalOperateScope]),
+        ),
+      ),
+    );
+    yield* terminalOperator[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+      message("takeOver-allowed", "takeOver"),
+    );
+    expect(handled).toEqual(["plain", "ask", "fork", "takeOver-allowed"]);
   }).pipe(Effect.scoped),
 );

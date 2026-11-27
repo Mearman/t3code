@@ -8427,6 +8427,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.heldSessionSend === undefined
           ? {}
           : { heldSessionSend: command.heldSessionSend }),
+        ...(command.heldSessionTerminalAccess === true
+          ? { heldSessionTerminalAccess: true as const }
+          : {}),
         ...output,
       };
       const attempt: OrchestrationV2RunAttempt = {
@@ -8859,6 +8862,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.heldSessionSend === undefined
           ? {}
           : { heldSessionSend: command.heldSessionSend }),
+        ...(command.heldSessionTerminalAccess === true
+          ? { heldSessionTerminalAccess: true as const }
+          : {}),
         ...output,
       };
       const attempt: OrchestrationV2RunAttempt = {

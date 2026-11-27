@@ -125,15 +125,25 @@ export const withQueuedAttachmentsOnSignOutText = Effect.fn(
 /**
  * `sender.managesProviders` is whether the caller holds `providers:manage`. RPC authorization
  * has already checked every command whose payload shows a provider sign-out; a queued edit
- * that keeps its attachments is the one case decided here.
+ * that keeps its attachments is the one case decided here. `sender.operatesTerminal` is
+ * whether it holds `terminal:operate`, which a message records for a send to a held session.
  */
+// The client's own value is never trusted: only the session's scopes decide it.
+function withTerminalAccess(
+  command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+  operatesTerminal: boolean,
+): typeof command {
+  const { heldSessionTerminalAccess: _claimed, ...rest } = command;
+  return operatesTerminal ? { ...rest, heldSessionTerminalAccess: true } : rest;
+}
+
 export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
   incoming: OrchestrationV2Command,
-  sender: { readonly managesProviders: boolean },
+  sender: { readonly managesProviders: boolean; readonly operatesTerminal: boolean },
 ) {
   const command =
     incoming.type === "message.dispatch"
-      ? yield* withGuestAttachments(incoming)
+      ? yield* withGuestAttachments(withTerminalAccess(incoming, sender.operatesTerminal))
       : incoming.type === "queued-run.edit" && !sender.managesProviders
         ? yield* withQueuedAttachmentsOnSignOutText(incoming)
         : incoming;
