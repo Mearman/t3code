@@ -111,6 +111,7 @@ import * as RpcAuthorization from "./auth/RpcAuthorization.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerThreadRelay from "./peer/PeerThreadRelay.ts";
 import * as ClaudeSessionReplication from "./claudeSessions/ClaudeSessionReplication.ts";
+import * as ClaudeSessionMove from "./claudeSessions/ClaudeSessionMove.ts";
 import * as PeerClientPairing from "./peer/PeerClientPairing.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
@@ -869,6 +870,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
   Layer.mock(PeerThreadRelay.PeerThreadRelay)({}),
   Layer.mock(ClaudeSessionReplication.ClaudeSessionReplication)({}),
+  Layer.mock(ClaudeSessionMove.ClaudeSessionMove)({}),
   Layer.mock(PeerClientPairing.PeerClientPairing)({}),
   Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => undefined }),
   Layer.mock(PreviewManager.PreviewManager)({}),

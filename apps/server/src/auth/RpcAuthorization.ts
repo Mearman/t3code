@@ -109,6 +109,8 @@ export const RPC_REQUIRED_SCOPES = {
   // Listing a linked environment's sessions reads them as its threads are read.
   [WS_METHODS.claudeSessionsListRemote]: AuthOrchestrationReadScope,
   [WS_METHODS.claudeSessionsReplicationReport]: AuthOrchestrationReadScope,
+  // Payload-dependent scopes come from clientRpcRequiredScopes; this is the floor.
+  [WS_METHODS.claudeSessionsMove]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
   [WS_METHODS.serverSearchAcpRegistry]: AuthOrchestrationReadScope,
   [WS_METHODS.serverPrepareAcpRegistryAgent]: AuthProvidersManageScope,

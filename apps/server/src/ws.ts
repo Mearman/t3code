@@ -13,6 +13,7 @@ import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PeerThreadRelay from "./peer/PeerThreadRelay.ts";
 import * as ClaudeSessionReplication from "./claudeSessions/ClaudeSessionReplication.ts";
+import * as ClaudeSessionMove from "./claudeSessions/ClaudeSessionMove.ts";
 
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -1598,6 +1599,7 @@ export const layerWsRpc = (
       const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
       const peerThreadRelay = yield* PeerThreadRelay.PeerThreadRelay;
       const claudeReplication = yield* ClaudeSessionReplication.ClaudeSessionReplication;
+      const claudeMove = yield* ClaudeSessionMove.ClaudeSessionMove;
       const peerClientPairing = yield* PeerClientPairing.PeerClientPairing;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
@@ -2854,6 +2856,7 @@ export const layerWsRpc = (
         [WS_METHODS.claudeSessionsListRemote]: (input) => claudeReplication.listRemote(input),
         [WS_METHODS.claudeSessionsReplicationReport]: () => claudeReplication.report,
         [WS_METHODS.claudeSessionsReplicateNow]: () => claudeReplication.replicateNow,
+        [WS_METHODS.claudeSessionsMove]: (input) => claudeMove.move(input),
         [WS_METHODS.peerLinksThreadHistoryPage]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(peerThreadRelay.historyPage(input)),
@@ -3839,6 +3842,7 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const peerThreadRelay = yield* PeerThreadRelay.PeerThreadRelay;
     const claudeReplication = yield* ClaudeSessionReplication.ClaudeSessionReplication;
+    const claudeMove = yield* ClaudeSessionMove.ClaudeSessionMove;
     const peerClientPairing = yield* PeerClientPairing.PeerClientPairing;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
@@ -3950,6 +3954,7 @@ export const layer = Layer.unwrap(
               Layer.provide(
                 Layer.succeed(ClaudeSessionReplication.ClaudeSessionReplication, claudeReplication),
               ),
+              Layer.provide(Layer.succeed(ClaudeSessionMove.ClaudeSessionMove, claudeMove)),
               Layer.provide(Layer.succeed(PeerClientPairing.PeerClientPairing, peerClientPairing)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(

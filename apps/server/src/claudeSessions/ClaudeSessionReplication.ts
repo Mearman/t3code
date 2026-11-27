@@ -112,7 +112,7 @@ export const decodeListCursor = (text: string): ListCursor | undefined => {
 };
 
 /** A session's files as served: its layout and its transcript's path. */
-interface LocatedSession {
+export interface LocatedSession {
   readonly layout: ClaudeSessionLayout;
   readonly transcriptPath: string;
   readonly cwd: string | null;
@@ -170,6 +170,23 @@ export class ClaudeSessionReplication extends Context.Service<
     /** Runs one pass over every full-access link now, then reports it. */
     readonly replicateNow: Effect.Effect<ClaudeReplicationReport, ClaudeSessionReplicationError>;
     readonly report: Effect.Effect<ClaudeReplicationReport, ClaudeSessionReplicationError>;
+    /** An owned session's files and directory, for moving it; fails when it is not owned here. */
+    readonly ownedSession: (
+      sessionId: string,
+    ) => Effect.Effect<LocatedSession, ClaudeSessionReplicationError>;
+    /** A checkout here of the repository with this canonical key, found by its remote. */
+    readonly checkoutOf: (
+      canonicalKey: string,
+    ) => Effect.Effect<string | undefined, ClaudeSessionReplicationError>;
+    /**
+     * Takes in a session a linked environment is moving here: copies it under the project folder
+     * of `cwd` (moving a copy already here) and claims it from its owner, which keeps a replica.
+     */
+    readonly takeIn: (input: {
+      readonly ownerEnvironmentId: EnvironmentId;
+      readonly sessionId: string;
+      readonly cwd: string | null;
+    }) => Effect.Effect<{ readonly home: string }, ClaudeSessionReplicationError>;
     /** Installs the send gate's claimer and runs a pass every `PASS_INTERVAL`. */
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
@@ -696,6 +713,51 @@ const make = Effect.gen(function* () {
       catch: storage(`Could not read the free space at ${directory}.`),
     }).pipe(Effect.map((stats) => Number(stats.bavail) * Number(stats.bsize)));
 
+  /**
+   * Moves a copy's transcript and project sidecars into the project folder of `cwd` in the same
+   * home, so a session moved with its code resumes from its new directory. Nothing moves when
+   * either destination is taken, and the sidecars move back when the transcript cannot follow.
+   */
+  const relocate = Effect.fn("ClaudeSessionReplication.relocate")(
+    function* (row: ClaudeSessionReplicas.ClaudeSessionReplicaRow, cwd: string) {
+      const slug = claudeProjectSlug(cwd);
+      const fromDir = path.dirname(row.transcriptPath);
+      if (path.basename(fromDir) === slug) return { ...row, cwd };
+      const toDir = path.join(path.dirname(fromDir), slug);
+      const transcriptPath = path.join(toDir, path.basename(row.transcriptPath));
+      const sidecarsFrom = path.join(fromDir, row.sessionId);
+      const sidecarsTo = path.join(toDir, row.sessionId);
+      for (const taken of [transcriptPath, sidecarsTo]) {
+        if (yield* fileSystem.exists(taken)) {
+          return yield* new ClaudeSessionReplicationError({
+            reason: "refused",
+            message: `${taken} already exists, so the copy was left in its project folder.`,
+          });
+        }
+      }
+      yield* fileSystem.makeDirectory(toDir, { recursive: true });
+      const sidecarsMoved = yield* fileSystem.exists(sidecarsFrom);
+      if (sidecarsMoved) yield* fileSystem.rename(sidecarsFrom, sidecarsTo);
+      yield* fileSystem
+        .rename(row.transcriptPath, transcriptPath)
+        .pipe(
+          Effect.onError(() =>
+            sidecarsMoved
+              ? fileSystem.rename(sidecarsTo, sidecarsFrom).pipe(Effect.ignore)
+              : Effect.void,
+          ),
+        );
+      const moved = { ...row, transcriptPath, cwd };
+      yield* replicas.upsert(moved);
+      return moved;
+    },
+    Effect.mapError((error) =>
+      error instanceof ClaudeSessionReplicationError
+        ? error
+        : storage("Could not move the copy into its new project folder.")(error),
+    ),
+  );
+
   /** Brings one session's copy up to date with its owner, or reports why it did not. */
   const replicateOneUnlocked = Effect.fn("ClaudeSessionReplication.replicateOne")(
     function* (input: {
@@ -703,6 +765,8 @@ const make = Effect.gen(function* () {
       readonly sessionId: string;
       readonly title: string | null;
       readonly rules: ClaudeSessionReplicationRules;
+      /** Where a move puts it, moving a copy already here into that directory's project folder. */
+      readonly placeCwd?: string;
     }): Effect.fn.Return<
       "current" | "copied" | "claimed" | ClaudeReplicationSkip,
       ClaudeSessionReplicationError
@@ -727,9 +791,13 @@ const make = Effect.gen(function* () {
           "The owner listed a session id that is not one, so it was not copied.",
         );
       }
-      const row = yield* replicas
+      const held = yield* replicas
         .get(sessionId)
         .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
+      const row =
+        held === undefined || input.placeCwd === undefined
+          ? held
+          : yield* relocate(held, input.placeCwd);
       // A copy stays where it is; only a new one is placed by the rules below.
       const target =
         row === undefined
@@ -768,9 +836,11 @@ const make = Effect.gen(function* () {
       }
       const remote = asked.success;
       const placed =
-        row === undefined
-          ? yield* placement(remote)
-          : { cwd: row.cwd, slug: path.basename(path.dirname(row.transcriptPath)) };
+        row !== undefined
+          ? { cwd: row.cwd, slug: path.basename(path.dirname(row.transcriptPath)) }
+          : input.placeCwd !== undefined
+            ? { cwd: input.placeCwd, slug: claudeProjectSlug(input.placeCwd) }
+            : yield* placement(remote);
       const transcriptTarget = `projects/${placed.slug}/${sessionId}.jsonl`;
       const transcriptPath =
         localPath ?? claudeSessionFileAbsolutePath(path, layout, transcriptTarget);
@@ -1192,7 +1262,40 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const takeIn: ClaudeSessionReplication["Service"]["takeIn"] = Effect.fn(
+    "ClaudeSessionReplication.takeIn",
+  )(
+    function* (input) {
+      const settings = yield* settingsService.getSettings.pipe(
+        Effect.mapError(storage("Could not read settings.")),
+      );
+      const outcome = yield* replicateOneUnlocked({
+        ownerEnvironmentId: input.ownerEnvironmentId,
+        sessionId: input.sessionId,
+        title: null,
+        rules: settings.claudeSessionSync.replication,
+        ...(input.cwd === null ? {} : { placeCwd: input.cwd }),
+      });
+      if (typeof outcome !== "string") {
+        return yield* new ClaudeSessionReplicationError({
+          reason: outcome.reason === "disk_reserve" ? "disk_reserve" : "refused",
+          message: outcome.message,
+        });
+      }
+      const row = yield* replicas
+        .get(input.sessionId)
+        .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
+      if (row === undefined) return { home: (yield* targetLayout).layout.home };
+      yield* claimFrom(row);
+      return { home: layoutOf(row.transcriptPath).home };
+    },
+    (effect, input) => sessionLocks.withLock(input.sessionId, effect),
+  );
+
   return ClaudeSessionReplication.of({
+    ownedSession: locate,
+    checkoutOf: localCheckoutOf,
+    takeIn,
     listOwned,
     manifest,
     readFile,

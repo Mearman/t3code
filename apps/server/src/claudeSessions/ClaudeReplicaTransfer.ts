@@ -313,3 +313,38 @@ const removeSidecarsNotIn = Effect.fn("removeSidecarsNotIn")(function* (
     }
   }
 });
+
+/** Fetches one file to `target` in verified chunks; the file is removed unless its hash matches. */
+export const downloadVerifiedFile = Effect.fn("downloadVerifiedFile")(function* (input: {
+  readonly source: ClaudeReplicaSource;
+  readonly file: ClaudeSessionFile;
+  readonly target: string;
+}) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const { file, target } = input;
+  yield* fileSystem
+    .makeDirectory(path.dirname(target), { recursive: true })
+    .pipe(Effect.mapError(storageError(`Could not create ${path.dirname(target)}.`)));
+  yield* fileSystem
+    .writeFile(target, new Uint8Array())
+    .pipe(Effect.mapError(storageError(`Could not write ${target}.`)));
+  for (let offset = 0; offset < file.size;) {
+    const length = Math.min(CLAUDE_SESSION_FILE_CHUNK_BYTES, file.size - offset);
+    const bytes = yield* input.source.readChunk({ path: file.path, offset, length });
+    yield* fileSystem
+      .writeFile(target, bytes, { flag: "a" })
+      .pipe(Effect.mapError(storageError(`Could not write ${target}.`)));
+    offset += length;
+  }
+  const hash = yield* sha256OfFile(target).pipe(
+    Effect.catchTags({ PlatformError: storageError(`Could not read ${target}.`) }),
+  );
+  if (hash !== file.sha256) {
+    yield* fileSystem.remove(target, { force: true }).pipe(Effect.orDie);
+    return yield* new ClaudeSessionReplicationError({
+      reason: "verification",
+      message: `${file.path} did not match the source's copy once fetched.`,
+    });
+  }
+});
