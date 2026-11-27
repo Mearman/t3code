@@ -18,7 +18,7 @@ export class ClaudeSecondWriterRuns extends Context.Service<
   }
 >()("t3/claudeSessions/ClaudeSecondWriterRuns") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const runs = yield* Ref.make<ReadonlySet<string>>(new Set());
   return {
     record: (runId) => Ref.update(runs, (current) => new Set([...current, runId])),
