@@ -2,16 +2,13 @@
 
 T3 Code drives your Claude Code installation, login, skills, and plugins. See [provider setup](./install.md#providers) for initial installation.
 
+## Sign in
+
+**Settings → Providers → Claude → Sign in** (or **Providers** on mobile) signs Claude Code in on the environment's machine, so it works from a phone or another computer. Open the sign-in page, sign in, then paste the code the page shows. **Anthropic Console** signs in for API billing instead of a subscription. If the installed Claude Code cannot sign in this way, T3 Code runs `claude auth login` in a terminal instead. **Sign out** runs `claude auth logout` for that instance's config directory.
+
 ## Multiple accounts and presets
 
-Isolate separate Claude accounts or router presets with distinct `CLAUDE_CONFIG_DIR` directories:
-
-```bash
-mkdir -p ~/.claude_personal
-CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login
-```
-
-Add a second Claude instance in **Settings → Providers** (or **Add Claude account** on mobile) pointing **CLAUDE_CONFIG_DIR path** to `~/.claude_personal` (leave empty for the default directory). Always use `CLAUDE_CONFIG_DIR` rather than `HOME` so system keychain paths stay intact.
+Isolate separate Claude accounts or router presets with distinct `CLAUDE_CONFIG_DIR` directories. Add a second Claude instance in **Settings → Providers** (or **Add Claude account** on mobile) pointing **CLAUDE_CONFIG_DIR path** to a directory such as `~/.claude_personal` (leave empty for the default directory), then sign in to it as above. Always use `CLAUDE_CONFIG_DIR` rather than `HOME` so system keychain paths stay intact.
 
 - Existing threads can only switch between Claude instances sharing the same config directory.
 - Put API keys and endpoint overrides in **Environment variables** (not **Launch arguments**).
