@@ -1,4 +1,3 @@
-// The production and nightly desktop and web icons are ExaCode's own (scripts/generate-exacode-icons.sh).
 export const BRAND_ASSET_PATHS = {
   developmentIconComposerProject: "assets/dev/app-icon.icon",
   developmentIosIconPng: "assets/dev/blueprint-ios-1024.png",
@@ -6,27 +5,27 @@ export const BRAND_ASSET_PATHS = {
 
   productionIconComposerProject: "assets/prod/app-icon.icon",
   productionIosIconPng: "assets/prod/black-ios-1024.png",
-  productionMacIconPng: "assets/exacode/exacode-macos-1024.png",
-  productionLinuxIconPng: "assets/exacode/exacode-universal-1024.png",
-  productionWindowsIconIco: "assets/exacode/exacode-windows.ico",
-  productionWebFaviconIco: "assets/exacode/exacode-web-favicon.ico",
-  productionWebFavicon16Png: "assets/exacode/exacode-web-favicon-16x16.png",
-  productionWebFavicon32Png: "assets/exacode/exacode-web-favicon-32x32.png",
-  productionWebAppleTouchIconPng: "assets/exacode/exacode-web-apple-touch-180.png",
-  productionWebIcon192Png: "assets/exacode/exacode-web-icon-192x192.png",
-  productionWebIcon512Png: "assets/exacode/exacode-web-icon-512x512.png",
+  productionMacIconPng: "assets/prod/black-macos-1024.png",
+  productionLinuxIconPng: "assets/prod/black-universal-1024.png",
+  productionWindowsIconIco: "assets/prod/t3-black-windows.ico",
+  productionWebFaviconIco: "assets/prod/t3-black-web-favicon.ico",
+  productionWebFavicon16Png: "assets/prod/t3-black-web-favicon-16x16.png",
+  productionWebFavicon32Png: "assets/prod/t3-black-web-favicon-32x32.png",
+  productionWebAppleTouchIconPng: "assets/prod/t3-black-web-apple-touch-180.png",
+  productionWebIcon192Png: "assets/prod/t3-black-web-icon-192x192.png",
+  productionWebIcon512Png: "assets/prod/t3-black-web-icon-512x512.png",
 
   nightlyIconComposerProject: "assets/nightly/app-icon.icon",
   nightlyIosIconPng: "assets/nightly/nightly-ios-1024.png",
-  nightlyMacIconPng: "assets/exacode/exacode-macos-1024.png",
-  nightlyLinuxIconPng: "assets/exacode/exacode-universal-1024.png",
-  nightlyWindowsIconIco: "assets/exacode/exacode-windows.ico",
-  nightlyWebFaviconIco: "assets/exacode/exacode-web-favicon.ico",
-  nightlyWebFavicon16Png: "assets/exacode/exacode-web-favicon-16x16.png",
-  nightlyWebFavicon32Png: "assets/exacode/exacode-web-favicon-32x32.png",
-  nightlyWebAppleTouchIconPng: "assets/exacode/exacode-web-apple-touch-180.png",
-  nightlyWebIcon192Png: "assets/exacode/exacode-web-icon-192x192.png",
-  nightlyWebIcon512Png: "assets/exacode/exacode-web-icon-512x512.png",
+  nightlyMacIconPng: "assets/nightly/nightly-macos-1024.png",
+  nightlyLinuxIconPng: "assets/nightly/nightly-universal-1024.png",
+  nightlyWindowsIconIco: "assets/nightly/nightly-windows.ico",
+  nightlyWebFaviconIco: "assets/nightly/nightly-web-favicon.ico",
+  nightlyWebFavicon16Png: "assets/nightly/nightly-web-favicon-16x16.png",
+  nightlyWebFavicon32Png: "assets/nightly/nightly-web-favicon-32x32.png",
+  nightlyWebAppleTouchIconPng: "assets/nightly/nightly-web-apple-touch-180.png",
+  nightlyWebIcon192Png: "assets/nightly/nightly-web-icon-192x192.png",
+  nightlyWebIcon512Png: "assets/nightly/nightly-web-icon-512x512.png",
 
   developmentDesktopIconPng: "assets/dev/blueprint-macos-1024.png",
   developmentWindowsIconIco: "assets/dev/blueprint-windows.ico",
@@ -38,13 +37,32 @@ export const BRAND_ASSET_PATHS = {
   developmentWebIcon512Png: "assets/dev/blueprint-web-icon-512x512.png",
 } as const;
 
-export type WebAssetBrand = "development" | "nightly" | "production";
+// A fork build (one with its own product name) ships the ExaCode icons, rendered from the SVG by
+// scripts/export-exacode-icons.ts, in place of T3's.
+export const EXACODE_ICON_SOURCE_SVG = "assets/exacode/logo.svg";
+export const EXACODE_ICON_PATHS = {
+  macIconPng: "assets/exacode/exacode-macos-1024.png",
+  linuxIconPng: "assets/exacode/exacode-universal-1024.png",
+  windowsIconIco: "assets/exacode/exacode-windows.ico",
+  webFaviconIco: "assets/exacode/exacode-web-favicon.ico",
+  webFavicon16Png: "assets/exacode/exacode-web-favicon-16x16.png",
+  webFavicon32Png: "assets/exacode/exacode-web-favicon-32x32.png",
+  webAppleTouchIconPng: "assets/exacode/exacode-web-apple-touch-180.png",
+  webIcon192Png: "assets/exacode/exacode-web-icon-192x192.png",
+  webIcon512Png: "assets/exacode/exacode-web-icon-512x512.png",
+} as const;
+
+export type WebAssetBrand = "development" | "nightly" | "production" | "fork";
 
 export const WEB_ASSET_CHANNELS = ["latest", "nightly"] as const;
 
 export type WebAssetChannel = (typeof WEB_ASSET_CHANNELS)[number];
 
-export function resolveWebAssetBrandForChannel(channel: WebAssetChannel): WebAssetBrand {
+export function resolveWebAssetBrandForChannel(
+  channel: WebAssetChannel,
+  forkProductName?: string | undefined,
+): WebAssetBrand {
+  if (forkProductName !== undefined) return "fork";
   return channel === "nightly" ? "nightly" : "production";
 }
 
@@ -78,6 +96,14 @@ const WEB_ICON_SOURCE_PATHS_BY_BRAND = {
     appleTouchIconPng: BRAND_ASSET_PATHS.nightlyWebAppleTouchIconPng,
     icon192Png: BRAND_ASSET_PATHS.nightlyWebIcon192Png,
     icon512Png: BRAND_ASSET_PATHS.nightlyWebIcon512Png,
+  },
+  fork: {
+    faviconIco: EXACODE_ICON_PATHS.webFaviconIco,
+    favicon16Png: EXACODE_ICON_PATHS.webFavicon16Png,
+    favicon32Png: EXACODE_ICON_PATHS.webFavicon32Png,
+    appleTouchIconPng: EXACODE_ICON_PATHS.webAppleTouchIconPng,
+    icon192Png: EXACODE_ICON_PATHS.webIcon192Png,
+    icon512Png: EXACODE_ICON_PATHS.webIcon512Png,
   },
   production: {
     faviconIco: BRAND_ASSET_PATHS.productionWebFaviconIco,

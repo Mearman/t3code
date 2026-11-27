@@ -49,7 +49,9 @@ Verify every result is 1024×1024 and has the classic macOS safe area: an 824×8
 
 Do not edit the generated PNG or ICO files directly.
 
-The desktop and web icons for the production and nightly brands are ExaCode's own, in `exacode/`. `scripts/generate-exacode-icons.sh` renders every one from `exacode/logo.svg` (it needs `rsvg-convert` and ImageMagick); edit the SVG and rerun it rather than the rasters.
+## ExaCode icons
+
+A fork build (one with its own product name, `T3CODE_DESKTOP_PRODUCT_NAME`) ships the "E" monogram in `exacode/` instead of the Icon Composer exports above, which `icons:export` never touches. Every raster there is rendered from `exacode/logo.svg` by `vp run icons:export:exacode`; edit the SVG and rerun it rather than the rasters. `vp run icons:check` fails when a raster no longer matches the SVG, comparing decoded pixels, so it does not depend on one PNG encoder build.
 
 ## Android launcher and splash artwork
 
