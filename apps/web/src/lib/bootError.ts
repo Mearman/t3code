@@ -15,6 +15,17 @@ const DOWNLOAD_URL =
     ? "https://t3.codes/download"
     : `https://github.com/${RELEASE_REPOSITORY}/releases`;
 const ISSUE_URL = `https://github.com/${RELEASE_REPOSITORY}/issues/new`;
+declare const __T3CODE_BUILD_ISSUES_ENABLED__: boolean | undefined;
+// A fork's repository may have Issues turned off, so its build links the form only when told it
+// is on (T3CODE_ISSUES_ENABLED=1 at build time); otherwise the page offers no report link at all.
+export const issuesAvailable = (fork: boolean, enabled: boolean | undefined): boolean =>
+  !fork || enabled === true;
+const ISSUES_AVAILABLE = issuesAvailable(
+  typeof __T3CODE_DESKTOP_PRODUCT_NAME__ !== "undefined",
+  typeof __T3CODE_BUILD_ISSUES_ENABLED__ === "undefined"
+    ? undefined
+    : __T3CODE_BUILD_ISSUES_ENABLED__,
+);
 const LAST_FAILURE_KEY = "t3code:boot-failed-at";
 const REPEAT_FAILURE_MS = 5 * 60_000;
 const MAX_CAUSES = 3;
@@ -398,7 +409,7 @@ export function showBootError(error: unknown) {
       }),
       element("div", { id: "boot-error-report" }, [
         copyDetails,
-        link(issue.href, "File a bug report on GitHub"),
+        ...(ISSUES_AVAILABLE ? [link(issue.href, "File a bug report on GitHub")] : []),
       ]),
     ]),
   ]);

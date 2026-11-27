@@ -1,3 +1,5 @@
+import { isUpstreamReleaseRepository } from "@t3tools/shared/cliRelease";
+
 import { resolveReleaseRepository } from "./release-repository.ts";
 
 /**
@@ -8,14 +10,21 @@ export function productNameDefine(
   env: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> {
   const productName = env.T3CODE_DESKTOP_PRODUCT_NAME?.trim();
+  const label = env.T3CODE_TRIAGE_LABEL?.trim();
   return productName === undefined || productName === ""
     ? {}
-    : { __T3CODE_DESKTOP_PRODUCT_NAME__: JSON.stringify(productName) };
+    : {
+        __T3CODE_DESKTOP_PRODUCT_NAME__: JSON.stringify(productName),
+        ...(label === undefined || label === ""
+          ? {}
+          : { __T3CODE_TRIAGE_LABEL__: JSON.stringify(label) }),
+        __T3CODE_BUILD_ISSUES_ENABLED__: JSON.stringify(env.T3CODE_ISSUES_ENABLED === "1"),
+      };
 }
 
 /**
  * The fork's product name and the repository it releases from, or undefined for a build that
- * keeps upstream's. A product name with no repository fails: nothing may fall back to T3's.
+ * keeps upstream's. A product name with no repository, or with upstream's, fails.
  */
 export function forkIdentity(
   env: Readonly<Record<string, string | undefined>>,
@@ -27,6 +36,12 @@ export function forkIdentity(
     throw new Error(
       `A build named ${name} needs T3CODE_DESKTOP_UPDATE_REPOSITORY or GITHUB_REPOSITORY, the ` +
         "repository its links and releases belong to.",
+    );
+  }
+  if (isUpstreamReleaseRepository(repository)) {
+    throw new Error(
+      `A build named ${name} cannot release from ${repository}, upstream's own repository: it ` +
+        "would show its own name while linking, updating from and reporting to upstream.",
     );
   }
   return { name, repository };

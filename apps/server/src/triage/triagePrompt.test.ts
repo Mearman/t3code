@@ -7,6 +7,7 @@ import { assert, it } from "@effect/vitest";
 import {
   buildTriageContext,
   buildTriageLaunchPrompt,
+  playbookFor,
   type TriageContextInput,
   TRIAGE_PLAYBOOK,
 } from "./triagePrompt.ts";
@@ -81,3 +82,48 @@ const contextInput = {
     sourceCacheDir: "/home/u/.t3/source",
   },
 } satisfies Omit<TriageContextInput, "entry" | "server">;
+
+const fork = { fork: true, repository: "owner/fork", label: "via-triage" };
+
+it("leaves upstream's playbook untouched", () => {
+  assert.equal(
+    playbookFor(TRIAGE_PLAYBOOK, {
+      fork: false,
+      repository: "pingdotgg/t3code",
+      label: "via-triage",
+    }),
+    TRIAGE_PLAYBOOK,
+  );
+});
+
+it("gives a fork's session no upstream playbook, search target or filing target", () => {
+  const playbook = playbookFor(TRIAGE_PLAYBOOK, fork);
+  assert.notInclude(playbook, "Check for a newer playbook");
+  assert.notInclude(playbook, "PLAYBOOK.md");
+  assert.notInclude(playbook, "newer playbook");
+  assert.notInclude(playbook, "pingdotgg");
+  assert.include(playbook, "https://github.com/owner/fork <source-cache-dir>/<hash>");
+  assert.include(playbook, "repos/owner/fork --jq .node_id");
+});
+
+it("renumbers a fork's steps and the references to them", () => {
+  const playbook = playbookFor(TRIAGE_PLAYBOOK, fork);
+  assert.deepEqual(
+    [...playbook.matchAll(/^## (\d+)\. /gm)].map((match) => Number(match[1])),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  );
+  assert.include(playbook, "## 3. Get the source");
+  assert.include(playbook, "from step 3, or say it is");
+});
+
+it("stops a fork's session when the fork has Issues off, instead of filing elsewhere", () => {
+  const playbook = playbookFor(TRIAGE_PLAYBOOK, fork);
+  assert.include(playbook, "gh api repos/owner/fork --jq .has_issues");
+  assert.include(playbook, "do not file it anywhere else");
+});
+
+it("uses a fork's own triage label", () => {
+  const playbook = playbookFor(TRIAGE_PLAYBOOK, { ...fork, label: "reported-in-app" });
+  assert.notInclude(playbook, "via-triage");
+  assert.include(playbook, "Label it `reported-in-app`");
+});

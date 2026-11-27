@@ -2205,3 +2205,20 @@ it.effect("refuses a build with its own product name and no repository", () =>
     assert.equal(failure._tag, "DesktopRepositoryMissingError");
   }).pipe(forkEnv({ ...NAMED, T3CODE_DESKTOP_MAINTAINER: "Jo <jo@example.com>" })),
 );
+
+it.effect(
+  "refuses a build with its own product name that releases from upstream's repository",
+  () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(
+        createBuildConfig("mac", "dmg", VERSION, false, false, undefined, undefined),
+      );
+      assert.equal(failure._tag, "DesktopRepositoryIsUpstreamError");
+    }).pipe(
+      forkEnv({
+        ...NAMED,
+        GITHUB_REPOSITORY: "pingdotgg/t3code",
+        T3CODE_DESKTOP_MAINTAINER: "Jo <jo@example.com>",
+      }),
+    ),
+);

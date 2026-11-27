@@ -1,6 +1,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { PRODUCT_NAME } from "./productName.ts";
 import { compareSemverVersions } from "./semver.ts";
 
 const UPSTREAM_RELEASE_REPOSITORY = "pingdotgg/t3code"; // product-name: keep
@@ -28,10 +29,25 @@ export const PROJECT_HOME_URL = isUpstreamReleaseRepository(CLI_RELEASE_REPOSITO
   ? "https://t3.codes"
   : `https://github.com/${CLI_RELEASE_REPOSITORY}`;
 
-/** The address that identifies commits this build's tooling makes, never a person's. */
-export const PROJECT_NOREPLY_EMAIL = isUpstreamReleaseRepository(CLI_RELEASE_REPOSITORY)
-  ? "noreply@t3.codes"
-  : "noreply@users.noreply.github.com";
+/**
+ * The committer address of commits this build's tooling makes. Upstream uses its own domain. A
+ * fork has no domain, and every `@users.noreply.github.com` form belongs to some real account
+ * (the bare one to the user "noreply"), so it gets an address on the reserved `.invalid` TLD,
+ * which no account can verify and GitHub therefore attributes to nobody.
+ */
+export function projectNoreplyEmail(upstream: boolean, productName: string): string {
+  if (upstream) return "noreply@t3.codes";
+  const slug = productName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `noreply@${slug === "" ? "fork" : slug}.invalid`;
+}
+
+export const PROJECT_NOREPLY_EMAIL = projectNoreplyEmail(
+  isUpstreamReleaseRepository(CLI_RELEASE_REPOSITORY),
+  PRODUCT_NAME,
+);
 
 export function cliReleasesPageUrl(repository: string = CLI_RELEASE_REPOSITORY): string {
   return `https://github.com/${repository}/releases`;

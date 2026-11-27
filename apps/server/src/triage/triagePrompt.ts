@@ -1,4 +1,6 @@
+import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
 
 /** Keep TRIAGE_PLAYBOOK byte-identical to .github/triage/PLAYBOOK.md after unescaping backticks and backslashes. */
 
@@ -166,6 +168,60 @@ user's environment and evidence instead of filing a new issue. A confirmed
 duplicate with fresh evidence is more useful than a second thread.
 `;
 
+// Set by scripts/lib/product-name-define.ts when a build names its own triage label.
+declare const __T3CODE_TRIAGE_LABEL__: string | undefined;
+
+const UPSTREAM_TRIAGE_REPOSITORY = "pingdotgg/t3code"; // product-name: keep
+const UPSTREAM_TRIAGE_LABEL = "via-triage"; // product-name: keep
+
+/** Which project a triage session reports to: upstream's, or a fork build's own. */
+interface TriageTarget {
+  readonly fork: boolean;
+  readonly repository: string;
+  /** The label the repository's triage issue template applies. */
+  readonly label: string;
+}
+
+const currentTriageTarget: TriageTarget = {
+  fork: IS_FORK_PRODUCT,
+  repository: CLI_RELEASE_REPOSITORY,
+  label:
+    typeof __T3CODE_TRIAGE_LABEL__ === "undefined"
+      ? UPSTREAM_TRIAGE_LABEL
+      : __T3CODE_TRIAGE_LABEL__,
+};
+
+const NEWER_PLAYBOOK_SECTION = /## 3\. Check for a newer playbook\n[\s\S]*?(?=## 4\. )/;
+
+/**
+ * The playbook a session follows. A fork build carries the fork's repository and label only: it
+ * never fetches a newer playbook (the fork's copy is upstream's text, which would send the agent
+ * back to upstream), searches or files only in the fork, and stops when the fork has Issues off
+ * instead of filing anywhere else.
+ */
+export function playbookFor(playbook: string, target: TriageTarget): string {
+  if (!target.fork) return playbook;
+  const renumber = (text: string) =>
+    text
+      .replace(/^## (\d+)\. /gm, (heading, number: string) =>
+        Number(number) > 3 ? `## ${Number(number) - 1}. ` : heading,
+      )
+      .replace(/\bstep (\d+)\b/g, (words, number: string) =>
+        Number(number) > 3 ? `step ${Number(number) - 1}` : words,
+      );
+  const withoutNewer = renumber(playbook.replace(NEWER_PLAYBOOK_SECTION, ""))
+    .replace(
+      /The one exception is the newer playbook from step 3, which\ncomes from this repo's `main` branch\./,
+      "There is no exception.",
+    )
+    .replaceAll(UPSTREAM_TRIAGE_REPOSITORY, target.repository)
+    .replaceAll(UPSTREAM_TRIAGE_LABEL, target.label);
+  return withoutNewer.replace(
+    /(## \d+\. File the issue well\n\n)/,
+    `$1- Before filing, run \`gh api repos/${target.repository} --jq .has_issues\`. If it prints\n  \`false\` or fails, say plainly that ${target.repository} has Issues turned off or cannot be\n  reached, give the user the finished report to copy, and do not file it anywhere else.\n`,
+  );
+}
+
 /** Where the session started: the `t3 triage` CLI, or "Triage an issue" in a client. */
 export type TriageEntry =
   | { readonly kind: "cli"; readonly cliVersion: string; readonly launchedAs: string }
@@ -201,7 +257,7 @@ ${
 
 ---
 
-${TRIAGE_PLAYBOOK}`;
+${playbookFor(TRIAGE_PLAYBOOK, currentTriageTarget)}`;
 
 /** A clone the server made before the session started, or why it could not. */
 export type TriageSourceClone =
@@ -304,7 +360,7 @@ ${entry.before}
 - OS: ${input.os}
 - Node: ${input.nodeVersion}
 ${entry.after === undefined ? "" : `${entry.after}\n`}- Server process: ${input.server}
-- Repo: https://github.com/pingdotgg/t3code
+- Repo: https://github.com/${currentTriageTarget.repository}
 ${input.entry.kind === "app" ? IN_APP_SECTION : ""}${input.sourceClone === undefined ? "" : sourceSection(input.sourceClone)}
 ## Paths
 
