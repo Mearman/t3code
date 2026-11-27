@@ -115,9 +115,7 @@ const makeIssuer = Effect.gen(function* () {
         message: "Only a full-access link may pair a client here.",
       });
     }
-    const via = caller.label.startsWith(PeerLinks.LINK_CLIENT_NAME_PREFIX)
-      ? caller.label.slice(PeerLinks.LINK_CLIENT_NAME_PREFIX.length)
-      : caller.label;
+    const via = PeerLinks.linkClientVia(caller.label);
     const refusedByPolicy = (error: { readonly message: string }) =>
       Effect.fail(new PeerClientPairingRefused({ reason: "policy", message: error.message }));
     if (request.link !== undefined) {

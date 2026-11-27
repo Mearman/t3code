@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { compareSemverVersions } from "./semver.ts";
 
-const UPSTREAM_RELEASE_REPOSITORY = "pingdotgg/t3code";
+const UPSTREAM_RELEASE_REPOSITORY = "pingdotgg/t3code"; // product-name: keep
 // Bundles define this from the build's release repository (scripts/lib/release-repository.ts).
 declare const __T3CODE_RELEASE_REPOSITORY__: string | undefined;
 /** The `owner/name` repository whose GitHub releases this bundle updates from. */
@@ -19,6 +19,19 @@ export const CLI_RELEASE_REPOSITORY =
 export function isUpstreamReleaseRepository(repository: string): boolean {
   return repository === UPSTREAM_RELEASE_REPOSITORY;
 }
+
+export const UPSTREAM_INSTALL_SCRIPT_URL = "https://t3.codes/install.sh";
+export const UPSTREAM_INSTALL_POWERSHELL_URL = "https://t3.codes/install.ps1";
+
+/** Where this build's project lives: upstream's site, or a fork's own repository. */
+export const PROJECT_HOME_URL = isUpstreamReleaseRepository(CLI_RELEASE_REPOSITORY)
+  ? "https://t3.codes"
+  : `https://github.com/${CLI_RELEASE_REPOSITORY}`;
+
+/** The address that identifies commits this build's tooling makes, never a person's. */
+export const PROJECT_NOREPLY_EMAIL = isUpstreamReleaseRepository(CLI_RELEASE_REPOSITORY)
+  ? "noreply@t3.codes"
+  : "noreply@users.noreply.github.com";
 
 export function cliReleasesPageUrl(repository: string = CLI_RELEASE_REPOSITORY): string {
   return `https://github.com/${repository}/releases`;
@@ -100,7 +113,7 @@ export function cliInstallScriptUrl(
   repository: string = CLI_RELEASE_REPOSITORY,
 ): string {
   return isUpstreamReleaseRepository(repository)
-    ? "https://t3.codes/install.sh"
+    ? UPSTREAM_INSTALL_SCRIPT_URL
     : `https://github.com/${repository}/releases/download/v${version}/install.sh`;
 }
 

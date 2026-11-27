@@ -6,7 +6,7 @@ declare const __T3CODE_RELEASE_REPOSITORY__: string | undefined;
 declare const __T3CODE_DESKTOP_PRODUCT_NAME__: string | undefined;
 const RELEASE_REPOSITORY =
   typeof __T3CODE_RELEASE_REPOSITORY__ === "undefined"
-    ? "pingdotgg/t3code"
+    ? "pingdotgg/t3code" // product-name: keep
     : __T3CODE_RELEASE_REPOSITORY__;
 
 const FALLBACK_TRIAGE_COMMAND = "npx t3 triage";

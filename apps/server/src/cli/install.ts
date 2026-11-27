@@ -1,4 +1,9 @@
-import { cliInstallScriptUrl } from "@t3tools/shared/cliRelease";
+import {
+  CLI_RELEASE_REPOSITORY,
+  cliInstallScriptUrl,
+  isUpstreamReleaseRepository,
+  UPSTREAM_INSTALL_POWERSHELL_URL,
+} from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { pathSetupCommand, resolveCommandPath } from "@t3tools/shared/shell";
 import * as Console from "effect/Console";
@@ -54,11 +59,18 @@ export const installCli = Effect.fn("cli.install.install")(function* () {
   const runtime = yield* standaloneRuntime;
   const windows = platform === "win32";
   if (Option.isNone(runtime)) {
-    const script = windows
-      ? "irm https://t3.codes/install.ps1 | iex"
-      : `curl -fsSL ${cliInstallScriptUrl(packageJson.version)} | sh`;
+    // Only upstream publishes a Windows installer script.
+    const script =
+      windows && !isUpstreamReleaseRepository(CLI_RELEASE_REPOSITORY)
+        ? undefined
+        : windows
+          ? `irm ${UPSTREAM_INSTALL_POWERSHELL_URL} | iex`
+          : `curl -fsSL ${cliInstallScriptUrl(packageJson.version)} | sh`;
     return yield* new CliInstallError({
-      reason: `Only the standalone t3 can install itself. Use \`${script}\`, or Settings in the desktop app.`,
+      reason:
+        script === undefined
+          ? "Only the standalone t3 can install itself. Use Settings in the desktop app."
+          : `Only the standalone t3 can install itself. Use \`${script}\`, or Settings in the desktop app.`,
     });
   }
   const { executable, versionsDir, runtimeDir } = runtime.value;
