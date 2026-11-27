@@ -388,6 +388,7 @@ export function heldSessionResendRunId(
 
 /** Choices a held session's refused message offers besides a fork; each acts on the terminal. */
 export const HELD_SESSION_RESEND_CHOICES = [
+  "adopt",
   "send",
   "takeOver",
 ] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
