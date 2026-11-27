@@ -134,6 +134,7 @@ function EnvironmentProviders({
         <AddClaudeAccount
           environment={environment}
           signsIn={rows.some((row) => row.claudeFolder && row.signIn)}
+          claudeInstances={rows.flatMap((row) => (row.claudeFolder ? [row.provider] : []))}
         />
       ) : null}
     </>

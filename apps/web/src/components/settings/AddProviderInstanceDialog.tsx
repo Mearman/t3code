@@ -62,6 +62,8 @@ import { AcpRegistrySearchStep, useAcpRegistrySearch } from "./AcpRegistrySearch
 import { ProviderWizardAuthenticationStep } from "./ProviderWizardAuthenticationStep";
 import { resolveOfficialAcpRegistryIconUrl } from "./AcpRegistryIcon";
 import { AddManagedCodexAccountDialog } from "./CodexSetupSection";
+import { AddClaudeAccountDialog } from "./AddClaudeAccountDialog";
+import { useServerConfigs } from "../../state/entities";
 import { MultipleAccountsNote } from "./MultipleAccountsNote";
 import { ProviderEnvironmentSection } from "./ProviderInstanceCard";
 import { useSecretSources } from "./SecretSourceInput";
@@ -172,6 +174,9 @@ export function AddProviderInstanceDialog({
 
   const [wizardStep, setWizardStep] = useState(0);
   const [addingChatGptAccount, setAddingChatGptAccount] = useState(false);
+  const [addingClaudeAccount, setAddingClaudeAccount] = useState(false);
+  const managesClaudeAccounts =
+    useServerConfigs().get(environmentId)?.environment.capabilities.claudeManagedAccounts === true;
   // Drivers the administrator's policy leaves out are not offered at all.
   const managedPolicy = useManagedPolicy(environmentId);
   const featuredDriverOptions = FEATURED_DRIVER_OPTIONS.filter((option) =>
@@ -440,6 +445,19 @@ export function AddProviderInstanceDialog({
     });
     onOpenChange(false);
   };
+
+  if (addingClaudeAccount) {
+    return (
+      <AddClaudeAccountDialog
+        environmentId={environmentId}
+        environmentLabel={environmentLabel}
+        onClose={() => onOpenChange(false)}
+        onAccountCreated={(instanceId) =>
+          onCreated?.(instanceId, ProviderDriverKind.make("claudeAgent"))
+        }
+      />
+    );
+  }
 
   if (addingChatGptAccount) {
     return (
@@ -782,6 +800,15 @@ export function AddProviderInstanceDialog({
                       onClick={() => setAddingChatGptAccount(true)}
                     />
                   )}
+                </>
+              ) : wizardStep === 0 && driver === "claudeAgent" && managesClaudeAccounts ? (
+                <>
+                  <Button variant="outline" size="sm" onClick={() => navigateToStep(1)}>
+                    <T>Use an existing config folder</T>
+                  </Button>
+                  <Button size="sm" onClick={() => setAddingClaudeAccount(true)}>
+                    <T>Add Claude account</T>
+                  </Button>
                 </>
               ) : wizardStep < (isAcpRegistry ? 1 : 2) ? (
                 <Button

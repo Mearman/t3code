@@ -210,41 +210,178 @@ export function ClaudeAccount({
 export function AddClaudeAccount({
   environment,
   signsIn,
+  claudeInstances,
 }: {
   readonly environment: SettingsTarget;
   readonly signsIn: boolean;
+  /** Accounts a new managed account can share history with. */
+  readonly claudeInstances: ReadonlyArray<ServerProvider>;
 }) {
   const gt = useGT();
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<"managed" | "folder" | null>(null);
+  const managed = environment.serverConfig.environment.capabilities.claudeManagedAccounts === true;
   return (
     <View className="border-t border-border-subtle">
-      {adding ? (
+      {adding === "managed" ? (
+        <ManagedClaudeAccountForm
+          environment={environment}
+          claudeInstances={claudeInstances}
+          onDone={() => setAdding(null)}
+        />
+      ) : adding === "folder" ? (
         <ClaudeAccountForm
           environment={environment}
           instanceId={null}
           initial={{ name: "", configDir: "" }}
           signsIn={signsIn}
-          onDone={() => setAdding(false)}
+          onDone={() => setAdding(null)}
         />
       ) : (
-        <ListActionRow
-          icon="plus"
-          label={gt("Add {provider} account", { provider: "Claude" })}
-          description={
-            signsIn
-              ? gt(
-                  "Use another {provider} config folder on this server, then sign in to it here.",
-                  {
+        <>
+          {managed ? (
+            <ListActionRow
+              icon="plus"
+              label={gt("Add {provider} account", { provider: "Claude" })}
+              description={gt(
+                "Gets its own config folder and sign-in on this server, and can share history with another account.",
+              )}
+              onPress={() => setAdding("managed")}
+            />
+          ) : null}
+          <ListActionRow
+            icon={managed ? "folder" : "plus"}
+            label={
+              managed
+                ? gt("Use an existing config folder")
+                : gt("Add {provider} account", { provider: "Claude" })
+            }
+            description={
+              signsIn
+                ? gt(
+                    "Use another {provider} config folder on this server, then sign in to it here.",
+                    {
+                      provider: "Claude",
+                    },
+                  )
+                : gt("Use a {provider} config folder that is already signed in on this server.", {
                     provider: "Claude",
-                  },
-                )
-              : gt("Use a {provider} config folder that is already signed in on this server.", {
-                  provider: "Claude",
-                })
-          }
-          onPress={() => setAdding(true)}
-        />
+                  })
+            }
+            onPress={() => setAdding("folder")}
+          />
+        </>
       )}
+    </View>
+  );
+}
+
+function ManagedClaudeAccountForm({
+  environment,
+  claudeInstances,
+  onDone,
+}: {
+  readonly environment: SettingsTarget;
+  readonly claudeInstances: ReadonlyArray<ServerProvider>;
+  readonly onDone: () => void;
+}) {
+  const gt = useGT();
+  const create = useAtomCommand(serverEnvironment.createClaudeAccount, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const [name, setName] = useState("");
+  const [shareWith, setShareWith] = useState(() => claudeInstances[0]?.instanceId ?? "");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const source = claudeInstances.find((candidate) => candidate.instanceId === shareWith);
+  async function save() {
+    const displayName = name.trim();
+    if (pending) return;
+    if (!displayName) {
+      setError(gt("Enter a name for this account."));
+      return;
+    }
+    setPending(true);
+    setError(null);
+    const result = await create({
+      environmentId: environment.environmentId,
+      input: { displayName, ...(source ? { shareHistoryWith: source.instanceId } : {}) },
+    });
+    setPending(false);
+    if (result._tag === "Success") {
+      onDone();
+      return;
+    }
+    if (isAtomCommandInterrupted(result)) return;
+    const failure = squashAtomCommandFailure(result);
+    setError(
+      failure instanceof Error
+        ? (errorDisplayMessage(failure, m) ?? failure.message)
+        : gt("Could not save the {provider} account.", { provider: "Claude" }),
+    );
+  }
+  const shareActions: MenuAction[] = [
+    ...claudeInstances.map((candidate) => ({
+      id: candidate.instanceId,
+      title: candidate.displayName ?? "Claude",
+    })),
+    { id: "", title: gt("Keep history separate") },
+  ];
+  return (
+    <View className="gap-2 px-4 py-3">
+      <Text textRole="footnote" className="text-foreground-muted">
+        {gt(
+          "{environment} creates a config folder for this account. Sign in to it here once it is added.",
+          { environment: environment.label },
+        )}
+      </Text>
+      <TextInput
+        accessibilityLabel={gt("Account name")}
+        className="rounded-lg border border-border-subtle px-3 py-2 text-base text-foreground"
+        placeholderTextColorClassName="accent-foreground-muted"
+        placeholder={gt("Name, e.g. Work")}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!pending}
+        maxLength={64}
+        value={name}
+        onChangeText={setName}
+      />
+      <View className="flex-row items-center justify-between gap-3">
+        <Text textRole="body" className="text-foreground">
+          {gt("Share history with")}
+        </Text>
+        <Menu
+          accessible
+          accessibilityRole="button"
+          accessibilityLabel={gt("Share history with")}
+          title={gt("Share history with")}
+          actions={shareActions}
+          onPressAction={({ nativeEvent }) => {
+            if (!pending) setShareWith(nativeEvent.event);
+          }}
+        >
+          <ControlPill
+            variant="pill"
+            label={source ? (source.displayName ?? "Claude") : gt("Keep history separate")}
+            disabled={pending}
+          />
+        </Menu>
+      </View>
+      {error ? (
+        <Text accessibilityRole="alert" className="text-danger-foreground">
+          {error}
+        </Text>
+      ) : null}
+      <View className="flex-row justify-end gap-2">
+        <ControlPill variant="pill" label={gt("Cancel")} disabled={pending} onPress={onDone} />
+        <ControlPill
+          variant="primary"
+          label={gt("Add")}
+          disabled={pending}
+          onPress={() => void save()}
+        />
+      </View>
     </View>
   );
 }
