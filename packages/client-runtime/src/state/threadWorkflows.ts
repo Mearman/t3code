@@ -1,4 +1,5 @@
 import {
+  type ClaudeHeldSessionSend,
   type ChatAttachment,
   isCompactionCommandMessage,
   type OrchestrationV2ProjectedTurnItem,
@@ -337,6 +338,17 @@ export function heldSessionResendRunId(
     ? run.id
     : undefined;
 }
+
+/** Choices a held session's refused message offers besides a fork; each acts on the terminal. */
+export const HELD_SESSION_RESEND_CHOICES = [
+  "takeOver",
+] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
+
+/** A send whose permission is the one those choices need: `terminal:operate` as well. */
+export const HELD_SESSION_TERMINAL_DISPATCH = {
+  type: "message.dispatch",
+  heldSessionSend: "takeOver",
+} as const;
 
 export function canDetachThreadProviderSession(projection: Projection): boolean {
   const session = resolveThreadProviderSession(projection);

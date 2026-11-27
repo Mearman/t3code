@@ -2,9 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { claudeHeldSessionSendLabel } from "@t3tools/client-runtime/contract-labels";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
-import { heldSessionResendRunId } from "@t3tools/client-runtime/state/thread-workflows";
 import {
-  type ClaudeHeldSessionSend,
+  HELD_SESSION_RESEND_CHOICES,
+  HELD_SESSION_TERMINAL_DISPATCH,
+  heldSessionResendRunId,
+} from "@t3tools/client-runtime/state/thread-workflows";
+import {
   MessageId,
   ThreadId,
   type EnvironmentId,
@@ -18,15 +21,11 @@ import { View } from "react-native";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { uuidv4 } from "../../lib/uuid";
+import { orchestrationEnvironment } from "../../state/orchestration";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { waitForThreadShell } from "./threadForkNavigation";
-
-// Choices that resend the refused message itself; the fork is offered beside them.
-const HELD_SESSION_RESEND_CHOICES = [
-  "takeOver",
-] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
 
 /**
  * Offered on this thread's own run refused because another process holds its session. The fork
@@ -54,6 +53,12 @@ export function HeldSessionForkButton(props: {
     environmentThreadDetails.threadAtom(threadRef),
     (thread) => thread?.projection.thread.runtimeMode,
   );
+  const canOperateTerminal = useAtomValue(
+    orchestrationEnvironment.v2.dispatchCommand.permissionAtom(
+      props.environmentId,
+      HELD_SESSION_TERMINAL_DISPATCH,
+    ),
+  );
   const gt = useGT();
   const m = useMessages();
   const forkFromRun = useAtomCommand(threadEnvironment.forkFromRun, "fork held session");
@@ -63,7 +68,7 @@ export function HeldSessionForkButton(props: {
   if (title === undefined || runtimeMode === undefined) return null;
   return (
     <View className="ml-7 mt-2 gap-2">
-      {resendable
+      {resendable && canOperateTerminal
         ? HELD_SESSION_RESEND_CHOICES.map((choice) => (
             <Button
               key={choice}
