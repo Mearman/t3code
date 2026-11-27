@@ -74,7 +74,10 @@ export type ClaudeBridgePollAnswer =
 
 type PollOutcome =
   | (Extract<ClaudeBridgePollAnswer, { readonly _tag: "accepted" }> & {
-      readonly refused: ReadonlyArray<{ readonly item: Pending; readonly reason: string | undefined }>;
+      readonly refused: ReadonlyArray<{
+        readonly item: Pending;
+        readonly reason: string | undefined;
+      }>;
     })
   | Extract<ClaudeBridgePollAnswer, { readonly _tag: "refused" }>;
 
@@ -103,9 +106,7 @@ export class ClaudeBridge extends Context.Service<
       readonly asUser: boolean;
     }) => Effect.Effect<void, ClaudeBridgeSubmitError>;
     /** A mod's poll: records its acknowledgements and hands out what it has not yet taken. */
-    readonly poll: (
-      poll: ClaudeBridgePoll,
-    ) => Effect.Effect<ClaudeBridgePollAnswer>;
+    readonly poll: (poll: ClaudeBridgePoll) => Effect.Effect<ClaudeBridgePollAnswer>;
     /** Prompts that did not reach the terminal: refused by the mod, or never taken. */
     readonly failures: Queue.Dequeue<ClaudeBridgeFailure>;
     /** A Claude home whose sessions may load the mod; it gets a connection file. */
@@ -214,42 +215,45 @@ const make = Effect.gen(function* () {
     yield* sweep();
     const now = yield* Clock.currentTimeMillis;
     const freshKey = yield* hex(16);
-    const outcome = yield* Ref.modify(sessions, (current): readonly [PollOutcome, Map<string, Session>] => {
-      const session = current.get(request.sessionId);
-      const claimedElsewhere =
-        session !== undefined &&
-        isAttached(session, now) &&
-        session.pollerKey !== request.pollerKey;
-      if (claimedElsewhere) {
-        return [{ _tag: "refused", reason: "claimed" }, current];
-      }
-      if (session === undefined && current.size >= CLAUDE_BRIDGE_MAX_SESSIONS) {
-        return [{ _tag: "refused", reason: "full" }, current];
-      }
-      const acks = new Map(request.acks.map((ack) => [ack.commandId, ack]));
-      const kept = (session?.pending ?? []).filter((item) => !acks.has(item.command.commandId));
-      const refused = (session?.pending ?? []).flatMap((item) => {
-        const ack = acks.get(item.command.commandId);
-        return ack === undefined || ack.submitted ? [] : [{ item, reason: ack.reason }];
-      });
-      const lease = Duration.toMillis(DELIVERY_LEASE);
-      const due = (item: Pending) =>
-        item.handedOutAt === undefined || now - item.handedOutAt >= lease;
-      const handed = kept.map((item) => (due(item) ? { ...item, handedOutAt: now } : item));
-      const pollerKey =
-        session !== undefined && session.pollerKey === request.pollerKey
-          ? session.pollerKey
-          : freshKey;
-      return [
-        {
-          _tag: "accepted",
-          pollerKey,
-          commands: kept.filter(due).map((item) => item.command),
-          refused,
-        },
-        new Map(current).set(request.sessionId, { pollerKey, lastPollAt: now, pending: handed }),
-      ];
-    });
+    const outcome = yield* Ref.modify(
+      sessions,
+      (current): readonly [PollOutcome, Map<string, Session>] => {
+        const session = current.get(request.sessionId);
+        const claimedElsewhere =
+          session !== undefined &&
+          isAttached(session, now) &&
+          session.pollerKey !== request.pollerKey;
+        if (claimedElsewhere) {
+          return [{ _tag: "refused", reason: "claimed" }, current];
+        }
+        if (session === undefined && current.size >= CLAUDE_BRIDGE_MAX_SESSIONS) {
+          return [{ _tag: "refused", reason: "full" }, current];
+        }
+        const acks = new Map(request.acks.map((ack) => [ack.commandId, ack]));
+        const kept = (session?.pending ?? []).filter((item) => !acks.has(item.command.commandId));
+        const refused = (session?.pending ?? []).flatMap((item) => {
+          const ack = acks.get(item.command.commandId);
+          return ack === undefined || ack.submitted ? [] : [{ item, reason: ack.reason }];
+        });
+        const lease = Duration.toMillis(DELIVERY_LEASE);
+        const due = (item: Pending) =>
+          item.handedOutAt === undefined || now - item.handedOutAt >= lease;
+        const handed = kept.map((item) => (due(item) ? { ...item, handedOutAt: now } : item));
+        const pollerKey =
+          session !== undefined && session.pollerKey === request.pollerKey
+            ? session.pollerKey
+            : freshKey;
+        return [
+          {
+            _tag: "accepted",
+            pollerKey,
+            commands: kept.filter(due).map((item) => item.command),
+            refused,
+          },
+          new Map(current).set(request.sessionId, { pollerKey, lastPollAt: now, pending: handed }),
+        ];
+      },
+    );
     if (outcome._tag === "refused") return outcome;
     yield* Queue.offerAll(
       failures,
