@@ -110,7 +110,7 @@ export function productNameTransformPlugin(options: {
       const path = NodePath.resolve(id.split("?")[0] ?? id);
       if (!isRepositorySource(path)) return null;
       if (path.endsWith(".json") && CATALOG_DIRECTORY.test(NodePath.dirname(path))) {
-        if (NodePath.basename(path) === "en.json" || hashSource === undefined) return null;
+        if (hashSource === undefined) return null;
         const english = JSON.parse(
           NodeFS.readFileSync(NodePath.join(NodePath.dirname(path), "en.json"), "utf8"),
         ) as Catalog;

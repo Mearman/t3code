@@ -1,5 +1,4 @@
 import * as NodeModule from "node:module";
-import * as NodePath from "node:path";
 import * as NodeUrl from "node:url";
 import * as NodeZlib from "node:zlib";
 
@@ -34,7 +33,7 @@ const productName = forkProductName(repoEnv);
 
 // GT is not a direct dependency here; its hash is the one gt-react keys translations by.
 async function loadGtHashSource(): Promise<HashSource> {
-  const fromWeb = NodeModule.createRequire(NodePath.join(import.meta.dirname, "package.json"));
+  const fromWeb = NodeModule.createRequire(import.meta.url);
   const fromGtReact = NodeModule.createRequire(fromWeb.resolve("gt-react"));
   const module: { readonly hashSource: HashSource } = await import(
     NodeUrl.pathToFileURL(fromGtReact.resolve("generaltranslation/id")).href
@@ -316,7 +315,7 @@ export default defineConfig(({ command }) => {
         ? undefined
         : productNameTransformPlugin({
             name: productName,
-            repositoryRoot: NodePath.join(import.meta.dirname, "..", ".."),
+            repositoryRoot: NodeUrl.fileURLToPath(new URL("../../", import.meta.url)),
             hashSource: loadGtHashSource,
           }),
       bootstrapTitlePlugin(),
