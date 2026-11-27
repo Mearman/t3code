@@ -107,9 +107,11 @@ export function ProviderAuthenticationSection({
   const draftId = `${auth?.flowId ?? ""}:${interaction?.id ?? ""}`;
   const values = draft.id === draftId ? draft.values : {};
   const url =
-    interaction?.type === "browser" || interaction?.type === "deviceCode"
-      ? interaction.url
-      : auth?.authorizationUrl;
+    interaction?.type === "browser"
+      ? (interaction.codeUrl ?? interaction.url)
+      : interaction?.type === "deviceCode"
+        ? interaction.url
+        : auth?.authorizationUrl;
   const pastesCode = interaction?.type === "browser" && interaction.callbackInput === "code";
 
   async function run(command: () => Promise<AtomCommandResult<unknown, unknown>>) {

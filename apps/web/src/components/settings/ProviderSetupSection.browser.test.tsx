@@ -25,6 +25,7 @@ const setup = vi.hoisted(() => ({
   cancelInstall: vi.fn(),
   removeInstall: vi.fn(),
   confirm: vi.fn(),
+  openExternal: vi.fn(async () => undefined),
 }));
 
 vi.mock(import("../../state/server"), async (original) => {
@@ -75,7 +76,8 @@ const publish = () =>
   });
 vi.mock(import("../../localApi"), async (original) => ({
   ...(await original()),
-  ensureLocalApi: () => ({ dialogs: { confirm: setup.confirm } }) as never,
+  ensureLocalApi: () =>
+    ({ dialogs: { confirm: setup.confirm }, shell: { openExternal: setup.openExternal } }) as never,
 }));
 
 import { ProviderSetupSection } from "./ProviderSetupSection";
@@ -248,13 +250,18 @@ describe("Antigravity setup", () => {
       interaction: {
         type: "browser",
         id: "claude-oauth",
-        url: "https://claude.ai/oauth/authorize?state=test-only",
+        url: "https://claude.ai/oauth/authorize?redirect_uri=local&state=test-only",
+        codeUrl: "https://claude.ai/oauth/authorize?code=true&state=test-only",
         requiresConsent: false,
         acceptsCallback: true,
         callbackInput: "code",
       },
     });
     await using screen = await renderSetup();
+    await screen.click("Open browser");
+    expect(setup.openExternal).toHaveBeenCalledWith(
+      "https://claude.ai/oauth/authorize?code=true&state=test-only",
+    );
     expect(screen.callbackInput().type).toBe("text");
     await userEvent.fill(screen.callbackInput(), "test-only-code");
     await screen.click("Continue");

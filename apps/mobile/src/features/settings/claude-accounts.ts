@@ -109,3 +109,16 @@ export function providerAccountRows(
     return signIn || claudeFolder ? [{ provider, signIn, claudeFolder }] : [];
   });
 }
+
+/**
+ * What a Claude account menu item does: `edit`, `remove`, `ignored` while a save is pending (so a
+ * second mutation never starts), or undefined for an item the editor does not own.
+ */
+export function claudeEditorAction(
+  id: string,
+  pending: boolean,
+): "edit" | "remove" | "ignored" | undefined {
+  if (id !== "claude:edit" && id !== "claude:remove") return undefined;
+  if (pending) return "ignored";
+  return id === "claude:edit" ? "edit" : "remove";
+}
