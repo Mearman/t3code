@@ -32,6 +32,7 @@ import {
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   BRAND_ASSET_PATHS,
+  EXACODE_ICON_PATHS,
   resolveWebAssetBrandForChannel,
   type WebAssetBrand,
 } from "./lib/brand-assets.ts";
@@ -2869,7 +2870,7 @@ export function resolveDesktopListing(input: {
       description: upstreamDescription,
       homepage: "https://t3.codes",
       author: "T3 Tools",
-      maintainer: listing.maintainer,
+      maintainer: "T3 Tools <hello@t3.codes>",
       bugTracker: "https://github.com/pingdotgg/t3code/issues",
       sourceUrl: "https://github.com/pingdotgg/t3code",
       unofficialStatement: undefined,
