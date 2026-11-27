@@ -16,6 +16,7 @@ import {
   mcpClientScopes,
 } from "./auth.ts";
 import { PeerLinkLinkPairingInput } from "./peerLink.ts";
+import { ClaudeSessionMoveInput } from "./claudeSessionMove.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS } from "./rpc.ts";
 
@@ -105,6 +106,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
 
   // A pass writes copies into this machine's Claude home, as a run writes to its sessions.
   [WS_METHODS.claudeSessionsReplicateNow]: AuthOrchestrationOperateScope,
+  // A move writes a worktree on the target; taking over also signals a process, as a terminal does.
+  [WS_METHODS.claudeSessionsMove]: AuthSourceControlWriteScope,
   // A link lets every agent here reach the other environment: Settings' bar.
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairClient]: AuthAccessWriteScope,
@@ -118,6 +121,7 @@ const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThread
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 const decodeLinkPairing = Schema.decodeUnknownSync(PeerLinkLinkPairingInput);
 const isHeldSessionSend = Schema.is(ClaudeHeldSessionSend);
+const decodeClaudeSessionMove = Schema.decodeUnknownSync(ClaudeSessionMoveInput);
 
 export function clientRpcRequiredScopes(
   method: string,
@@ -149,6 +153,13 @@ export function clientRpcRequiredScopes(
     CLAUDE_HELD_SESSION_TERMINAL_CHOICES.has(input.heldSessionSend)
   ) {
     return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
+  }
+  if (method === WS_METHODS.claudeSessionsMove && input !== undefined) {
+    return [
+      AuthOrchestrationOperateScope,
+      AuthSourceControlWriteScope,
+      ...(decodeClaudeSessionMove(input).takeOver ? [AuthTerminalOperateScope] : []),
+    ];
   }
   if (method === WS_METHODS.guestShareCreate) {
     return [AuthAccessWriteScope, AuthOrchestrationReadScope];

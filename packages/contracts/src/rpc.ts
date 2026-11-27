@@ -41,6 +41,11 @@ import {
   ClaudeSessionReplicationError,
 } from "./claudeSessionReplication.ts";
 import {
+  ClaudeSessionMoveError,
+  ClaudeSessionMoveInput,
+  ClaudeSessionMoveResult,
+} from "./claudeSessionMove.ts";
+import {
   ClaudeAccountCreateInput,
   ClaudeAccountCreateResult,
   ChatGptReconnectProfileInput,
@@ -626,6 +631,7 @@ export const WS_METHODS = {
   claudeSessionsListRemote: "claudeSessions.listRemote",
   claudeSessionsReplicationReport: "claudeSessions.replicationReport",
   claudeSessionsReplicateNow: "claudeSessions.replicateNow",
+  claudeSessionsMove: "claudeSessions.move",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -1008,6 +1014,13 @@ const WsClaudeSessionsReplicateNowRpc = Rpc.make(WS_METHODS.claudeSessionsReplic
   payload: Schema.Struct({}),
   success: ClaudeReplicationReport,
   error: Schema.Union([ClaudeSessionReplicationError, EnvironmentAuthorizationError]),
+});
+
+/** Moves a session this environment owns, with its code, to a linked environment. */
+const WsClaudeSessionsMoveRpc = Rpc.make(WS_METHODS.claudeSessionsMove, {
+  payload: ClaudeSessionMoveInput,
+  success: ClaudeSessionMoveResult,
+  error: Schema.Union([ClaudeSessionMoveError, EnvironmentAuthorizationError]),
 });
 
 const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
@@ -2586,6 +2599,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsClaudeSessionsListRemoteRpc,
   WsClaudeSessionsReplicationReportRpc,
   WsClaudeSessionsReplicateNowRpc,
+  WsClaudeSessionsMoveRpc,
   WsPeerLinksNamesRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,
