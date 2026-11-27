@@ -18,6 +18,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -276,24 +277,48 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         glued: "sdkfoo",
         empty: "sdk-",
       } as const;
-      const files = Object.fromEntries(
-        Object.entries(entrypoints).map(([sessionId, entrypoint], index) => [
-          `${200 + index}.json`,
-          entry(200, sessionId, { entrypoint }),
-        ]),
-      );
-      const sourceOf = (sessionId: string) =>
-        probeWith(files, sessionId).pipe(
-          Effect.map((hold) => (hold?._tag === "held" ? hold.source : undefined)),
-        );
+      // The live process is 200, so each holder gets its own registry and 200.json.
+      const sourceOf = (sessionId: keyof typeof entrypoints) =>
+        probeWith(
+          { "200.json": entry(200, sessionId, { entrypoint: entrypoints[sessionId] }) },
+          sessionId,
+        ).pipe(Effect.map((hold) => (hold?._tag === "held" ? hold.source : undefined)));
       expect(yield* sourceOf("terminal")).toBe("terminal");
       expect(yield* sourceOf("print")).toBe("non-interactive");
       expect(yield* sourceOf("sdkapp")).toBe("agent-sdk");
       expect(yield* sourceOf("t3")).toBe("t3-code");
-      for (const unrecognised of ["desktop", "bare", "glued", "empty"]) {
+      for (const unrecognised of ["desktop", "bare", "glued", "empty"] as const) {
         expect(yield* sourceOf(unrecognised)).toBe("unknown");
       }
       expect(claudeHolderSource(undefined)).toBe("unknown");
+    }),
+  );
+
+  it.effect("logs a holder whose entrypoint it does not recognise, and no other", () =>
+    Effect.gen(function* () {
+      const warnings: Array<Logger.Options<unknown>> = [];
+      const probeLogged = (entrypoint: string | undefined) =>
+        probeWith(
+          { "200.json": entry(200, "logged", entrypoint === undefined ? {} : { entrypoint }) },
+          "logged",
+        ).pipe(
+          Effect.provide(
+            Logger.layer([Logger.make((logged) => warnings.push(logged))], {
+              mergeWithExisting: false,
+            }),
+          ),
+        );
+      for (const recognised of ["cli", "sdk-cli", "sdk-ts", T3_CODE_ENTRYPOINT]) {
+        yield* probeLogged(recognised);
+      }
+      expect(warnings).toEqual([]);
+      yield* probeLogged("claude-desktop");
+      yield* probeLogged(undefined);
+      expect(warnings.map((logged) => logged.logLevel)).toEqual(["Warn", "Warn"]);
+      const line = Logger.formatLogFmt.log(warnings[0]!);
+      expect(line).toContain("unrecognised entrypoint");
+      expect(line).toMatch(/pid\W+200/);
+      expect(line).toContain("claude-desktop");
     }),
   );
 
