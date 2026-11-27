@@ -7,12 +7,16 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
+import * as Scheduler from "effect/Scheduler";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
   makeUserPathReadState,
+  readLimit,
   readUserPath,
   trackUnavailableReads,
+  trackUnavailableReadsInStream,
   UserPathReads,
   userPathLane,
 } from "./UserPathReads.ts";
@@ -92,13 +96,9 @@ describe("userPathLane", () => {
     ["darwin", "/Users/me/Pictures/a", "local", "path"],
     ["linux", "/mnt/nas/x", "/mnt/nas", "lane"],
     ["linux", "/media/me/usb/x", "/media/me/usb", "lane"],
-
     ["linux", "/media/usb0/proj", "/media/usb0", "lane"],
-
     ["linux", "/media/usb0", "/media/usb0", "lane"],
-
     ["linux", "/media/other/usb/x", "/media/other", "lane"],
-
     [
       "linux",
       "/run/user/1000/gvfs/smb-share:server=nas/x",
@@ -312,7 +312,6 @@ describe("readUserPath", () => {
           expect(yield* Fiber.join(waiting)).toEqual(Exit.succeed("b"));
         }),
         signals,
-
         { UV_THREADPOOL_SIZE: "2" },
       );
     }),
@@ -339,6 +338,9 @@ describe("readUserPath", () => {
             readUserPath("/Volumes/Backup/c", Effect.succeed("c")),
           );
           yield* Effect.yieldNow;
+          // `cancelled` is already past the queue, waiting for room, so only `behind` is queued.
+          const queued = (yield* UserPathReads).lanes.get("/volumes/backup")?.queue;
+          expect(queued?.map(({ target }) => target)).toEqual(["/volumes/backup/c"]);
           yield* Fiber.interrupt(cancelled);
           yield* Deferred.succeed(answered, undefined);
           yield* Fiber.join(holder);
@@ -346,8 +348,110 @@ describe("readUserPath", () => {
           expect(cancelledRuns.count).toBe(0);
         }),
         signals,
-
         { UV_THREADPOOL_SIZE: "2" },
+      );
+    }),
+  );
+
+  it.effect("never runs more reads than the cap, even when every step may yield", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      const active = { count: 0, peak: 0 };
+      const read = Effect.gen(function* () {
+        active.count += 1;
+        active.peak = Math.max(active.peak, active.count);
+        for (let step = 0; step < 3; step += 1) yield* Effect.yieldNow;
+        active.count -= 1;
+      });
+      yield* onMac(
+        Effect.forEach(
+          ["a", "b", "c", "d", "e", "f"],
+          (volume) => readUserPath(`/Volumes/${volume}/x`, read),
+          { concurrency: "unbounded", discard: true },
+        ).pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, 1)),
+        signals,
+        { UV_THREADPOOL_SIZE: "2" },
+      );
+      expect(active.peak).toBe(1);
+    }),
+  );
+
+  it.effect("leaves nothing queued when a caller is interrupted at any step", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      yield* onMac(
+        Effect.gen(function* () {
+          const state = yield* UserPathReads;
+          for (let steps = 0; steps < 8; steps += 1) {
+            const caller = yield* Effect.forkChild(
+              readUserPath("/Users/me/Documents/a", Effect.succeed("a")),
+            );
+            for (let step = 0; step < steps; step += 1) yield* Effect.yieldNow;
+            yield* Fiber.interrupt(caller);
+            expect(yield* readUserPath("/Users/me/Documents/b", Effect.succeed("b"))).toEqual(
+              Exit.succeed("b"),
+            );
+            const lane = state.lanes.get("/users/me/documents");
+            expect(lane?.queue).toHaveLength(0);
+            expect(lane?.draining).toBe(false);
+            expect(state.running).toBe(0);
+          }
+        }).pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, 1)),
+        signals,
+      );
+    }),
+  );
+
+  it.effect("rethrows only the defects of a cause that also holds a failure", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      yield* onMac(
+        Effect.gen(function* () {
+          const mixed = Cause.fromReasons([
+            Cause.makeFailReason("typed"),
+            Cause.makeDieReason("first defect"),
+            Cause.makeDieReason("second defect"),
+          ]);
+          const exit = yield* Effect.exit(
+            readUserPath("/Users/me/Documents/a", Effect.failCause(mixed)),
+          );
+          const defects = Exit.isFailure(exit)
+            ? exit.cause.reasons.filter(Cause.isDieReason).map(({ defect }) => defect)
+            : [];
+          expect(defects).toEqual(["first defect", "second defect"]);
+          expect(Exit.isFailure(exit) && Cause.hasFails(exit.cause)).toBe(false);
+        }),
+        signals,
+      );
+    }),
+  );
+
+  it.effect("reports an unavailable read in a stream to an enclosing tracker", () =>
+    Effect.gen(function* () {
+      const signals = yield* makeSignals;
+      const started = yield* Queue.unbounded<string>();
+      const answered = yield* Deferred.make<void>();
+      const runs = { count: 0 };
+      yield* onMac(
+        Effect.gen(function* () {
+          const prompted = yield* Effect.forkChild(
+            readUserPath("/Users/me/Documents/a", promptedRead("a", started, answered, runs)),
+          );
+          yield* Queue.take(started);
+          yield* TestClock.adjust("2 seconds");
+          yield* Fiber.join(prompted);
+          const [emitted, unavailable] = yield* trackUnavailableReads(
+            Stream.runCollect(
+              trackUnavailableReadsInStream(
+                Stream.fromEffect(readUserPath("/Users/me/Documents/b", Effect.succeed("b"))),
+                "marker",
+              ),
+            ),
+          );
+          expect(emitted.at(-1)).toBe("marker");
+          expect(unavailable).toBe(true);
+        }),
+        signals,
       );
     }),
   );
@@ -410,4 +514,18 @@ describe("readUserPath", () => {
       );
     }),
   );
+});
+
+describe("readLimit", () => {
+  it.each([
+    [undefined, 2],
+    ["not a number", 2],
+    ["8", 4],
+    ["1", 1],
+    ["0", 1],
+    ["-5", 1],
+    ["99999", 512],
+  ] as const)("with UV_THREADPOOL_SIZE %s allows %s reads", (size, limit) => {
+    expect(readLimit(size === undefined ? {} : { UV_THREADPOOL_SIZE: size })).toBe(limit);
+  });
 });
