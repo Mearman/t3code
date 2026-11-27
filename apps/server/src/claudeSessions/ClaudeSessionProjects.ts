@@ -7,6 +7,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -16,6 +17,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { claudeLocalSettingsDirectory } from "../provider/Drivers/ClaudeHome.ts";
+import { readUserPath } from "../workspace/UserPathReads.ts";
 
 export class ClaudeSessionProjectError extends Schema.TaggedError<ClaudeSessionProjectError>()(
   "ClaudeSessionProjectError",
@@ -38,7 +40,7 @@ export class ClaudeSessionProjects extends Context.Service<
   ClaudeSessionProjects,
   {
     /**
-     * The project of a session's working directory: its repository's main checkout, or the directory itself outside a repository. A missing, temporary, home or root directory, one whose project the user deleted, and one the project rules refuse go to one project the store's sessions share. Undefined when that shared project was deleted too.
+     * The project of a session's working directory: its repository's main checkout, or the directory itself outside a repository. A missing, temporary, home or root directory, one whose project the user deleted, and one the project rules refuse go to one project the store's sessions share. Undefined when that shared project was deleted too, or when the directory does not answer (`readUserPath`), so the session stays pending.
      */
     readonly resolve: (input: {
       readonly cwd: string | undefined;
@@ -83,8 +85,13 @@ const make = Effect.gen(function* () {
   // A project there would hold the user's whole home or file system.
   const isTooBroad = (directory: string) =>
     directory === home || directory === path.parse(directory).root;
+  // Undefined when the directory does not answer, such as one behind an unanswered macOS prompt.
+  const answer = <A>(directory: string, read: Effect.Effect<A>) =>
+    Effect.map(readUserPath(directory, read), (outcome) =>
+      outcome._tag === "Unavailable" ? undefined : Option.getOrUndefined(Exit.getSuccess(outcome)),
+    );
   const exists = (directory: string) =>
-    fileSystem.exists(directory).pipe(Effect.orElseSucceed(() => false));
+    answer(directory, fileSystem.exists(directory).pipe(Effect.orElseSucceed(() => false)));
 
   const lookup = Effect.fn("ClaudeSessionProjects.lookup")(function* (
     workspaceRoot: string,
@@ -150,15 +157,24 @@ const make = Effect.gen(function* () {
   )(
     function* ({ cwd, storeKey }) {
       if (cwd === undefined) return yield* shared(storeKey, null);
+      // A directory that does not answer leaves the session pending, so a later sweep places it.
+      const cwdExists = yield* exists(cwd);
+      if (cwdExists === undefined) return undefined;
       // A missing directory cannot be spawned in, so a send runs in the shared project's root.
-      if (!(yield* exists(cwd))) return yield* shared(storeKey, null);
+      if (!cwdExists) return yield* shared(storeKey, null);
       if (isTemporary(cwd) || isTooBroad(cwd)) return yield* shared(storeKey, cwd);
-      const checkout = yield* claudeLocalSettingsDirectory(cwd).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
+      const checkout = yield* answer(
+        cwd,
+        claudeLocalSettingsDirectory(cwd).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
       );
+      if (checkout === undefined) return undefined;
       // A `.git` pointer can name a main checkout that is gone; the session's directory stands in.
-      const root = checkout === cwd || (yield* exists(checkout)) ? checkout : cwd;
+      const checkoutExists = checkout === cwd || (yield* exists(checkout));
+      if (checkoutExists === undefined) return undefined;
+      const root = checkoutExists ? checkout : cwd;
       if (isTooBroad(root)) return yield* shared(storeKey, cwd);
       const found = yield* lookup(root, path.basename(root) || root);
       if (found._tag === "Unusable") return yield* shared(storeKey, cwd);

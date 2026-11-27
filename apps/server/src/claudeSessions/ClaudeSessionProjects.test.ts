@@ -4,11 +4,16 @@ import { describe, expect, it } from "@effect/vitest";
 import { CommandId, type Project } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as GitManager from "../git/GitManager.ts";
@@ -23,6 +28,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import { makeUserPathReadState, UserPathReads } from "../workspace/UserPathReads.ts";
+import { fileSystemBlockedUnder } from "../workspace/UserPathReads.testkit.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ClaudeSessionProjects from "./ClaudeSessionProjects.ts";
 
@@ -84,10 +91,16 @@ const resolverLayer = (input: {
   readonly home: string;
   readonly projects: ReturnType<typeof fakeProjects>;
   readonly temporaryRoots?: ReadonlyArray<string>;
+  readonly fileSystem?: FileSystem.FileSystem;
 }) =>
   ClaudeSessionProjects.layer.pipe(
     Layer.provide(
       Layer.succeed(ClaudeSessionProjects.ClaudeTemporaryRoots, input.temporaryRoots ?? []),
+    ),
+    Layer.provide(
+      input.fileSystem === undefined
+        ? Layer.empty
+        : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
     ),
     Layer.provide(input.projects.service),
     Layer.provide(ServerConfig.layerTest(input.root, { prefix: "claude-session-projects-" })),
@@ -318,3 +331,67 @@ const realLayer = (root: string) =>
     Layer.provideMerge(ServerConfig.layerTest(root, root)),
     Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
+
+describe("ClaudeSessionProjects with a folder whose reads wait on a prompt", () => {
+  it.effect("leaves the session unplaced at the deadline and places it once answered", () =>
+    withRoot((root) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = path.join(root, "Documents", "project");
+        yield* fileSystem.makeDirectory(cwd, { recursive: true });
+        const blocked = yield* Queue.unbounded<string>();
+        const answered = yield* Deferred.make<void>();
+        const reopened = yield* Deferred.make<void>();
+        const projects = fakeProjects();
+        const layer = resolverLayer({
+          root,
+          home: path.join(root, "home"),
+          projects,
+          fileSystem: fileSystemBlockedUnder({
+            fileSystem,
+            root: cwd,
+            separator: path.sep,
+            blocked,
+            answered,
+          }),
+        });
+
+        yield* Effect.gen(function* () {
+          const resolver = yield* ClaudeSessionProjects.ClaudeSessionProjects;
+          const waiting = yield* Effect.forkChild(resolver.resolve({ cwd, storeKey: STORE }));
+          expect(yield* Queue.take(blocked)).toBe(cwd);
+          yield* TestClock.adjust("2 seconds");
+          expect(yield* Fiber.join(waiting)).toBeUndefined();
+          expect(projects.created).toEqual([]);
+          // The folder stays closed, so a sweep meanwhile reads nothing and stays unplaced.
+          expect(yield* resolver.resolve({ cwd, storeKey: STORE })).toBeUndefined();
+          expect(yield* Queue.size(blocked)).toBe(0);
+
+          yield* Deferred.succeed(answered, undefined);
+          yield* Deferred.await(reopened);
+          expect(yield* resolver.resolve({ cwd, storeKey: STORE })).toEqual({
+            projectId: projects.byRoot.get(cwd)?.id,
+            worktreePath: null,
+          });
+        }).pipe(
+          Effect.provide(layer),
+          Effect.provideService(UserPathReads, makeUserPathReadState()),
+          Effect.provide(
+            Logger.layer(
+              [
+                Logger.make(({ message }) => {
+                  const text = Array.isArray(message) ? String(message[0]) : "";
+                  if (text.startsWith("A folder read returned")) {
+                    Deferred.doneUnsafe(reopened, Effect.void);
+                  }
+                }),
+              ],
+              { mergeWithExisting: true },
+            ),
+          ),
+        );
+      }),
+    ),
+  );
+});
