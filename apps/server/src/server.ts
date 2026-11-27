@@ -975,8 +975,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
     GuestHttp.layer,
-    // The same infrastructure layer as the drivers', so the routes and gates share one bridge.
-    ClaudeBridgeHttp.layer.pipe(Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer)),
+    ClaudeBridgeHttp.layer,
     LinkThreadHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
@@ -1483,7 +1482,7 @@ const layerMakeServer = Layer.unwrap(
           yield* bridge.serveAt(`http://${loopbackUrlHostForAddress(address)}:${address.port}`);
         }),
       ),
-    ).pipe(Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer));
+    );
     const layerServerApplication = Layer.mergeAll(
       layerRoutes,
       layerClaudeBridgeOrigin,
@@ -1498,6 +1497,8 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
+      // The layer the drivers' infrastructure merges, so routes and send gates share one bridge.
+      Layer.provideMerge(ClaudeBridge.layer),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),

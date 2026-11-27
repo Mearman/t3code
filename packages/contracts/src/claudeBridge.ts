@@ -33,11 +33,10 @@ export const ClaudeBridgeCommand = Schema.Union([
 ]);
 export type ClaudeBridgeCommand = typeof ClaudeBridgeCommand.Type;
 
-/** The mod's poll: the session it runs, and whether a model turn is running in it. */
+/** The mod's poll, naming the session its `claude` runs. */
 export const ClaudeBridgePoll = Schema.Struct({
   schemaVersion: Schema.Literal(CLAUDE_BRIDGE_SCHEMA_VERSION),
   sessionId: Schema.String,
-  busy: Schema.Boolean,
 });
 export type ClaudeBridgePoll = typeof ClaudeBridgePoll.Type;
 

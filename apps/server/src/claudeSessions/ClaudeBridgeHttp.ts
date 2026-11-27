@@ -1,6 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
-
 import { CLAUDE_BRIDGE_ROUTE_PREFIX, ClaudeBridgePoll } from "@t3tools/contracts";
+import * as Mac from "effect/crypto/Mac";
 import * as Effect from "effect/Effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Schema from "effect/Schema";
@@ -12,9 +11,11 @@ const NO_STORE = { "cache-control": "no-store" };
 const decodePoll = Schema.decodeUnknownEffect(ClaudeBridgePoll);
 
 function presentsToken(request: HttpServerRequest.HttpServerRequest, token: string): boolean {
-  const presented = Buffer.from(request.headers["authorization"] ?? "");
-  const expected = Buffer.from(`Bearer ${token}`);
-  return presented.length === expected.length && timingSafeEqual(presented, expected);
+  const encoder = new TextEncoder();
+  return Mac.timingSafeEqual(
+    encoder.encode(request.headers["authorization"] ?? ""),
+    encoder.encode(`Bearer ${token}`),
+  );
 }
 
 /**
