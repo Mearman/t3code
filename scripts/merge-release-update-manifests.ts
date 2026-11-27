@@ -5,7 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { Argument, Command } from "effect/cli";
+import { Argument, Command, Flag } from "effect/cli";
 
 import { mergeUpdateManifestFiles, type UpdateManifestPlatform } from "./merge-update-manifests.ts";
 
@@ -40,8 +40,12 @@ function pairArchitectures(
   });
 }
 
+const RELEASE_MANIFEST_PLATFORMS = ["mac", "win"] as const;
+type ReleaseManifestPlatform = (typeof RELEASE_MANIFEST_PLATFORMS)[number];
+
 function planReleaseUpdateManifestMerges(
   fileNames: ReadonlyArray<string>,
+  platforms: ReadonlyArray<ReleaseManifestPlatform>,
 ): ReadonlyArray<ReleaseUpdateManifestMerge> {
   const macArm64 = new Map<string, string>();
   const macX64 = new Map<string, string>();
@@ -67,10 +71,18 @@ function planReleaseUpdateManifestMerges(
     }
   }
 
+  // A release that builds no Windows app must not carry a stray, unmerged Windows feed.
+  if (!platforms.includes("win") && winArm64.size + winX64.size > 0) {
+    throw new Error("Windows updater manifests found in a release without Windows builds.");
+  }
+  if (!platforms.includes("mac") && macArm64.size + macX64.size > 0) {
+    throw new Error("macOS updater manifests found in a release without macOS builds.");
+  }
+
   // electron-builder names the macOS arm64 manifest without an arch suffix,
   // so the merged macOS feed keeps that name; Windows gets `<channel>.yml`.
   return [
-    ...pairArchitectures("macOS", macArm64, macX64).map(
+    ...(platforms.includes("mac") ? pairArchitectures("macOS", macArm64, macX64) : []).map(
       ({ arm64, x64 }): ReleaseUpdateManifestMerge => ({
         platform: "mac",
         primary: arm64,
@@ -78,7 +90,7 @@ function planReleaseUpdateManifestMerges(
         output: arm64,
       }),
     ),
-    ...pairArchitectures("Windows", winArm64, winX64).map(
+    ...(platforms.includes("win") ? pairArchitectures("Windows", winArm64, winX64) : []).map(
       ({ channel, arm64, x64 }): ReleaseUpdateManifestMerge => ({
         platform: "win",
         primary: x64,
@@ -90,11 +102,17 @@ function planReleaseUpdateManifestMerges(
 }
 
 export const mergeReleaseUpdateManifestFiles = Effect.fn("mergeReleaseUpdateManifestFiles")(
-  function* (releaseAssetsDirArg: string) {
+  function* (
+    releaseAssetsDirArg: string,
+    platforms: ReadonlyArray<ReleaseManifestPlatform> = RELEASE_MANIFEST_PLATFORMS,
+  ) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const releaseAssetsDir = path.resolve(releaseAssetsDirArg);
-    const plans = planReleaseUpdateManifestMerges(yield* fs.readDirectory(releaseAssetsDir));
+    const plans = planReleaseUpdateManifestMerges(
+      yield* fs.readDirectory(releaseAssetsDir),
+      platforms,
+    );
 
     yield* Effect.forEach(
       plans,
@@ -123,8 +141,13 @@ export const mergeReleaseUpdateManifestsCommand = Command.make(
     releaseAssetsDir: Argument.String("release-assets-dir").pipe(
       Argument.withDescription("Directory containing every desktop release artifact."),
     ),
+    platforms: Flag.Literals("platform", RELEASE_MANIFEST_PLATFORMS).pipe(
+      Flag.withDescription("Platform the release builds. Repeat for several; default: all."),
+      Flag.atLeast(0),
+      Flag.map((platforms) => (platforms.length > 0 ? platforms : RELEASE_MANIFEST_PLATFORMS)),
+    ),
   },
-  ({ releaseAssetsDir }) => mergeReleaseUpdateManifestFiles(releaseAssetsDir),
+  ({ releaseAssetsDir, platforms }) => mergeReleaseUpdateManifestFiles(releaseAssetsDir, platforms),
 ).pipe(
   Command.withDescription("Require and merge complete arm64/x64 desktop updater manifest pairs."),
 );

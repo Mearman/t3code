@@ -80,4 +80,51 @@ it.layer(NodeServices.layer)("merge release update manifests", (it) => {
       assert.include(String(exit), `Incomplete ${platform} updater manifests`);
     }),
   );
+
+  it.effect("merges only the platforms a release builds", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const releaseAssetsDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "merge-release-update-manifests-mac-",
+      });
+      const fixtures = {
+        "nightly-mac.yml": manifest("T3-Code-1.2.3-arm64.zip"),
+        "nightly-mac-x64.yml": manifest("T3-Code-1.2.3-x64.zip"),
+        "nightly-linux.yml": manifest("T3-Code-1.2.3-x86_64.AppImage"),
+      };
+      yield* Effect.forEach(Object.entries(fixtures), ([fileName, contents]) =>
+        fs.writeFileString(path.join(releaseAssetsDir, fileName), contents),
+      );
+
+      yield* mergeReleaseUpdateManifestFiles(releaseAssetsDir, ["mac"]);
+
+      const mac = yield* fs.readFileString(path.join(releaseAssetsDir, "nightly-mac.yml"));
+      assert.include(mac, "T3-Code-1.2.3-arm64.zip");
+      assert.include(mac, "T3-Code-1.2.3-x64.zip");
+      assert.isFalse(yield* fs.exists(path.join(releaseAssetsDir, "nightly-mac-x64.yml")));
+      assert.isTrue(yield* fs.exists(path.join(releaseAssetsDir, "nightly-linux.yml")));
+    }),
+  );
+
+  it.effect("refuses manifests of a platform the release does not build", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const releaseAssetsDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "merge-release-update-manifests-stray-",
+      });
+      const fixtures = ["nightly-mac.yml", "nightly-mac-x64.yml", "nightly-win-x64.yml"];
+      yield* Effect.forEach(fixtures, (fileName) =>
+        fs.writeFileString(path.join(releaseAssetsDir, fileName), manifest(fileName)),
+      );
+
+      const exit = yield* mergeReleaseUpdateManifestFiles(releaseAssetsDir, ["mac"]).pipe(
+        Effect.exit,
+      );
+
+      assert.equal(exit._tag, "Failure");
+      assert.include(String(exit), "Windows updater manifests found");
+    }),
+  );
 });
