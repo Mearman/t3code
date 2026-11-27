@@ -74,6 +74,8 @@ interface ScannerTestInput {
     readonly sources: ReadonlyArray<AgentSessionImportSource>;
   };
   readonly processRunner?: Layer.Layer<ProcessRunner.ProcessRunner>;
+  /** The filesystem the scanner alone reads through; its dependencies keep the real one. */
+  readonly scannerFileSystem?: FileSystem.FileSystem;
 }
 
 const layerRuntimeRepository = (imported: ScannerTestInput["importedTranscripts"]) =>
@@ -103,6 +105,11 @@ const layerScannerTest = (input: ScannerTestInput) =>
         Layer.provide(input.processRunner),
       )
   ).pipe(
+    Layer.provide(
+      input.scannerFileSystem === undefined
+        ? Layer.empty
+        : Layer.succeed(FileSystem.FileSystem, input.scannerFileSystem),
+    ),
     Layer.provide(
       Layer.mergeAll(
         ServerSettings.layerTest({
@@ -3510,25 +3517,21 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   },
 );
 
-/** Fresh lanes and a filesystem whose reads under `root` wait for `answered`. */
+/** A filesystem whose reads under `root` wait for `answered`, and fresh lanes to read it in. */
 const blockedUnder = Effect.fn("AgentSessionScanner.test.blockedUnder")(function* (root: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const blocked = yield* Queue.unbounded<string>();
   const answered = yield* Deferred.make<void>();
-  const blockedFileSystem = fileSystemBlockedUnder({
+  const scannerFileSystem = fileSystemBlockedUnder({
     fileSystem,
     root,
     separator: path.sep,
     blocked,
     answered,
   });
-  const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(
-      Effect.provideService(FileSystem.FileSystem, blockedFileSystem),
-      Effect.provideService(UserPathReads, makeUserPathReadState()),
-    );
-  return { blocked, answered, provide };
+  const withLanes = Effect.provideService(UserPathReads, makeUserPathReadState());
+  return { blocked, answered, scannerFileSystem, withLanes };
 });
 
 describe("AgentSessionScanner with a folder whose reads never return", () => {
@@ -3537,12 +3540,14 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
       const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
       const codexHomePath = yield* makeTempDir("t3code-codex-home-");
       const configBaseDir = yield* makeTempDir("t3code-scanner-base-");
-      const { blocked, provide } = yield* blockedUnder(configBaseDir);
+      const { blocked, scannerFileSystem, withLanes } = yield* blockedUnder(configBaseDir);
 
       const outcome = yield* AgentSessionScanner.AgentSessionScanner.pipe(
         Effect.as("built"),
-        Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, configBaseDir })),
-        provide,
+        Effect.provide(
+          layerScannerTest({ claudeHomePath, codexHomePath, configBaseDir, scannerFileSystem }),
+        ),
+        withLanes,
         Effect.raceFirst(Queue.take(blocked).pipe(Effect.map((target) => `read ${target}`))),
       );
 
@@ -3581,7 +3586,9 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
           },
         ],
       });
-      const { blocked, provide } = yield* blockedUnder(path.join(homeDir, "Documents"));
+      const { blocked, scannerFileSystem, withLanes } = yield* blockedUnder(
+        path.join(homeDir, "Documents"),
+      );
       const importableTitles = (outcomes: Iterable<AgentSessionScanner.AgentSessionRecentThread>) =>
         Array.from(outcomes)
           .flatMap((outcome) => (outcome._tag === "Importable" ? [outcome.thread.title] : []))
@@ -3601,8 +3608,8 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
           ),
         };
       }).pipe(
-        Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })),
-        provide,
+        Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, scannerFileSystem })),
+        withLanes,
         Effect.provideService(HostProcess.HomeDirectory, homeDir),
         Effect.raceFirst(Queue.take(blocked).pipe(Effect.map((target) => `read ${target}`))),
       );
@@ -3633,7 +3640,8 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
           mtimeMs: Date.parse(`2026-01-0${index + 1}T00:00:00.000Z`),
         });
       }
-      const { blocked, answered, provide } = yield* blockedUnder(documentsProject);
+      const { blocked, answered, scannerFileSystem, withLanes } =
+        yield* blockedUnder(documentsProject);
       const reopened = yield* Deferred.make<void>();
       const reopenedLogger = Logger.make(({ message }) => {
         if (Array.isArray(message) && String(message[0]).startsWith("A folder read returned")) {
@@ -3664,8 +3672,8 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
           truncated: undefined,
         });
       }).pipe(
-        Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })),
-        provide,
+        Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, scannerFileSystem })),
+        withLanes,
         Effect.provideService(HostProcess.HomeDirectory, homeDir),
         Effect.provide(Logger.layer([reopenedLogger], { mergeWithExisting: true })),
       );

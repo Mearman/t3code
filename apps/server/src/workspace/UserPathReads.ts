@@ -7,7 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 /** How long a read may run, from when it starts, before its folder is reported unavailable. */
-export const USER_PATH_READ_DEADLINE = "2 seconds";
+const USER_PATH_READ_DEADLINE = "2 seconds";
 // libuv runs file reads on a pool of this many threads unless UV_THREADPOOL_SIZE says otherwise.
 const LIBUV_DEFAULT_POOL_SIZE = 4;
 

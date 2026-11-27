@@ -19,7 +19,7 @@ export const fileSystemBlockedUnder = (input: {
   const { fileSystem, root, separator, blocked, answered } = input;
   const isUnder = (target: string) =>
     target === root || target.startsWith(`${root}${separator}`);
-  const block = <A, E>(target: string, read: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+  const block = <A, E, R>(target: string, read: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
     isUnder(target)
       ? Queue.offer(blocked, target).pipe(
           Effect.andThen(Deferred.await(answered)),
