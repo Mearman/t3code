@@ -2181,8 +2181,9 @@ const forkEnv =
   (env: Record<string, string>) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
-      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(
+        Layer.mergeAll(ConfigProvider.layer(ConfigProvider.fromEnv({ env })), NodeServices.layer),
+      ),
     );
 const NAMED = { T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode" };
 const VERSION = "0.1.13-nightly.20261127.14171";
