@@ -182,6 +182,7 @@ jobs:
       - name: Build JS bundle
         env:
           T3CODE_TELEMETRY_CHANNEL: dev
+          T3CODE_DESKTOP_PRODUCT_NAME: ExaCode
         run: vp run build:desktop:bundle
 
       # The bundles must update from this repository (scripts/lib/release-repository.ts).
@@ -194,6 +195,15 @@ jobs:
               exit 1
             fi
           done
+
+      # The desktop bundle names the app ExaCode in its window title and About panel
+      # (scripts/lib/desktop-product-name.ts).
+      - name: Check the desktop bundle's product name
+        run: |
+          if ! grep -rqF '"ExaCode"' apps/desktop/dist-electron; then
+            echo "::error::apps/desktop/dist-electron does not name the app ExaCode."
+            exit 1
+          fi
 
       - name: Stage web asset manifest
         run: |
