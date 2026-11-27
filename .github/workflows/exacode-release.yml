@@ -442,6 +442,13 @@ jobs:
           if "T3 Code" not in source:
               sys.exit("scripts/install.sh no longer names T3 Code")
           source = source.replace("T3 Code", "ExaCode")
+          # The download page, the usage line and the default repository named in the comments.
+          source = source.replace("https://t3.codes/download", f"https://github.com/{sys.argv[1]}/releases")
+          source = source.replace("curl -fsSL https://t3.codes/install.sh | sh", "sh install.sh")
+          source = source.replace("pingdotgg/t3code", sys.argv[1])
+          for upstream in ("t3.codes", "pingdotgg"):
+              if upstream in source:
+                  sys.exit(f"the attached installer still names {upstream}")
           open("release-assets/install.sh", "w").write(source)
           EOF
           sh -n release-assets/install.sh

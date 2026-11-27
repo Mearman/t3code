@@ -4,6 +4,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Base64 from "effect/encoding/Base64";
 
+import { PROJECT_NOREPLY_EMAIL } from "@t3tools/shared/cliRelease";
 import * as GitHubAppAccess from "./GitHubAppAccess.ts";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 
@@ -73,7 +74,7 @@ export const cascadeRebaseStack = Effect.fn("cascadeRebaseStack")(function* (inp
     GIT_CONFIG_KEY_1: "user.name",
     GIT_CONFIG_VALUE_1: "T3 Code",
     GIT_CONFIG_KEY_2: "user.email",
-    GIT_CONFIG_VALUE_2: "noreply@t3.codes",
+    GIT_CONFIG_VALUE_2: PROJECT_NOREPLY_EMAIL,
   };
   const git = (args: ReadonlyArray<string>, allowNonZeroExit = false) =>
     process.run({

@@ -40,6 +40,7 @@ import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassifi
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { PRODUCT_NAME, UPSTREAM_PRODUCT_NAME } from "@t3tools/shared/productName";
 
 const PeerHttpApi = HttpApi.make(EnvironmentHttpApi.identifier)
   .add(EnvironmentHttpApi.groups.metadata)
@@ -85,7 +86,17 @@ export interface ResolvedPeerLink {
 }
 
 /** What a link's session is called in the peer's Connections, before this environment's label. */
-export const LINK_CLIENT_NAME_PREFIX = "T3 Code · ";
+export const LINK_CLIENT_NAME_PREFIX = `${PRODUCT_NAME} · `;
+// A peer built under upstream's name still labels its links this way.
+const UPSTREAM_LINK_CLIENT_NAME_PREFIX = `${UPSTREAM_PRODUCT_NAME} · `;
+
+/** A link session's label without the prefix either side's build puts before the label. */
+export function linkClientVia(label: string): string {
+  for (const prefix of [LINK_CLIENT_NAME_PREFIX, UPSTREAM_LINK_CLIENT_NAME_PREFIX]) {
+    if (label.startsWith(prefix)) return label.slice(prefix.length);
+  }
+  return label;
+}
 
 export const LINKED_ENVIRONMENTS_OFF =
   "Linked environments is off on this machine. Turn it on in Settings → Labs.";

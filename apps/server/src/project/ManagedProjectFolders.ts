@@ -26,6 +26,7 @@ import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectService from "./ProjectService.ts";
+import { PROJECT_HOME_URL } from "@t3tools/shared/cliRelease";
 
 export class ScratchUnavailableError extends Schema.TaggedError<ScratchUnavailableError>()(
   "ScratchUnavailableError",
@@ -199,7 +200,7 @@ function namedProjectReadme(name: string): string {
     "",
     `# ${name}`,
     "",
-    "Created in [T3 Code](https://t3.codes).",
+    `Created in [T3 Code](${PROJECT_HOME_URL}).`,
     "",
   ].join("\n");
 }
