@@ -1477,7 +1477,7 @@ describe("DesktopUpdates under a managed policy", () => {
         Effect.gen(function* () {
           const updates = yield* DesktopUpdates.DesktopUpdates;
           yield* updates.configure;
-          // The patched electron-updater reads updateFeedPointerOnly, which its types do not declare.
+          // patches/electron-updater reads updateFeedPointerOnly; its types do not declare it.
           assert.deepEqual<unknown>(
             harness.feedUrls(),
             pointerOnly

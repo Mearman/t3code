@@ -33,7 +33,10 @@ const offeredRelease = async (
 ) => {
   let apiScans = 0;
   const request = async ({ path = "" }: { readonly path?: string | null }) => {
-    if (path === `${REPO}/releases.atom`) return atomFeed(feedTags);
+    if (path === `${REPO}/releases.atom`) {
+      if (pointerOnly) throw new Error("A pointer-only lookup read the tag feed.");
+      return atomFeed(feedTags);
+    }
     if (path === `${REPO}/releases/download/update-feed/nightly.json`) {
       if (pointerTag === undefined) throw new Error("404");
       return JSON.stringify({ tag_name: pointerTag, name: pointerTag, body: "pointer notes" });
@@ -125,6 +128,59 @@ describe("GitHubProvider nightly lookup", () => {
       tag: nightly(4606),
       releaseNotes: "API notes",
       apiScans: 1,
+    });
+  });
+});
+
+/**
+ * The release a stable install on 0.1.10 is offered when the repository's newest stable release is
+ * `latestTag` and its tag feed's newest tag is `feedTag` (another repository's, in a fork).
+ */
+const offeredStableRelease = async (latestTag: string, feedTag: string, pointerOnly: boolean) => {
+  const requests: string[] = [];
+  const request = async ({ path = "" }: { readonly path?: string | null }) => {
+    requests.push(path ?? "");
+    if (path === `${REPO}/releases.atom`) return atomFeed([feedTag]);
+    if (path === `${REPO}/releases/latest`) return JSON.stringify({ tag_name: latestTag });
+    const manifest = /\/releases\/download\/v([^/]+)\/latest\.yml$/.exec(path ?? "");
+    if (manifest) return `version: ${manifest[1]}\npath: T3-Code.exe\nsha512: abc\n`;
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const provider = new GitHubProvider(
+    {
+      provider: "github",
+      owner: "pingdotgg",
+      repo: "t3code",
+      ...(pointerOnly ? { updateFeedPointerOnly: true } : {}),
+    },
+    {
+      allowPrerelease: false,
+      channel: "latest",
+      currentVersion: semver.parse("0.1.10"),
+      fullChangelog: false,
+    } as ProviderArgs[1],
+    {
+      isUseMultipleRangeRequest: false,
+      platform: "win32",
+      executor: { request },
+    } as ProviderArgs[2],
+  );
+  const { tag } = await provider.getLatestVersion();
+  return { tag, readFeed: requests.includes(`${REPO}/releases.atom`) };
+};
+
+describe("GitHubProvider stable lookup", () => {
+  it("never reads the tag feed when only the repository's releases are trusted", async () => {
+    expect(await offeredStableRelease("v0.1.11", "v0.1.13", true)).toEqual({
+      tag: "v0.1.11",
+      readFeed: false,
+    });
+  });
+
+  it("still reads the tag feed for release notes otherwise", async () => {
+    expect(await offeredStableRelease("v0.1.11", "v0.1.11", false)).toEqual({
+      tag: "v0.1.11",
+      readFeed: true,
     });
   });
 });

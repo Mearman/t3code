@@ -224,10 +224,36 @@ index 0ae9e1126e1dc136977914ef1bfd46709fc9db1b..e6fb0b8aafda6ae0797d3127b5aa661b
          request.on("redirect", (statusCode, method, redirectUrl) => {
              // no way to modify request options, abort old and make a new one
 diff --git a/out/providers/GitHubProvider.js b/out/providers/GitHubProvider.js
-index e768d24e7a957caf32a4b8ca6c68cb50eb5865ee..29518096b762734565ca263ece4f18d784b1985c 100644
+index e768d24e7a957caf32a4b8ca6c68cb50eb5865ee..29f8378984ae13d5ea42363d8aca3cf1bc17ae35 100644
 --- a/out/providers/GitHubProvider.js
 +++ b/out/providers/GitHubProvider.js
-@@ -107,6 +107,37 @@ class GitHubProvider extends BaseGitHubProvider {
+@@ -40,15 +40,21 @@ class GitHubProvider extends BaseGitHubProvider {
+     async getLatestVersion() {
+         var _a, _b, _c, _d, _e;
+         const cancellationToken = new builder_util_runtime_1.CancellationToken();
+-        const feedXml = (await this.httpRequest((0, util_1.newUrlFromBase)(`${this.basePath}.atom`, this.baseUrl), {
++        // A repository that carries another one's tags without their releases (a fork) never reads
++        // its tag feed: tags, names and notes come from its own releases (set by apps/desktop).
++        const pointerOnly = this.options.updateFeedPointerOnly === true;
++        const feedXml = pointerOnly ? null : (await this.httpRequest((0, util_1.newUrlFromBase)(`${this.basePath}.atom`, this.baseUrl), {
+             accept: "application/xml, application/atom+xml, text/xml, */*",
+         }, cancellationToken));
+-        const feed = (0, builder_util_runtime_1.parseXml)(feedXml);
++        const feed = pointerOnly ? null : (0, builder_util_runtime_1.parseXml)(feedXml);
+         // noinspection TypeScriptValidateJSTypes
+-        let latestRelease = feed.element("entry", false, `No published versions on GitHub`);
++        let latestRelease = pointerOnly ? null : feed.element("entry", false, `No published versions on GitHub`);
+         let tag = null;
+         try {
+-            if (this.updater.allowPrerelease) {
++            if (pointerOnly) {
++                // The channel lookups below answer.
++            }
++            else if (this.updater.allowPrerelease) {
+                 const currentChannel = ((_a = this.updater) === null || _a === void 0 ? void 0 : _a.channel) || ((_b = semver.prerelease(this.updater.currentVersion)) === null || _b === void 0 ? void 0 : _b[0]) || null;
+                 if (currentChannel === null) {
+                     // allowPrerelease=true with no explicit channel and stable current version:
+@@ -107,6 +113,37 @@ class GitHubProvider extends BaseGitHubProvider {
          catch (e) {
              throw (0, builder_util_runtime_1.newError)(`Cannot parse releases feed: ${e.stack || e.message},\nXML:\n${feedXml}`, "ERR_UPDATER_INVALID_RELEASE_FEED");
          }
@@ -236,11 +262,6 @@ index e768d24e7a957caf32a4b8ca6c68cb50eb5865ee..29518096b762734565ca263ece4f18d7
 +        // The newer of the two answers wins; the API scan is the last resort.
 +        let apiRelease = null;
 +        if (this.updater.allowPrerelease && this.updater.channel) {
-+            // A repository that carries another one's tags without their releases trusts only its
-+            // pointer and its release list (updateFeedPointerOnly, set by apps/desktop).
-+            if (this.options.updateFeedPointerOnly === true) {
-+                tag = null;
-+            }
 +            const feedTag = tag;
 +            const pointer = await this.getChannelPointerRelease(this.updater.channel, cancellationToken);
 +            if (pointer !== null && (tag == null || semver.gt(pointer.tag_name, tag))) {
@@ -262,10 +283,15 @@ index e768d24e7a957caf32a4b8ca6c68cb50eb5865ee..29518096b762734565ca263ece4f18d7
 +                }
 +            }
 +        }
++        else if (pointerOnly) {
++            // The repository's own latest stable release; its tag feed may name another one's.
++            tag = await this.getLatestTagName(cancellationToken);
++            apiRelease = tag == null ? null : { tag_name: tag };
++        }
          if (tag == null) {
              throw (0, builder_util_runtime_1.newError)(`No published versions on GitHub`, "ERR_UPDATER_NO_PUBLISHED_VERSIONS");
          }
-@@ -144,6 +175,14 @@ class GitHubProvider extends BaseGitHubProvider {
+@@ -144,6 +181,14 @@ class GitHubProvider extends BaseGitHubProvider {
              }
          }
          const result = (0, Provider_1.parseUpdateInfo)(rawData, channelFile, channelFileUrl);
@@ -280,7 +306,7 @@ index e768d24e7a957caf32a4b8ca6c68cb50eb5865ee..29518096b762734565ca263ece4f18d7
          if (result.releaseName == null) {
              result.releaseName = latestRelease.elementValueOrEmpty("title");
          }
-@@ -155,6 +194,42 @@ class GitHubProvider extends BaseGitHubProvider {
+@@ -155,6 +200,42 @@ class GitHubProvider extends BaseGitHubProvider {
              ...result,
          };
      }
