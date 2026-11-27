@@ -27,11 +27,13 @@ import {
   parseClaudeProcessTable,
   type ClaudeProcessRow,
 } from "./ClaudeProcessTable.ts";
+import { T3_CODE_ENTRYPOINT } from "../provider/Drivers/ClaudeHome.ts";
 import { ClaudeSessionRegistryEntry } from "./ClaudeSessionRegistry.ts";
 import {
   gateHeldClaudeSessionRuntime,
   probeClaudeSessionHold,
   type ClaudeSessionHold,
+  claudeHolderSource,
 } from "./ClaudeSessionSendGate.ts";
 
 const encodeEntry = Schema.encodeSync(Schema.fromJsonString(ClaudeSessionRegistryEntry));
@@ -262,39 +264,57 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       }),
   );
 
-  it.effect("tells how a holder was started and only an orphaned SDK one may be T3 Code's", () =>
+  it.effect("tells how a holder was started from its registry entrypoint", () =>
     Effect.gen(function* () {
-      const files = {
-        "200.json": entry(200, "terminal", { entrypoint: "cli" }),
-        "201.json": entry(201, "print", { entrypoint: "sdk-cli" }),
-        "202.json": entry(202, "orphan", { entrypoint: "sdk-ts" }),
-        "203.json": entry(203, "attached", { entrypoint: "sdk-ts" }),
-        "204.json": entry(204, "gone-parent", { entrypoint: "sdk-py" }),
-        "205.json": entry(205, "desktop", { entrypoint: "claude-desktop" }),
-      };
-      const table = () =>
-        Effect.succeed([
-          ...processes,
-          ...parseClaudeProcessTable(
-            [
-              `  201   200 201 ${START}`,
-              `  202     1 202 ${START}`,
-              `  203   200 203 ${START}`,
-              `  204   999 204 ${START}`,
-              `  205   200 205 ${START}`,
-            ].join("\n"),
-          ),
-        ]);
+      const entrypoints = {
+        terminal: "cli",
+        print: "sdk-cli",
+        sdkapp: "sdk-ts",
+        t3: T3_CODE_ENTRYPOINT,
+        desktop: "claude-desktop",
+        bare: "sdk",
+        glued: "sdkfoo",
+        empty: "sdk-",
+      } as const;
+      const files = Object.fromEntries(
+        Object.entries(entrypoints).map(([sessionId, entrypoint], index) => [
+          `${200 + index}.json`,
+          entry(200, sessionId, { entrypoint }),
+        ]),
+      );
       const sourceOf = (sessionId: string) =>
-        probeWith(files, sessionId, table).pipe(
+        probeWith(files, sessionId).pipe(
           Effect.map((hold) => (hold?._tag === "held" ? hold.source : undefined)),
         );
       expect(yield* sourceOf("terminal")).toBe("terminal");
       expect(yield* sourceOf("print")).toBe("non-interactive");
-      expect(yield* sourceOf("orphan")).toBe("possible-t3-leftover");
-      expect(yield* sourceOf("attached")).toBe("agent-sdk");
-      expect(yield* sourceOf("gone-parent")).toBe("possible-t3-leftover");
-      expect(yield* sourceOf("desktop")).toBe("unknown");
+      expect(yield* sourceOf("sdkapp")).toBe("agent-sdk");
+      expect(yield* sourceOf("t3")).toBe("t3-code");
+      for (const unrecognised of ["desktop", "bare", "glued", "empty"]) {
+        expect(yield* sourceOf(unrecognised)).toBe("unknown");
+      }
+      expect(claudeHolderSource(undefined)).toBe("unknown");
+    }),
+  );
+
+  it.effect("calls a holder T3 Code's own by its entrypoint, whatever its parent", () =>
+    Effect.gen(function* () {
+      // 202 has init as its parent, as a CLI left running when T3 Code restarted has.
+      const orphaned = { "202.json": entry(202, "left", { entrypoint: T3_CODE_ENTRYPOINT }) };
+      const withOrphan = () =>
+        Effect.succeed([...processes, ...parseClaudeProcessTable(`  202     1 202 ${START}`)]);
+      expect(yield* probeWith(orphaned, "left", withOrphan)).toEqual({
+        _tag: "held",
+        pid: 202,
+        source: "t3-code",
+      });
+      // A third-party Agent SDK app with the same parent is not blamed on T3 Code.
+      const thirdParty = { "202.json": entry(202, "app", { entrypoint: "sdk-ts" }) };
+      expect(yield* probeWith(thirdParty, "app", withOrphan)).toEqual({
+        _tag: "held",
+        pid: 202,
+        source: "agent-sdk",
+      });
     }),
   );
 
@@ -601,18 +621,14 @@ describe("gateHeldClaudeSessionRuntime", () => {
   );
 
   it.effect.each([
-    { source: "terminal", text: "(pid 200, started from a terminal)", leftover: false },
-    { source: "non-interactive", text: "(pid 200, started non-interactively)", leftover: false },
-    { source: "agent-sdk", text: "(pid 200, started through the Agent SDK)", leftover: false },
-    {
-      source: "possible-t3-leftover",
-      text: "possibly by T3 Code before it restarted",
-      leftover: true,
-    },
-    { source: "unknown", text: "(pid 200)", leftover: false },
+    { source: "terminal", text: "(pid 200, started from a terminal)", t3: false },
+    { source: "non-interactive", text: "(pid 200, started non-interactively)", t3: false },
+    { source: "agent-sdk", text: "(pid 200, started by an app using the Agent SDK)", t3: false },
+    { source: "t3-code", text: "started by T3 Code outside this server", t3: true },
+    { source: "unknown", text: "started in a way T3 Code does not recognise", t3: false },
   ] as const)(
-    "words a $source holder without blaming T3 Code unless it may be its own",
-    ({ source, text, leftover }) =>
+    "words a $source holder, blaming T3 Code only for its own entrypoint",
+    ({ source, text, t3 }) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
         const { runtime } = makeGate({ hold: { _tag: "held", pid: 200, source } });
@@ -623,7 +639,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
 
         expect(refusal.message).toContain("Another Claude Code process (pid 200");
         expect(refusal.message).toContain(text);
-        expect(refusal.message.includes("T3 Code before it restarted")).toBe(leftover);
+        expect(refusal.message.includes("started by T3 Code")).toBe(t3);
       }),
   );
 

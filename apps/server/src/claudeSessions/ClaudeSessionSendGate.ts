@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import type * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 
+import { T3_CODE_ENTRYPOINT } from "../provider/Drivers/ClaudeHome.ts";
 import {
   indexClaudeProcessTable,
   type ClaudeProcessRow,
@@ -20,15 +21,15 @@ import {
 
 /**
  * How a holding process was started, from its registry entry's `entrypoint`: `terminal` (`cli`),
- * `non-interactive` (`sdk-cli`, as `claude -p`), `agent-sdk` (another `sdk-*`, as T3 Code's own
- * CLIs), `possible-t3-leftover` (an `agent-sdk` process whose parent has gone, as one left when T3
- * Code restarted) or `unknown`.
+ * `non-interactive` (`sdk-cli`), `agent-sdk` (another `sdk-` value, an app using the Agent SDK),
+ * `t3-code` (the value T3 Code gives its own CLIs, so one it started that is outside this
+ * server's tree, such as one left over from before a restart or another T3 Code's) or `unknown`.
  */
 export type ClaudeSessionHolderSource =
   | "terminal"
   | "non-interactive"
   | "agent-sdk"
-  | "possible-t3-leftover"
+  | "t3-code"
   | "unknown";
 
 /**
@@ -59,17 +60,12 @@ const candidatesFor = (
   ),
 });
 
-/** A process is orphaned when its parent is init or no longer in the process table. */
-function claudeHolderSource(
-  entrypoint: string | undefined,
-  holder: ClaudeProcessRow | undefined,
-  byPid: ReadonlyMap<number, ClaudeProcessRow>,
-): ClaudeSessionHolderSource {
+/** An absent or unrecognised entrypoint is `unknown`, which the probe logs. */
+export function claudeHolderSource(entrypoint: string | undefined): ClaudeSessionHolderSource {
   if (entrypoint === "cli") return "terminal";
   if (entrypoint === "sdk-cli") return "non-interactive";
-  if (entrypoint?.startsWith("sdk") !== true) return "unknown";
-  const orphaned = holder !== undefined && (holder.ppid <= 1 || !byPid.has(holder.ppid));
-  return orphaned ? "possible-t3-leftover" : "agent-sdk";
+  if (entrypoint === T3_CODE_ENTRYPOINT) return "t3-code";
+  return entrypoint !== undefined && /^sdk-.+/.test(entrypoint) ? "agent-sdk" : "unknown";
 }
 
 /**
@@ -113,17 +109,15 @@ export const probeClaudeSessionHold = Effect.fn("probeClaudeSessionHold")(functi
     matchStartTime: input.matchStartTime,
   }).get(input.sessionId);
   if (holder !== undefined) {
-    return holder.confirmed
-      ? ({
-          _tag: "held",
-          pid: holder.entry.pid,
-          source: claudeHolderSource(
-            holder.entry.entrypoint,
-            table.byPid.get(holder.entry.pid),
-            table.byPid,
-          ),
-        } satisfies ClaudeSessionHold)
-      : ({ _tag: "unconfirmed", pid: holder.entry.pid } satisfies ClaudeSessionHold);
+    if (!holder.confirmed) return { _tag: "unconfirmed", pid: holder.entry.pid } as const;
+    const source = claudeHolderSource(holder.entry.entrypoint);
+    if (source === "unknown") {
+      yield* Effect.logWarning("A Claude session's holder has an unrecognised entrypoint", {
+        pid: holder.entry.pid,
+        entrypoint: holder.entry.entrypoint ?? null,
+      });
+    }
+    return { _tag: "held", pid: holder.entry.pid, source } as const;
   }
   const roots = new Set(ownRootPids);
   // Without a readable entry a live pid is all there is to match.
@@ -156,10 +150,10 @@ const RETRY_OPTION = "Close any other claude running this session, then send aga
 const HOLDER_SOURCE_NOTES: Record<ClaudeSessionHolderSource, string> = {
   terminal: ", started from a terminal",
   "non-interactive": ", started non-interactively",
-  "agent-sdk": ", started through the Agent SDK",
-  "possible-t3-leftover":
-    ", started through the Agent SDK and left running, possibly by T3 Code before it restarted",
-  unknown: "",
+  "agent-sdk": ", started by an app using the Agent SDK",
+  "t3-code":
+    ", started by T3 Code outside this server, possibly before it restarted or by another T3 Code",
+  unknown: ", started in a way T3 Code does not recognise",
 };
 
 function holdRefusal(hold: ClaudeSessionHold): ClaudeSessionRefusal {
