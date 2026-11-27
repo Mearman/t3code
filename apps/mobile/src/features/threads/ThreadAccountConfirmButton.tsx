@@ -8,6 +8,7 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useThreadAccountConfirmAccess } from "./threadAccountConfirmAccess";
 
 /** Offered on a turn refused because the thread's Claude account changed; the row names both. */
 export function ThreadAccountConfirmButton(props: {
@@ -17,6 +18,8 @@ export function ThreadAccountConfirmButton(props: {
   const gt = useGT();
   const confirm = useAtomCommand(serverEnvironment.confirmClaudeThreadAccount, "confirm account");
   const [busy, setBusy] = useState(false);
+  // Without the button, the refusal's own advice to send again confirms the account.
+  if (!useThreadAccountConfirmAccess(props.environmentId)) return null;
   return (
     <View className="ml-7 mt-2">
       <Button

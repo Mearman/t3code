@@ -283,6 +283,17 @@ export function isHeldSessionFailure(failure: Pick<OrchestrationV2ProviderFailur
 }
 
 /**
+ * Whether this client can offer the confirm button: the server serves the confirm request and the
+ * connection may operate threads. Without it, sending again is how the user confirms.
+ */
+export function canConfirmThreadAccount(input: {
+  readonly serverConfirms: boolean;
+  readonly permitted: boolean;
+}) {
+  return input.serverConfirms && input.permitted;
+}
+
+/**
  * Whether an error row offers to confirm a changed Claude account: only on the thread's own row,
  * since a confirmation applies to this thread.
  */
