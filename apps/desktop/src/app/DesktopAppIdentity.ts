@@ -124,7 +124,7 @@ export const make = Effect.gen(function* () {
       });
     });
     yield* setAboutPanel;
-    const runFork = Effect.runForkWith(yield* Effect.context());
+    const runFork = Effect.runForkWith(yield* Effect.context<never>());
     onLocaleChange(() => runFork(setAboutPanel));
 
     if (environment.platform === "win32") {
