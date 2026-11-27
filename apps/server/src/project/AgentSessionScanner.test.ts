@@ -37,10 +37,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import {
-  makeUserPathReadState,
-  UserPathReads,
-} from "../workspace/UserPathReads.ts";
+import { makeUserPathReadState, UserPathReads } from "../workspace/UserPathReads.ts";
 import { fileSystemBlockedUnder } from "../workspace/UserPathReads.testkit.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 

@@ -997,7 +997,10 @@ export const make = Effect.gen(function* () {
     );
   const statUserPath = (target: string) => readOption(target, fileSystem.stat(target));
   const realPathOf = (target: string) =>
-    Effect.map(readOption(target, fileSystem.realPath(target)), Option.getOrElse(() => target));
+    Effect.map(
+      readOption(target, fileSystem.realPath(target)),
+      Option.getOrElse(() => target),
+    );
   // Resolved candidates are compared with T3's folders as resolved too, so a symlinked base still
   // matches. Resolved on first use, so building the scanner reads nothing, and kept only once both
   // folders answered, so an unanswered read is retried instead of leaving the lexical spelling.
