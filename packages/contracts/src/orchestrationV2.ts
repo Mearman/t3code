@@ -27,6 +27,7 @@ import {
   MessageId,
   EnvironmentId,
   NodeId,
+  ForwardCompatibleOptional,
   ForwardCompatibleUnion,
   ForwardCompatibleUnionArray,
   hasUnknownUnionTag,
@@ -872,8 +873,11 @@ export const OrchestrationV2Run = Schema.Struct({
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
-  /** What the send chose to do if another Claude Code process holds the session. */
-  heldSessionSend: Schema.optional(ClaudeHeldSessionSend),
+  /**
+   * What the send chose to do if another Claude Code process holds the session. A choice this
+   * build does not know decodes as absent, so an older client still reads the run.
+   */
+  heldSessionSend: ForwardCompatibleOptional(ClaudeHeldSessionSend),
   /** The JSON Schema of the result this run was asked to return as data. */
   outputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
   /**
@@ -3650,7 +3654,9 @@ export const OrchestrationV2Command = Schema.Union([
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
     /** Start a new provider session without the thread's earlier context. Never steers. */
     freshContext: Schema.optional(Schema.Boolean),
-    /** A person's choice for a Claude session another process holds; see `ClaudeHeldSessionSend`. */
+    /**
+     * A person's choice for a Claude session another process holds; see `ClaudeHeldSessionSend`.
+     */
     heldSessionSend: Schema.optional(ClaudeHeldSessionSend),
     /** Asks the run for a result as data matching this JSON Schema. Never steers. */
     outputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
