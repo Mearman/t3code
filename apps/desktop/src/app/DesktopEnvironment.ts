@@ -86,7 +86,13 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
+export const UPSTREAM_APP_BASE_NAME = "T3 Code";
+// Bundles define this from the build's product name (scripts/lib/desktop-product-name.ts).
+declare const __T3CODE_DESKTOP_PRODUCT_NAME__: string | undefined;
+const APP_BASE_NAME =
+  typeof __T3CODE_DESKTOP_PRODUCT_NAME__ === "undefined"
+    ? UPSTREAM_APP_BASE_NAME
+    : __T3CODE_DESKTOP_PRODUCT_NAME__;
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;

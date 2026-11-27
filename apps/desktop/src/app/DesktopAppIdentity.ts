@@ -12,6 +12,9 @@ import * as DesktopAssets from "./DesktopAssets.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 
+// TRADEMARK.md: a fork says plainly that it is unofficial and shows no T3 branding.
+const UNOFFICIAL_FORK_NOTICE =
+  "An unofficial fork based on the T3 Code source code. Not affiliated with, endorsed by or maintained by T3 Tools, Inc.";
 const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
 const COMMIT_HASH_DISPLAY_LENGTH = 12;
 
@@ -99,6 +102,9 @@ export const make = Effect.gen(function* () {
       applicationName: environment.displayName,
       applicationVersion: environment.appVersion,
       version: Option.getOrElse(commitHash, () => "unknown"),
+      ...(environment.branding.baseName === DesktopEnvironment.UPSTREAM_APP_BASE_NAME
+        ? {}
+        : { credits: UNOFFICIAL_FORK_NOTICE }),
     });
 
     if (environment.platform === "win32") {
