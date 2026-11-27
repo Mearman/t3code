@@ -58,10 +58,7 @@ import * as DateTime from "effect/DateTime";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import {
-  heldSessionForkRunId,
-  offersThreadAccountConfirm,
-} from "@t3tools/client-runtime/state/thread-workflows";
+import { heldSessionForkRunId } from "@t3tools/client-runtime/state/thread-workflows";
 import { HeldSessionForkButton } from "./HeldSessionForkButton";
 import { ThreadAccountConfirmButton } from "./ThreadAccountConfirmButton";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
@@ -1000,15 +997,10 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               {failureItem.failure.message}
             </Text>
           ) : null}
-          {offersThreadAccountConfirm({
-            visibility: row.projectedItem.visibility,
-            item: failureItem,
-          }) ? (
-            <ThreadAccountConfirmButton
-              environmentId={props.environmentId}
-              threadId={failureItem.threadId}
-            />
-          ) : null}
+          <ThreadAccountConfirmButton
+            environmentId={props.environmentId}
+            row={{ visibility: row.projectedItem.visibility, item: failureItem }}
+          />
           {forkRunId !== undefined ? (
             <HeldSessionForkButton
               environmentId={props.environmentId}
