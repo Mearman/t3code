@@ -282,9 +282,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     choice: ClaudeHeldSessionSend,
     resend: boolean,
   ) => {
-    const attempt: Effect.Effect<
-      HeldRefusal | undefined
-    > = Effect.result(probe(sessionId)).pipe(
+    const attempt: Effect.Effect<HeldRefusal | undefined> = Effect.result(probe(sessionId)).pipe(
       Effect.flatMap((probed) => {
         if (Result.isSuccess(probed)) {
           const hold = probed.success;

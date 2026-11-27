@@ -141,15 +141,20 @@ it("notes a branch only on a resend with `send` whose prompt reached Claude", ()
     assert.isTrue(wentBesideHolder(projection({ code, delivered: true }), resent));
   }
   assert.isFalse(
-    wentBesideHolder(projection({ code: PROVIDER_THREAD_IN_USE_FAILURE_CODE, delivered: false }), resent),
+    wentBesideHolder(
+      projection({ code: PROVIDER_THREAD_IN_USE_FAILURE_CODE, delivered: false }),
+      resent,
+    ),
   );
-  assert.isFalse(
-    wentBesideHolder(projection({ code: "provider_error", delivered: true }), resent),
-  );
+  assert.isFalse(wentBesideHolder(projection({ code: "provider_error", delivered: true }), resent));
   const askedAgain = run(2, { manualContinuationOfRunId: refused.id });
   assert.isFalse(
     wentBesideHolder(
-      projection({ code: PROVIDER_THREAD_IN_USE_FAILURE_CODE, delivered: true, resent: askedAgain }),
+      projection({
+        code: PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+        delivered: true,
+        resent: askedAgain,
+      }),
       askedAgain,
     ),
   );
