@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { ClaudeHeldSessionSend } from "./claudeSessions.ts";
+import { ClaudeHeldSessionAgentSend } from "./claudeSessions.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
 import {
   ContextTransferId,
@@ -569,9 +569,8 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
     }),
   ),
   heldSessionSend: Schema.optional(
-    ClaudeHeldSessionSend.annotate({
-      description:
-        "For a Claude thread a terminal holds: `fork`, or `ask` (default) to send nothing.",
+    ClaudeHeldSessionAgentSend.annotate({
+      description: "For a Claude thread a terminal holds: `fork`, or `ask` (default) to send nothing.",
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
