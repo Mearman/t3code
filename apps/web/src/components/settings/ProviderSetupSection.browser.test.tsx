@@ -242,6 +242,29 @@ describe("Antigravity setup", () => {
     expect(screen.occurrences("Signed in.")).toBe(1);
   });
 
+  it("submits a bare sign-in code when the flow asks for one", async () => {
+    resetSetup();
+    setup.auth = authState({
+      interaction: {
+        type: "browser",
+        id: "claude-oauth",
+        url: "https://claude.ai/oauth/authorize?state=test-only",
+        requiresConsent: false,
+        acceptsCallback: true,
+        callbackInput: "code",
+      },
+    });
+    await using screen = await renderSetup();
+    expect(screen.callbackInput().type).toBe("text");
+    await userEvent.fill(screen.callbackInput(), "test-only-code");
+    await screen.click("Continue");
+
+    expect(setup.completeAuth).toHaveBeenCalledWith({
+      environmentId,
+      input: { instanceId, flowId: "flow-1", callbackUrl: "test-only-code" },
+    });
+  });
+
   it("does not send a callback left over from a replaced sign-in flow", async () => {
     resetSetup();
     const interaction = {
