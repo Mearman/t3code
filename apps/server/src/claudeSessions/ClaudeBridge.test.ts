@@ -20,6 +20,8 @@ import { CLAUDE_BRIDGE_POLL_HOLD, ClaudeBridge, layer as bridgeLayer } from "./C
 
 const layer = bridgeLayer.pipe(Layer.provide(SecureRandom.layerWebCrypto));
 
+const decodeConnection = Schema.decodeEffect(Schema.fromJsonString(ClaudeBridgeConnection));
+
 const poll = (sessionId: string): ClaudeBridgePoll => ({
   schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
   sessionId,
@@ -73,9 +75,7 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
 
       const info = yield* fileSystem.stat(file);
       assert.strictEqual(info.mode & 0o777, 0o600);
-      const connection = yield* Schema.decodeEffect(Schema.fromJsonString(ClaudeBridgeConnection))(
-        yield* fileSystem.readFileString(file),
-      );
+      const connection = yield* decodeConnection(yield* fileSystem.readFileString(file));
       assert.strictEqual(connection.url, `http://127.0.0.1:3774${CLAUDE_BRIDGE_ROUTE_PREFIX}`);
       assert.strictEqual(connection.token, bridge.token);
     }).pipe(Effect.provide(layer), Effect.scoped),
