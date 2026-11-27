@@ -1,11 +1,20 @@
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 
-import { CLI_RELEASE_REPOSITORY, CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
-import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
+// This module is bundled alone, outside the workspace, so it reads the build's defines directly
+// (the same ones packages/shared/src/cliRelease.ts and productName.ts read).
+declare const __T3CODE_RELEASE_REPOSITORY__: string | undefined;
+declare const __T3CODE_DESKTOP_PRODUCT_NAME__: string | undefined;
+const RELEASE_REPOSITORY =
+  typeof __T3CODE_RELEASE_REPOSITORY__ === "undefined"
+    ? "pingdotgg/t3code"
+    : __T3CODE_RELEASE_REPOSITORY__;
 
 const FALLBACK_TRIAGE_COMMAND = "npx t3 triage";
-const DOWNLOAD_URL = IS_FORK_PRODUCT ? CLI_RELEASES_PAGE_URL : "https://t3.codes/download";
-const ISSUE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/issues/new`;
+const DOWNLOAD_URL =
+  typeof __T3CODE_DESKTOP_PRODUCT_NAME__ === "undefined"
+    ? "https://t3.codes/download"
+    : `https://github.com/${RELEASE_REPOSITORY}/releases`;
+const ISSUE_URL = `https://github.com/${RELEASE_REPOSITORY}/issues/new`;
 const LAST_FAILURE_KEY = "t3code:boot-failed-at";
 const REPEAT_FAILURE_MS = 5 * 60_000;
 const MAX_CAUSES = 3;
