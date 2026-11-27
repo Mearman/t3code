@@ -187,7 +187,8 @@ jobs:
             set +e
             vpr typecheck
             code="$?"
-            vp run --last-details 2>&1 | grep -vE "TS377141|^ *~*$" | tail -150
+            (cd apps/server && vpr exec effect-tsgo tsrs --noEmit > "$RUNNER_TEMP/server-tc.log" 2>&1; echo "server tsrs exit $?")
+            grep -vE "TS377141" "$RUNNER_TEMP/server-tc.log" | grep -vE "^ *~*$|^[0-9]+ " | tail -80
             echo "$code" > "$RUNNER_TEMP/typecheck-status"
           ) > "$RUNNER_TEMP/typecheck.log" 2>&1 < /dev/null &
 
