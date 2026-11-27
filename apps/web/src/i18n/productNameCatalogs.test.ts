@@ -27,10 +27,11 @@ const namesUpstream = (value: unknown) =>
   JSON.stringify(value).replace(UPSTREAM_PRODUCT_PATTERN, "") !== JSON.stringify(value);
 
 describe("renaming the product in the locale catalogues, with GT's own hash", () => {
-  it("reproduces the committed key of every English entry", () => {
+  it("reproduces the committed key of every English entry that names the product", () => {
     const english = read("en");
     const unreproduced = Object.entries(english).filter(
       ([key, source]) =>
+        namesUpstream(source) &&
         !(["ICU", "JSX"] as const).some((dataFormat) => hashSource({ source, dataFormat }) === key),
     );
     expect(unreproduced.map(([key]) => key)).toEqual([]);

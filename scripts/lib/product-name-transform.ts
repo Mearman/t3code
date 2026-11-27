@@ -2,6 +2,8 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
+import * as Schema from "effect/Schema";
+
 import { renameProduct, UPSTREAM_PRODUCT_PATTERN } from "@t3tools/shared/productName";
 
 /** A line carrying this marker names upstream on purpose and is never renamed. */
@@ -42,11 +44,14 @@ export type HashSource = (input: {
   readonly dataFormat: DataFormat;
 }) => string;
 
-export class CatalogKeyNotReproducibleError extends Error {
-  constructor(readonly keys: ReadonlyArray<string>) {
-    super(
-      `GT's hash does not reproduce these catalogue keys from their English source, so a ` +
-        `renamed translation cannot be re-keyed: ${keys.slice(0, 5).join(", ")}`,
+export class CatalogKeyNotReproducibleError extends Schema.TaggedError<CatalogKeyNotReproducibleError>()(
+  "CatalogKeyNotReproducibleError",
+  { keys: Schema.Array(Schema.String) },
+) {
+  override get message(): string {
+    return (
+      "GT's hash does not reproduce these catalogue keys from their English source, so a " +
+      `renamed translation cannot be re-keyed: ${this.keys.slice(0, 5).join(", ")}`
     );
   }
 }
@@ -96,7 +101,7 @@ export function renameCatalog(input: {
     }
     result[input.hashSource({ source: renamedSource as CatalogValue, dataFormat })] = renamedValue;
   }
-  if (unreproducible.length > 0) throw new CatalogKeyNotReproducibleError(unreproducible);
+  if (unreproducible.length > 0) throw new CatalogKeyNotReproducibleError({ keys: unreproducible });
   return result;
 }
 
