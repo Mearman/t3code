@@ -5,6 +5,8 @@ import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { forkProductName, productNameDefine } from "../../scripts/lib/product-name-define.ts";
+import { productNameTransformPlugin } from "../../scripts/lib/product-name-transform.ts";
 import { releaseRepositoryDefine } from "../../scripts/lib/release-repository.ts";
 import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version.ts";
 import rootPackageJson from "../../package.json" with { type: "json" };
@@ -20,6 +22,7 @@ import {
 export { shouldBundleCliDependency };
 
 const repoEnv = loadRepoEnv();
+const productName = forkProductName(repoEnv);
 const serverManifestPath = NodePath.join(import.meta.dirname, "package.json");
 // The desktop packager passes APP_VERSION; it can equal the manifest at a commit tagged otherwise.
 const buildVersion =
@@ -99,6 +102,14 @@ export default mergeConfig(
     },
     pack: {
       plugins: [
+        ...(productName === undefined
+          ? []
+          : [
+              productNameTransformPlugin({
+                name: productName,
+                repositoryRoot: NodePath.join(import.meta.dirname, "..", ".."),
+              }),
+            ]),
         {
           // Every server module reads its version from this manifest import.
           name: "t3code:build-version",
@@ -154,6 +165,7 @@ export default mergeConfig(
         __T3CODE_BUILD_CHANNEL__: JSON.stringify(cliBuildChannel),
         __T3CODE_TELEMETRY_CHANNEL__: JSON.stringify(telemetryChannel),
         ...releaseRepositoryDefine(repoEnv),
+        ...productNameDefine(repoEnv),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),
         __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
           repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
