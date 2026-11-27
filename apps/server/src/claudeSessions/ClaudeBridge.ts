@@ -59,7 +59,7 @@ export class ClaudeBridge extends Context.Service<
 
 const encodeConnection = Schema.encodeSync(Schema.fromJsonString(ClaudeBridgeConnection));
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -132,8 +132,8 @@ export const make = Effect.gen(function* () {
     return Option.getOrElse(taken, () => []);
   });
 
-  const writeConnection = (home: string, origin: string) =>
-    Effect.gen(function* () {
+  const writeConnection = Effect.fn("ClaudeBridge.writeConnection")(
+    function* (home: string, origin: string) {
       const file = path.join(home, CLAUDE_BRIDGE_CONNECTION_FILE);
       const text = encodeConnection({
         schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
@@ -145,11 +145,14 @@ export const make = Effect.gen(function* () {
       yield* fileSystem.writeFileString(pending, text, { mode: 0o600 });
       yield* fileSystem.chmod(pending, 0o600);
       yield* fileSystem.rename(pending, file);
-    }).pipe(
-      Effect.catch((cause: PlatformError.PlatformError) =>
-        Effect.logWarning("Could not write the Claude bridge connection file", { home, cause }),
+    },
+    (effect, home) =>
+      effect.pipe(
+        Effect.catch((cause: PlatformError.PlatformError) =>
+          Effect.logWarning("Could not write the Claude bridge connection file", { home, cause }),
+        ),
       ),
-    );
+  );
 
   const registerHome: ClaudeBridge["Service"]["registerHome"] = (home) =>
     Effect.flatMap(
