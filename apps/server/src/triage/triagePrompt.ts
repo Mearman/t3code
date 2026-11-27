@@ -184,12 +184,17 @@ interface TriageTarget {
 
 const currentTriageTarget: TriageTarget = {
   fork: IS_FORK_PRODUCT,
-  repository: CLI_RELEASE_REPOSITORY,
+  // The playbook follows the product name, so the repository must too: an unbranded build
+  // made in some other repository still files upstream.
+  repository: IS_FORK_PRODUCT ? CLI_RELEASE_REPOSITORY : UPSTREAM_TRIAGE_REPOSITORY,
   label:
     typeof __T3CODE_TRIAGE_LABEL__ === "undefined"
       ? UPSTREAM_TRIAGE_LABEL
       : __T3CODE_TRIAGE_LABEL__,
 };
+
+/** The number of the playbook step `step` of upstream's playbook is in `target`'s playbook. */
+const stepIn = (target: TriageTarget, step: number) => (target.fork && step > 3 ? step - 1 : step);
 
 const NEWER_PLAYBOOK_SECTION = /## 3\. Check for a newer playbook\n[\s\S]*?(?=## 4\. )/;
 
@@ -307,13 +312,14 @@ const entryLines = (entry: TriageEntry) =>
         after: undefined,
       };
 
-const sourceSection = (clone: TriageSourceClone) => {
+const sourceSection = (clone: TriageSourceClone, target: TriageTarget) => {
+  const cloneStep = stepIn(target, 4);
   if (clone._tag === "failed") {
     return `
 ## Source
 
 The server could not clone the source for its version (${clone.serverVersion}): ${clone.reason}
-Clone it as step 4 describes.
+Clone it as step ${cloneStep} describes.
 `;
   }
   const verb = clone._tag === "cloned" ? "The server cloned" : "The server is cloning";
@@ -326,7 +332,7 @@ Clone it as step 4 describes.
       ? ""
       : `
 The folder appears only when the clone is complete. Wait for it instead of
-cloning again. If it has not appeared after a few minutes, clone as step 4
+cloning again. If it has not appeared after a few minutes, clone as step ${cloneStep}
 describes.
 `;
   return `
@@ -337,7 +343,7 @@ ${verb} ${what}:
     ${clone.directory}  (${clone.ref}, commit ${clone.commit})
 ${wait}
 Use it when the bug happened on this server's build. When it happened on another
-build, clone that version as step 4 describes.
+build, clone that version as step ${cloneStep} describes.
 `;
 };
 
@@ -361,7 +367,7 @@ ${entry.before}
 - Node: ${input.nodeVersion}
 ${entry.after === undefined ? "" : `${entry.after}\n`}- Server process: ${input.server}
 - Repo: https://github.com/${currentTriageTarget.repository}
-${input.entry.kind === "app" ? IN_APP_SECTION : ""}${input.sourceClone === undefined ? "" : sourceSection(input.sourceClone)}
+${input.entry.kind === "app" ? IN_APP_SECTION : ""}${input.sourceClone === undefined ? "" : sourceSection(input.sourceClone, currentTriageTarget)}
 ## Paths
 
 - State dir: ${input.paths.stateDir}

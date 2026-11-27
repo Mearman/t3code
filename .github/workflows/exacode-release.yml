@@ -184,6 +184,8 @@ jobs:
         env:
           T3CODE_TELEMETRY_CHANNEL: dev
           T3CODE_DESKTOP_PRODUCT_NAME: ExaCode
+          # Mearman/t3code has Issues on, so the boot error may offer its report link.
+          T3CODE_ISSUES_ENABLED: "1"
         run: vp run build:desktop:bundle
 
       # The bundles must update from this repository (scripts/lib/release-repository.ts).
