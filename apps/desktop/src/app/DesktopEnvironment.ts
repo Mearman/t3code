@@ -14,6 +14,7 @@ import * as Path from "effect/Path";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
 import { resolveLinuxDesktopEntryName } from "./DesktopEarlyElectronStartup.ts";
+import { APP_BASE_NAME } from "./DesktopAppName.ts";
 import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePaths.ts";
 import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
 import type { OtlpProtocol } from "@t3tools/shared/observability";
@@ -85,14 +86,6 @@ export class DesktopEnvironment extends Context.Service<
     readonly resolveResourcePathCandidates: (fileName: string) => readonly string[];
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
-
-export const UPSTREAM_APP_BASE_NAME = "T3 Code";
-// Bundles define this from the build's product name (scripts/lib/desktop-product-name.ts).
-declare const __T3CODE_DESKTOP_PRODUCT_NAME__: string | undefined;
-const APP_BASE_NAME =
-  typeof __T3CODE_DESKTOP_PRODUCT_NAME__ === "undefined"
-    ? UPSTREAM_APP_BASE_NAME
-    : __T3CODE_DESKTOP_PRODUCT_NAME__;
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
