@@ -29,10 +29,14 @@ const requestsFromBundle = (
     const urls: Array<string> = [];
     const client = HttpClient.make((request) => {
       urls.push(request.url);
-      return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null, { status: 204 })));
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(request, new Response(null, { status: 204 })),
+      );
     });
     const layer = Analytics.layer.pipe(
-      Layer.provideMerge(ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-bundle-" })),
+      Layer.provideMerge(
+        ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-bundle-" }),
+      ),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
       Layer.provide(
         Layer.mergeAll(
