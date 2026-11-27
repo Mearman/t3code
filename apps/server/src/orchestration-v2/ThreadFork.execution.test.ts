@@ -987,12 +987,11 @@ it.effect.each([
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
-it.effect("merge back and a side chat from latest stable start from a transcript run", () =>
+it.effect("merge back from latest stable starts from a transcript run", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const parentId = ThreadId.make("transcript-merge-parent");
     const forkId = ThreadId.make("transcript-merge-child");
-    const sideChatId = ThreadId.make("transcript-side-chat");
     yield* createParent(parentId);
     yield* writeParentRun({
       threadId: parentId,
@@ -1039,17 +1038,33 @@ it.effect("merge back and a side chat from latest stable start from a transcript
     const merge = parent.contextTransfers.find((transfer) => transfer.type === "merge_back");
     assert.equal(merge?.status, "pending");
     assert.equal(merge?.sourcePoint.runId, RunId.make("transcript-merge-transcript"));
-
-    // A side chat selects the same way, so it forks natively from the transcript run instead of
-    // starting from a digest alone.
-    yield* forkSideChat("transcript-side-chat-fork", forkId, sideChatId);
-    const sideChat = yield* orchestrator.getThreadProjection(sideChatId);
-    assert.deepEqual(sideChat.thread.forkedFrom, {
-      type: "run",
-      threadId: forkId,
-      runId: RunId.make("transcript-merge-transcript"),
-    });
   }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+it.effect(
+  "a side chat of a thread with only transcript runs forks natively, not from a digest",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parentId = ThreadId.make("transcript-side-parent");
+      const sideChatId = ThreadId.make("transcript-side-chat");
+      yield* createParent(parentId);
+      yield* writeParentRun({
+        threadId: parentId,
+        runId: RunId.make("transcript-side-run"),
+        ordinal: 1,
+        status: "completed",
+        text: "TRANSCRIPT",
+        transcript: true,
+      });
+      yield* forkSideChat("transcript-side-chat-fork", parentId, sideChatId);
+      const sideChat = yield* orchestrator.getThreadProjection(sideChatId);
+      assert.deepEqual(sideChat.thread.forkedFrom, {
+        type: "run",
+        threadId: parentId,
+        runId: RunId.make("transcript-side-run"),
+      });
+    }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
 it.effect("a latest stable fork with no completed run still fails", () =>
