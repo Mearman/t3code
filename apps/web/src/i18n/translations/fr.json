@@ -2844,6 +2844,7 @@
   "6dd1f458bcd6a2ea": "Régénération…",
   "de30fdae5b3fea98": "Régénérer le titre",
   "dffd2e20f7ff5aa1": "Marquer comme non lu",
+  "91d5ee9565acad31": "Déplacer vers un autre compte Claude…",
   "3364346f40934e88": "Afficher tous les projets",
   "666f3ac177c116b6": "Filtrer par {project}",
   "1385e2d8bd696370": "Transformer en projet",
@@ -7950,6 +7951,8 @@
       "v": "v"
     }
   ],
+  "2a8bfa5dc1d47b52": "Déplacer un fil vers un autre compte Claude le compacte d’abord sous l’ancien compte, pour que le nouveau parte d’un résumé. Vous pouvez l’ignorer pour un déplacement.",
+  "b9de0ff4d25ab4a6": "Compacter avant de déplacer vers un autre compte",
   "d0e747ae0c4f68a5": "Impossible d’installer t3",
   "ba3ac338f36cba74": "Impossible de supprimer t3",
   "9c942b53b58119b8": "Impossible d’ajouter t3 au PATH",
@@ -9109,6 +9112,28 @@
   "d797c9687a256a50": "Connectez-vous à votre serveur depuis votre téléphone ou votre tablette.",
   "c21858dee1b62639": "Lien {store}",
   "cdcdc54a444a3636": "Scannez avec l’appareil photo de votre téléphone.",
+  "37ac32051d57adde": "Le déplacement a échoué.",
+  "0af95d4a293f7986": "{count, plural, =0 {Aucun fil à déplacer} one {{count} fil déplacé vers {account}} other {{count} fils déplacés vers {account}}}",
+  "2c9d60eb35301140": "{count, plural, =0 {Aucun fil déplacé.} one {{count} fil déplacé.} other {{count} fils déplacés.}}",
+  "2585c754d7c2c172": "{count, plural, one {{from} n’a pas pu compacter {count} fil, il est donc resté.} other {{from} n’a pas pu compacter {count} fils, ils sont donc restés.}} Déplacez-les sans compacter pour envoyer tout leur historique à {to}.",
+  "ce3c335e78652ff3": "Un fil n’a pas pu être déplacé.",
+  "871158f9c4d8779f": "Déplacer vers",
+  "63739f23d55fa6a9": "Déplacement…",
+  "c61bf21b6f3af6fd": "Déplacer vers {account}",
+  "ce33d64df8173ae6": ["Déplacer tous les fils de ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
+  "d6f42a0ed4f1a486": "Déplacer le fil vers un autre compte Claude",
+  "2b39bfab4f4db652": [
+    "L’historique de la conversation va à ",
+    { "i": 1, "k": "_gt_value_1", "v": "v" },
+    ", et le fil s’y poursuit au lieu de ",
+    { "i": 2, "k": "_gt_value_2", "v": "v" },
+    "."
+  ],
+  "7b53f2312a513da0": "Ajoutez d’abord un autre compte Claude dans cet environnement.",
+  "78253300f9f94d2b": "Déplacer vers",
+  "20adc4ec3fea0253": ["Compacter d’abord sous ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
+  "65eced1f62b31ac8": "Le nouveau compte part d’un résumé. L’historique complet reste dans la session.",
+  "6bd44a7b22513151": "Déplacer sans compacter",
   "73da41e93823fd71": [
     "Nous déconseillons de gérer plusieurs comptes ",
     {
@@ -9421,6 +9446,8 @@
   "cf69675106e4bf46": "Configuration",
   "22078dd501ba3102": "Environnement d’exécution",
   "288c2d92df27a68c": "Modèles",
+  "cb0fabd5a0449368": "Déplacer tous les fils vers un autre compte",
+  "3099bad27927b3ab": "Envoie l’historique de chaque fil à un autre compte Claude, qui le poursuit. Les fils en cours ou ouverts dans un terminal restent.",
   "68a76cecbc1e0b6d": "Ajouter une variable",
   "e141c49816ed7a1f": "Remplacé pour ce projet",
   "ab4e8ccc69c28a8c": [
@@ -9449,6 +9476,7 @@
     ", qui n’est pas disponible dans cette version. Sa configuration est conservée."
   ],
   "b534d4cd528ede39": "Les préférences de modèle et les modèles personnalisés sont enregistrés dans l’environnement sélectionné et partagés entre les appareils connectés.",
+  "a33b32ee882e152a": "Déplacer les fils…",
   "caaef21e8722857d": "Mode rapide",
   "a860db2b1bb3aa31": "Sans raisonnement",
   "3b67fce5df949e14": "Saisissez un slug de modèle.",
@@ -13072,6 +13100,7 @@
   "a863c1fb1edfc155": "Lire en arrière-plan les sessions non ouvertes",
   "ac9f7d647fde336a": "claude code terminal sessions transcriptions importer synchroniser historique",
   "c6ca82dcbd99e23b": "claude code sessions récupérer restaurer supprimé fil",
+  "5a333d503f60ef80": "claude compte déplacer changer compacter résumé",
   "d7bd140afc367aef": "claude code sessions espace disque stockage seuil",
   "e2ba25992774347f": "Dossiers Claude supplémentaires",
   "f04c3d73e1bc1bb1": "claude code sessions historique remplissage inactif",

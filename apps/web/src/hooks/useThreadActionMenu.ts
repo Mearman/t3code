@@ -52,7 +52,12 @@ import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
-import { canTurnThreadIntoProject, useThreadActions } from "./useThreadActions";
+import {
+  canMoveThreadAccount,
+  canTurnThreadIntoProject,
+  useThreadActions,
+} from "./useThreadActions";
+import { openClaudeMoveDialog } from "../components/settings/claudeMoveDialogState";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -152,6 +157,7 @@ export function useThreadActionMenu(input: {
       snoozePresets,
       canShareWithGuest,
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+      canMoveAccount: canMoveThreadAccount(threadRef, thread.modelSelection.instanceId),
     });
     const run = async (action: ThreadActionMenuId) => {
       const api = readLocalApi();
@@ -272,6 +278,13 @@ export function useThreadActionMenu(input: {
           return;
         case "share-guest":
           openGuestShareDialog(threadRef);
+          return;
+        case "move-account":
+          openClaudeMoveDialog({
+            environmentId: threadRef.environmentId,
+            sourceInstanceId: thread.modelSelection.instanceId,
+            threadId: threadRef.threadId,
+          });
           return;
         case "turn-into-project": {
           const result = await turnThreadIntoProject(threadRef);

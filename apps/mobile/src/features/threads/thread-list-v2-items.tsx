@@ -76,6 +76,7 @@ import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
 import { canTurnThreadIntoProject, turnThreadIntoProject } from "./turnThreadIntoProject";
 import { threadCanArchive } from "../home/threadArchive";
+import { useClaudeAccountMove } from "../settings/useClaudeAccountMove";
 import { useCanShareWithGuest } from "./useCanShareWithGuest";
 import {
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
@@ -958,6 +959,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     !useEnvironmentScopeDenied(thread.environmentId, AuthOrchestrationOperateScope) &&
     !canOperateThread;
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
+  const accountMove = useClaudeAccountMove(thread.environmentId);
+  const canMoveAccount = accountMove.canMove(thread.modelSelection.instanceId);
   const navigation = useNavigation();
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
@@ -1142,6 +1145,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ...(canShareWithGuest
         ? [{ id: "share-guest", title: gt("Share with guest"), image: "person.badge.plus" }]
         : []),
+      ...(canMoveAccount
+        ? [
+            {
+              id: "move-account",
+              title: gt("Move to another Claude account…"),
+              image: "arrow.left.arrow.right",
+              attributes: { disabled: !threadCanArchive(thread.runtime) },
+            } satisfies MenuAction,
+          ]
+        : []),
     ];
     if (snoozedRow) {
       return layoutThreadListV2RowMenuActions(
@@ -1221,6 +1234,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     );
   }, [
     autoSettleMenuItems,
+    canMoveAccount,
     canShareWithGuest,
     canUnsettle,
     pinMenuItems,
@@ -1232,6 +1246,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     m,
     swipeActions.secondary,
     thread.branch,
+    thread.runtime,
     titleMenuItems,
   ]);
   const handleMenuAction = useCallback(
@@ -1271,6 +1286,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "copy-thread-id") {
         copyTextWithHaptic(thread.id, { target: "thread-id" });
       }
+      if (nativeEvent.event === "move-account") {
+        accountMove.startMove(thread.modelSelection.instanceId, thread.id);
+      }
       if (nativeEvent.event === "share-guest") {
         navigation.navigate("ThreadGuestShare", {
           environmentId: thread.environmentId,
@@ -1298,6 +1316,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       }
     },
     [
+      accountMove,
       gt,
       m,
       onNewThreadOnBranch,

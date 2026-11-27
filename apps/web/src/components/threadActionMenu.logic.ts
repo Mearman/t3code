@@ -24,6 +24,7 @@ export type ThreadActionMenuId =
   | "regenerate-title"
   | "mark-unread"
   | "share-guest"
+  | "move-account"
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -127,6 +128,8 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** A Claude thread on a server that moves threads, with another Claude account to move to. */
+  readonly canMoveAccount?: boolean;
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -238,6 +241,16 @@ export function buildThreadActionMenuItems(
       : []),
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: resolve(msg("Share with guest")), icon: "user-plus" }]
+      : []),
+    ...(state.canMoveAccount
+      ? [
+          {
+            id: "move-account" as const,
+            label: resolve(msg("Move to another Claude account…")),
+            icon: "arrow-left-right",
+            disabled: state.isRunning,
+          },
+        ]
       : []),
     ...(state.projectFilter
       ? [

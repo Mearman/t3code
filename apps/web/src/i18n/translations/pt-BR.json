@@ -2844,6 +2844,7 @@
   "6dd1f458bcd6a2ea": "Gerando novamente…",
   "de30fdae5b3fea98": "Gerar título novamente",
   "dffd2e20f7ff5aa1": "Marcar como não lida",
+  "91d5ee9565acad31": "Mover para outra conta do Claude…",
   "3364346f40934e88": "Mostrar todos os projetos",
   "666f3ac177c116b6": "Filtrar por {project}",
   "1385e2d8bd696370": "Transformar em projeto",
@@ -7949,6 +7950,8 @@
       "v": "v"
     }
   ],
+  "2a8bfa5dc1d47b52": "Mover uma conversa para outra conta do Claude primeiro a compacta na conta antiga, para que a nova comece de um resumo. Você pode pular isso em uma mudança específica.",
+  "b9de0ff4d25ab4a6": "Compactar antes de mover para outra conta",
   "d0e747ae0c4f68a5": "Não foi possível instalar o t3",
   "ba3ac338f36cba74": "Não foi possível remover o t3",
   "9c942b53b58119b8": "Não foi possível adicionar o t3 ao PATH",
@@ -9108,6 +9111,28 @@
   "d797c9687a256a50": "Conecte-se ao seu servidor pelo celular ou tablet.",
   "c21858dee1b62639": "Link da {store}",
   "cdcdc54a444a3636": "Escaneie com a câmera do celular.",
+  "37ac32051d57adde": "Não foi possível mover.",
+  "0af95d4a293f7986": "{count, plural, =0 {Nenhuma conversa para mover} one {{count} conversa movida para {account}} other {{count} conversas movidas para {account}}}",
+  "2c9d60eb35301140": "{count, plural, =0 {Nenhuma conversa movida.} one {{count} conversa movida.} other {{count} conversas movidas.}}",
+  "2585c754d7c2c172": "{count, plural, one {{from} não conseguiu compactar {count} conversa, então ela ficou.} other {{from} não conseguiu compactar {count} conversas, então elas ficaram.}} Mova-as sem compactar para enviar todo o histórico para {to}.",
+  "ce3c335e78652ff3": "Não foi possível mover uma conversa.",
+  "871158f9c4d8779f": "Mover para",
+  "63739f23d55fa6a9": "Movendo…",
+  "c61bf21b6f3af6fd": "Mover para {account}",
+  "ce33d64df8173ae6": ["Mover todas as conversas de ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
+  "d6f42a0ed4f1a486": "Mover a conversa para outra conta do Claude",
+  "2b39bfab4f4db652": [
+    "O histórico da conversa vai para ",
+    { "i": 1, "k": "_gt_value_1", "v": "v" },
+    ", e a conversa continua lá em vez de em ",
+    { "i": 2, "k": "_gt_value_2", "v": "v" },
+    "."
+  ],
+  "7b53f2312a513da0": "Adicione primeiro outra conta do Claude neste ambiente.",
+  "78253300f9f94d2b": "Mover para",
+  "20adc4ec3fea0253": ["Compactar primeiro em ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
+  "65eced1f62b31ac8": "A nova conta começa de um resumo. O histórico completo fica na sessão.",
+  "6bd44a7b22513151": "Mover sem compactar",
   "73da41e93823fd71": [
     "Não recomendamos gerenciar várias contas ",
     {
@@ -9421,6 +9446,8 @@
   "cf69675106e4bf46": "Configuração",
   "22078dd501ba3102": "Runtime",
   "288c2d92df27a68c": "Modelos",
+  "cb0fabd5a0449368": "Mover todas as conversas para outra conta",
+  "3099bad27927b3ab": "Envia o histórico de cada conversa para outra conta do Claude, que a continua. Conversas em andamento ou abertas em um terminal ficam.",
   "68a76cecbc1e0b6d": "Adicionar variável",
   "e141c49816ed7a1f": "Substituído neste projeto",
   "ab4e8ccc69c28a8c": [
@@ -9449,6 +9476,7 @@
     ", que não está disponível nesta build. A configuração dela é preservada."
   ],
   "b534d4cd528ede39": "As preferências de modelo e os modelos personalizados são salvos no ambiente selecionado e compartilhados entre os dispositivos conectados.",
+  "a33b32ee882e152a": "Mover conversas…",
   "caaef21e8722857d": "Modo rápido",
   "a860db2b1bb3aa31": "Sem raciocínio",
   "3b67fce5df949e14": "Informe o slug de um modelo.",
@@ -13072,6 +13100,7 @@
   "a863c1fb1edfc155": "Ler em segundo plano as sessões não abertas",
   "ac9f7d647fde336a": "claude code terminal sessões transcrições importar sincronizar histórico",
   "c6ca82dcbd99e23b": "claude code sessões recuperar restaurar excluída conversa",
+  "5a333d503f60ef80": "claude conta mover trocar compactar resumo",
   "d7bd140afc367aef": "claude code sessões espaço disco armazenamento limite",
   "e2ba25992774347f": "Pastas do Claude adicionais",
   "f04c3d73e1bc1bb1": "claude code sessões histórico preenchimento ocioso",

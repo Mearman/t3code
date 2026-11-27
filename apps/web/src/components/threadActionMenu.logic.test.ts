@@ -88,4 +88,17 @@ describe("buildThreadActionMenuItems", () => {
     const items = buildThreadActionMenuItems({ ...baseState, canRename: false });
     expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(["rename"]);
   });
+
+  it("offers a Claude account move only where it can run, and not while working", () => {
+    const ids = (state: Partial<ThreadActionMenuState>) =>
+      buildThreadActionMenuItems({ ...baseState, ...state }).map((item) => item.id);
+    expect(ids({})).not.toContain("move-account");
+    expect(ids({ canMoveAccount: true })).toContain("move-account");
+    const running = buildThreadActionMenuItems({
+      ...baseState,
+      canMoveAccount: true,
+      isRunning: true,
+    }).find((item) => item.id === "move-account");
+    expect(running?.disabled).toBe(true);
+  });
 });

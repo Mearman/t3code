@@ -2844,6 +2844,7 @@
   "6dd1f458bcd6a2ea": "Regenerating…",
   "de30fdae5b3fea98": "Regenerate title",
   "dffd2e20f7ff5aa1": "Mark unread",
+  "91d5ee9565acad31": "Move to another Claude account…",
   "3364346f40934e88": "Show all projects",
   "666f3ac177c116b6": "Filter by {project}",
   "1385e2d8bd696370": "Turn into project",
@@ -7957,6 +7958,8 @@
       "v": "v"
     }
   ],
+  "2a8bfa5dc1d47b52": "Moving a thread to another Claude account compacts it under the old account first, so the new account starts from a summary. You can skip this for a single move.",
+  "b9de0ff4d25ab4a6": "Compact before moving to another account",
   "d0e747ae0c4f68a5": "Could not install t3",
   "ba3ac338f36cba74": "Could not remove t3",
   "9c942b53b58119b8": "Could not add t3 to PATH",
@@ -9117,6 +9120,28 @@
   "d797c9687a256a50": "Connect to your server from your phone or tablet.",
   "c21858dee1b62639": "{store} link",
   "cdcdc54a444a3636": "Scan with your phone camera.",
+  "37ac32051d57adde": "The move failed.",
+  "0af95d4a293f7986": "{count, plural, =0 {No threads to move} one {Moved {count} thread to {account}} other {Moved {count} threads to {account}}}",
+  "2c9d60eb35301140": "{count, plural, =0 {No threads moved.} one {{count} thread moved.} other {{count} threads moved.}}",
+  "2585c754d7c2c172": "{count, plural, one {{from} could not compact {count} thread, so it stayed.} other {{from} could not compact {count} threads, so they stayed.}} Move them without compacting to send their full history to {to}.",
+  "ce3c335e78652ff3": "A thread could not be moved.",
+  "871158f9c4d8779f": "Move to",
+  "63739f23d55fa6a9": "Moving…",
+  "c61bf21b6f3af6fd": "Move to {account}",
+  "ce33d64df8173ae6": ["Move every thread from ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
+  "d6f42a0ed4f1a486": "Move thread to another Claude account",
+  "2b39bfab4f4db652": [
+    "The conversation history goes to ",
+    { "i": 1, "k": "_gt_value_1", "v": "v" },
+    ", and the thread continues there instead of on ",
+    { "i": 2, "k": "_gt_value_2", "v": "v" },
+    "."
+  ],
+  "7b53f2312a513da0": "Add another Claude account on this environment first.",
+  "78253300f9f94d2b": "Move to",
+  "20adc4ec3fea0253": ["Compact under ", { "i": 1, "k": "_gt_value_1", "v": "v" }, " first"],
+  "65eced1f62b31ac8": "The new account starts from a summary. The full history stays in the session.",
+  "6bd44a7b22513151": "Move without compacting",
   "73da41e93823fd71": [
     "We do not recommend managing multiple ",
     {
@@ -9429,6 +9454,8 @@
   "cf69675106e4bf46": "Setup",
   "22078dd501ba3102": "Runtime",
   "288c2d92df27a68c": "Models",
+  "cb0fabd5a0449368": "Move every thread to another account",
+  "3099bad27927b3ab": "Sends each thread's history to another Claude account, which continues it. Threads that are working or open in a terminal stay.",
   "68a76cecbc1e0b6d": "Add variable",
   "e141c49816ed7a1f": "Overridden for this project",
   "ab4e8ccc69c28a8c": [
@@ -9457,6 +9484,7 @@
     ", which is not available in this build. Its configuration is preserved."
   ],
   "b534d4cd528ede39": "Model preferences and custom models are saved on the selected environment and shared across connected devices.",
+  "a33b32ee882e152a": "Move threads…",
   "caaef21e8722857d": "Fast mode",
   "a860db2b1bb3aa31": "No reasoning",
   "3b67fce5df949e14": "Enter a model slug.",
@@ -13081,6 +13109,7 @@
   "a863c1fb1edfc155": "Read unopened sessions in the background",
   "ac9f7d647fde336a": "claude code terminal sessions transcripts import sync history",
   "c6ca82dcbd99e23b": "claude code sessions undelete restore deleted thread",
+  "5a333d503f60ef80": "claude account move switch compact summary",
   "d7bd140afc367aef": "claude code sessions disk space storage floor",
   "e2ba25992774347f": "Additional Claude homes",
   "f04c3d73e1bc1bb1": "claude code sessions history backfill fill idle",

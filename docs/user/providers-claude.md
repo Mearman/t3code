@@ -14,9 +14,18 @@ Each thread remembers the account it sends as, read from the Claude process that
 
 To use a config folder you already have, such as `~/.claude_personal`, add a Claude instance and point **CLAUDE_CONFIG_DIR path** at it (leave empty for the default directory), then sign in to it as above. Always use `CLAUDE_CONFIG_DIR` rather than `HOME` so system keychain paths stay intact.
 
-- Existing threads can only switch between Claude instances sharing the same config directory.
+- A thread switches natively between Claude accounts that share history; to send a thread to an account with separate history, move it as below.
 - Put API keys and endpoint overrides in **Environment variables** (not **Launch arguments**).
 - Paths in `--settings` and `--append-system-prompt-file` expand `~` to the server's home directory; other relative paths resolve from the thread's workspace.
+
+## Move threads between accounts
+
+**Move to another Claude account…** in a thread's menu, or **Move threads** on a Claude account in **Settings → Providers** (or the account's menu on mobile), sends the history to another Claude account, which then continues the thread. The confirmation names both accounts.
+
+- **Compact first** is on by default (**Settings → Threads → Compact before moving to another account**) and can be skipped for one move. It runs under the old account, so the new account starts from a summary; the full history stays in the session. If the old account cannot compact (signed out, out of usage), nothing moves until you choose to move without compacting.
+- Between accounts that share history, the thread simply continues on the new account. Otherwise its session files are copied into the new account's folder, checked byte for byte, and the originals become links to the copies, so `claude --resume` works from either folder. Nothing changes if a copy fails its check.
+- A thread that is working, or open in a terminal, stays where it is. Close the terminal, or take the session over, then move it.
+- Moves only happen when you ask: T3 Code never rotates accounts by itself.
 
 ## Compact long conversations
 

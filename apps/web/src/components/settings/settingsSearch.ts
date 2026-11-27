@@ -513,6 +513,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("claude code sessions history backfill fill idle")],
   },
   {
+    id: "claude-compact-before-account-move",
+    title: msg("Compact before moving to another account"),
+    to: "/settings/threads",
+    searchTerms: [msg("claude account move switch compact summary")],
+  },
+  {
     id: "claude-session-free-disk",
     title: msg("Minimum free disk (GB)"),
     to: "/settings/threads",

@@ -59,6 +59,7 @@ vi.mock("../state/entities", () => ({
     worktreePath: null,
     runtime: null,
     latestRun: null,
+    modelSelection: { instanceId: "claudeAgent", model: "default" },
   }),
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
 }));
@@ -120,6 +121,7 @@ vi.mock("./useSettings", () => ({
     }),
 }));
 vi.mock("./useThreadActions", () => ({
+  canMoveThreadAccount: () => false,
   canTurnThreadIntoProject: () => false,
   useThreadActions: () =>
     Object.fromEntries(

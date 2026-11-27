@@ -173,6 +173,16 @@ export function ClaudeSessionSyncSection(props: {
           />
         </>
       ) : null}
+      <SettingsSwitchRow
+        icon="arrow.left.arrow.right"
+        label={gt("Compact before moving to another account")}
+        subtitle={gt(
+          "Moving a thread to another Claude account compacts it under the old account first, so the new account starts from a summary. You can skip this for a single move.",
+        )}
+        value={options.compactBeforeAccountMove}
+        disabled={disabled}
+        onValueChange={(value) => update({ compactBeforeAccountMove: value })}
+      />
     </SettingsSection>
   );
 }

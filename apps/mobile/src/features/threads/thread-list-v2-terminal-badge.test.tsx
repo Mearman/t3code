@@ -70,6 +70,9 @@ vi.mock("../../state/pending-new-tasks-model", () => ({}));
 vi.mock("./use-new-task-project-defaults", () => ({ useNewTaskProjectDefaults: () => null }));
 vi.mock("./use-visible-second-clock", () => ({ useVisibleSecondClock: () => 0 }));
 vi.mock("./CustomSnoozeSheet", () => ({ CustomSnoozeSheet: () => null }));
+vi.mock("../settings/useClaudeAccountMove", () => ({
+  useClaudeAccountMove: () => ({ canMove: () => false, startMove: vi.fn() }),
+}));
 vi.mock("./queued-message-icon", () => ({ QueuedMessageIcon: () => null }));
 vi.mock("./thread-search-match", () => ({ ThreadSearchMatchExcerpt: () => null }));
 vi.mock("./thread-title-regeneration-menu", () => ({

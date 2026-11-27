@@ -10,13 +10,16 @@ import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-se
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import {
   AuthOrchestrationOperateScope,
+  AuthProvidersManageScope,
   AuthSourceControlWriteScope,
   EnvironmentAuthorizationError,
   EnvironmentId,
+  type ProviderInstanceId,
   type ScopedThreadRef,
   ThreadId,
   sessionGrantsScope,
 } from "@t3tools/contracts";
+import { claudeMoveTargets } from "@t3tools/client-runtime/claudeAccountMove";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
@@ -28,7 +31,7 @@ import { getFallbackThreadIdAfterDelete, pinOrderKeyBetween } from "../component
 import { useComposerDraftStore } from "../composerDraftStore";
 import { environmentSession, readEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { environmentServerConfigsAtom } from "../state/server";
+import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { orchestrationEnvironment } from "../state/orchestration";
 import { projectEnvironment } from "../state/projects";
@@ -1080,4 +1083,21 @@ export function useThreadActions() {
         input: { threadId: target.threadId },
       }),
   };
+}
+
+/** A Claude thread on a server that moves threads, with another enabled Claude account. */
+export function canMoveThreadAccount(
+  threadRef: ScopedThreadRef,
+  sourceInstanceId: ProviderInstanceId,
+): boolean {
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(threadRef.environmentId);
+  if (config?.environment.capabilities.claudeAccountMoves !== true) return false;
+  if (!readEnvironmentScope(threadRef.environmentId, AuthProvidersManageScope)) return false;
+  const providers =
+    appAtomRegistry.get(serverEnvironment.providersValueAtom(threadRef.environmentId)) ??
+    config.providers;
+  const source = providers.find((provider) => provider.instanceId === sourceInstanceId);
+  return (
+    source?.driver === "claudeAgent" && claudeMoveTargets(providers, sourceInstanceId).length > 0
+  );
 }
