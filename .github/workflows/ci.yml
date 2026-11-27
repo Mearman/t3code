@@ -186,7 +186,9 @@ jobs:
           (
             set +e
             vpr typecheck
-            echo "$?" > "$RUNNER_TEMP/typecheck-status"
+            code="$?"
+            vp run --last-details 2>&1 | grep -vE "TS377141|^ *~*$" | tail -150
+            echo "$code" > "$RUNNER_TEMP/typecheck-status"
           ) > "$RUNNER_TEMP/typecheck.log" 2>&1 < /dev/null &
 
       - name: Finish installing browser secret helper build libraries
