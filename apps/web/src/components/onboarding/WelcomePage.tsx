@@ -1646,7 +1646,7 @@ function useProjectImport({
         ? selection.filter((candidate) => importedProjects.has(candidate.key)).length
         : 0;
     let skippedThreadCount = 0;
-    let unansweredImport = false;
+    let unansweredImports = 0;
     const refreshEnvironments = new Set<EnvironmentId>();
     // Resolves false when the run stopped early: a newer run, an unmount, or lost access.
     const importEach = async () => {
@@ -1706,7 +1706,7 @@ function useProjectImport({
             (importedThreads.get(candidate.key) ?? 0) + threadImportResult.value.importedCount,
           );
           skippedThreadCount += threadImportResult.value.skippedCount;
-          if (threadImportResult.value.unanswered === true) unansweredImport = true;
+          if (threadImportResult.value.unanswered === true) unansweredImports += 1;
           if (threadImportResult.value.importedCount > 0) {
             projectsWithImportedHistoryRef.current.set(
               candidate.key,
@@ -1759,7 +1759,7 @@ function useProjectImport({
       } else {
         importWarningRef.current = gt("Could not import thread history.");
       }
-      if (unansweredImport) {
+      if (unansweredImports > 0) {
         importWarningRef.current = `${importWarningRef.current} ${gt(
           "A folder did not answer, so some threads may be missing. If macOS is asking for access, answer the prompt and import again.",
         )}`;
