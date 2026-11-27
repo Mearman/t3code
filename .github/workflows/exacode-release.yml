@@ -200,11 +200,8 @@ jobs:
       # The desktop bundle and the web client name the app ExaCode (scripts/lib/desktop-product-name.ts).
       - name: Check the desktop bundle's product name
         run: |
-          ls apps/server/dist/client | head -20
-          grep -rc --include='*.js' ExaCode apps/server/dist/client | grep -v ':0$' | head -5 || true
-          grep -rhoE '.{30}__T3CODE_DESKTOP_PRODUCT_NAME__.{20}' apps/server/dist/client apps/web/dist 2>/dev/null | head -3 || true
           for dir in apps/desktop/dist-electron apps/server/dist/client; do
-            if ! grep -rqF --include='*.js' --include='*.cjs' --include='*.mjs' '"ExaCode"' "$dir"; then
+            if ! grep -rqE --include='*.js' --include='*.cjs' --include='*.mjs' "[\"'\`]ExaCode[\"'\`]" "$dir"; then
               echo "::error::$dir does not name the app ExaCode."
               exit 1
             fi

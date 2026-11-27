@@ -124,7 +124,8 @@ export const make = Effect.gen(function* () {
       });
     });
     yield* setAboutPanel;
-    onLocaleChange(() => Effect.runFork(setAboutPanel));
+    const runFork = Effect.runForkWith(yield* Effect.context());
+    onLocaleChange(() => runFork(setAboutPanel));
 
     if (environment.platform === "win32") {
       yield* electronApp.setAppUserModelId(environment.appUserModelId);
