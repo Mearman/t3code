@@ -23,12 +23,15 @@ export const appendDetail = (detail: string, reason: string): string => {
 };
 
 // Sign-in commands print their URL and a PTY echoes a pasted code, so neither may reach the error.
+// A link the terminal wrapped continues on lines without its scheme, so any word carrying URL
+// punctuation is treated as part of one.
 const LINK = /\b[a-z][a-z0-9+.-]*:\/\/\S+/giu;
+const LINK_PART = /\S*[/?&=%#]\S*/gu;
 const TOKEN_LIKE = /[\w#~.+/=-]{24,}/gu;
 
-/** Replaces links and code-like runs, which a sign-in error must never carry. */
+/** Replaces links, wrapped link fragments and code-like runs, which an error must never carry. */
 export const redactSignInSecrets = (text: string): string =>
-  text.replace(LINK, "[link]").replace(TOKEN_LIKE, "[redacted]");
+  text.replace(LINK, "[link]").replace(TOKEN_LIKE, "[redacted]").replace(LINK_PART, "[redacted]");
 
 /** The last lines a login command printed, with links and code-like runs replaced. */
 export const lastPrintedLines = (output: string): string => {
