@@ -21,27 +21,35 @@ const connection = { schemaVersion: 1, url: "http://127.0.0.1:3774/claude-bridge
 
 type Command = { type: "submit"; commandId: string; sessionId: string; text: string; asUser: boolean };
 
-function world(on, options: { proof?: string; commands?: (poll: any) => Command[] } = {}) {
+function world(on: any, options: { proof?: string; commands?: (poll: any) => Command[] } = {}) {
   const clock = mock.clock(on);
   mock.env(on, { CLAUDE_CONFIG_DIR: HOME });
   const state = { session: "s1", polls: [] as any[], submitted: [] as any[], fetched: 0 };
-  on("fs.exists", () => true);
-  on("fs.list", () => [{ name: "server-a.json", kind: "file", size: 1, mtimeMs: 0, isLink: false }]);
-  on("fs.read", () => JSON.stringify(connection));
-  on("session.id", () => state.session);
+  // A call on $ is answered with { value }.
+  on("fs.exists", () => ({ value: true }));
+  on("fs.list", () => ({
+    value: [{ name: "server-a.json", kind: "file", size: 1, mtimeMs: 0, isLink: false }],
+  }));
+  on("fs.read", () => ({ value: JSON.stringify(connection) }));
+  on("session.id", () => ({ value: state.session }));
   on("session.start", (_, e) => ({ cwd: e.cwd }));
-  on("command.register", (_, e) => ({ command: e.name }));
-  on("ui.status", () => undefined);
-  on("ui.log", () => undefined);
+  on("command.register", (_, e) => ({ value: { command: e.name } }));
+  on("ui.status", () => ({ value: undefined }));
+  on("ui.log", () => ({ value: undefined }));
   on("http.fetch", (_, e) => {
     state.fetched += 1;
     const poll = JSON.parse(String(e.init?.body));
     state.polls.push(poll);
     return {
-      status: 200,
-      ok: true,
-      headers: { "x-t3-bridge-proof": options.proof ?? PROOF },
-      text: JSON.stringify({ pollerKey: "key-" + poll.sessionId, commands: options.commands?.(poll) ?? [] }),
+      value: {
+        status: 200,
+        ok: true,
+        headers: { "x-t3-bridge-proof": options.proof ?? PROOF },
+        text: JSON.stringify({
+          pollerKey: "key-" + poll.sessionId,
+          commands: options.commands?.(poll) ?? [],
+        }),
+      },
     };
   });
   on("prompt.submit", (_, e) => {
@@ -51,7 +59,7 @@ function world(on, options: { proof?: string; commands?: (poll: any) => Command[
   return { clock, state };
 }
 
-const start = ($, isInteractive = true) =>
+const start = ($: any, isInteractive = true) =>
   $.session.start({ cwd: "/home/user/app", surface: isInteractive ? "terminal" : null, isInteractive });
 
 const submit = (commandId: string, sessionId: string, asUser = false): Command => ({
@@ -73,13 +81,13 @@ test("submits a prompt only into the session it names, and acknowledges each", a
   ]);
 });
 
-test("submits a prompt handed out twice once", async ($, on) => {
+test("submits a prompt handed out twice once, framed as the mod's unless it is the person's", async ($, on) => {
   const { clock, state } = world(on, { commands: () => [submit("c1", "s1")] });
   await start($);
   await clock.advance(1000);
   await clock.advance(1000);
 
-  expect(state.submitted).toHaveLength(1);
+  expect(state.submitted).toEqual([{ text: "hello c1", asUser: false }]);
   expect(state.polls[1].acks).toEqual([{ commandId: "c1", submitted: true }]);
 });
 
