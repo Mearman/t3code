@@ -540,6 +540,8 @@ describe("gateHeldClaudeSessionRuntime", () => {
     readonly lingeringChecks?: number;
     /** Runs before each probe answers, with how many probes came before it. */
     readonly onProbe?: (state: { hold: ClaudeSessionHold | undefined }, before: number) => void;
+    /** Whether the holder runs the bridge mod. */
+    readonly bridgeAttached?: boolean;
   }) => {
     const calls: Array<string> = [];
     const probes: Array<string> = [];
@@ -608,6 +610,13 @@ describe("gateHeldClaudeSessionRuntime", () => {
         record: (runId) =>
           Effect.sync(() => {
             calls.push(`second-writer:${runId}`);
+          }),
+      },
+      {
+        attached: () => Effect.succeed(input.bridgeAttached === true),
+        submit: (submitted) =>
+          Effect.sync(() => {
+            calls.push(`bridge:${submitted.asUser ? "user" : "mod"}:${submitted.text}`);
           }),
       },
     );
@@ -728,6 +737,66 @@ describe("gateHeldClaudeSessionRuntime", () => {
       expectInUse("startTurn", fork, true);
     }),
   );
+
+  describe("adopt through the bridge", () => {
+    const held: ClaudeSessionHold = { _tag: "held", pid: 200, source: "terminal", idle: false };
+    const turn = (now: DateTime.Utc, message: Partial<ProviderAdapter.ProviderAdapterV2TurnMessage>) => {
+      const base = turnInput(providerThread(now), now);
+      return { ...base, message: { ...base.message, ...message } };
+    };
+    const adoptedOf = (refusal: unknown) => {
+      const inUse = Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
+      return Predicate.hasProperty(inUse, "adopted") && inUse.adopted === true;
+    };
+
+    it.effect("hands a held session's prompt to its mod, as the person's words only when chosen", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const chosen = makeGate({ hold: held, bridgeAttached: true });
+        const byDefault = makeGate({ hold: held, bridgeAttached: true });
+
+        const chosenRefusal = yield* Effect.flip(
+          chosen.runtime.startTurn(turn(now, { heldSessionSend: "adopt", adoptAsUser: true })),
+        );
+        // With the mod attached and no choice named, a send adopts, under the mod's name.
+        const defaultRefusal = yield* Effect.flip(byDefault.runtime.startTurn(turn(now, {})));
+
+        expect(chosen.calls).toEqual(["bridge:user:hello"]);
+        expect(byDefault.calls).toEqual(["bridge:mod:hello"]);
+        expect([chosenRefusal, defaultRefusal].map(adoptedOf)).toEqual([true, true]);
+      }),
+    );
+
+    it.effect("refuses as ask does, naming the missing mod, when the holder does not run it", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({ hold: held, bridgeAttached: false });
+
+        const chosen = yield* Effect.flip(runtime.startTurn(turn(now, { heldSessionSend: "adopt" })));
+        const unchosen = yield* Effect.flip(runtime.startTurn(turn(now, {})));
+
+        expect(calls).toEqual([]);
+        expect(adoptedOf(chosen)).toBe(false);
+        expect(adoptedOf(unchosen)).toBe(false);
+        const inUse = Predicate.hasProperty(chosen, "cause") ? chosen.cause : chosen;
+        expect(Predicate.hasProperty(inUse, "message") ? String(inUse.message) : "").toContain(
+          "t3 claude bridge install",
+        );
+        expectInUse("startTurn", chosen, true);
+      }),
+    );
+
+    it.effect("sends itself to a session nobody holds, whatever the choice", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({ bridgeAttached: true });
+
+        yield* runtime.startTurn(turn(now, { heldSessionSend: "adopt" }));
+
+        expect(calls).toEqual(["startTurn"]);
+      }),
+    );
+  });
 
   describe("send beside a holder", () => {
     const held = (idle: boolean): ClaudeSessionHold => ({
