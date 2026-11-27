@@ -104,17 +104,30 @@ export async function findEnvironmentUpdate(
   // Public release pages avoid the anonymous API quota shared by devices on the same network.
   const releases = await readChannelReleases(channel, repository, signal);
   let version = newestCliReleaseVersion(releases, channel);
+  // A pointer offering nothing newer may lag its newest release (a failed workflow step).
+  const pointerMayLag =
+    channel !== "stable" &&
+    !isUpstreamReleaseRepository(repository) &&
+    version !== undefined &&
+    compareSemverVersions(version, currentVersion) <= 0;
 
   // The feed only includes ten releases, so later nightlies can displace a published preview.
-  for (let page = 1; version === undefined; page++) {
-    const response = await fetchReleases(
-      cliReleaseIndexPageUrl(page, repository),
-      "application/vnd.github+json",
-      signal,
-    );
-    const releases = decodeReleases(await response.json());
-    version = newestCliReleaseVersion(releases, channel);
-    if (releases.length < 100) break;
+  if (version === undefined || pointerMayLag) {
+    for (let page = 1; ; page++) {
+      const response = await fetchReleases(
+        cliReleaseIndexPageUrl(page, repository),
+        "application/vnd.github+json",
+        signal,
+      );
+      const releases = decodeReleases(await response.json());
+      const listed = newestCliReleaseVersion(releases, channel);
+      if (
+        listed !== undefined &&
+        (version === undefined || compareSemverVersions(listed, version) > 0)
+      )
+        version = listed;
+      if (listed !== undefined || releases.length < 100) break;
+    }
   }
 
   if (version === undefined)

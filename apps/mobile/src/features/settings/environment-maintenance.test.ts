@@ -152,6 +152,24 @@ describe("environment release checks", () => {
     ]);
   });
 
+  it("lists another repository's releases when its pointer offers nothing newer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "https://github.com/owner/fork/releases/download/update-feed/nightly.json") {
+          return Response.json({ tag_name: "v1.0.1-nightly.20260923.31" });
+        }
+        if (url === "https://api.github.com/repos/owner/fork/releases?per_page=100&page=1") {
+          return Response.json([{ tag_name: "v1.0.1-nightly.20260924.40" }]);
+        }
+        throw new Error(`Unexpected release request: ${url}`);
+      }),
+    );
+    expect(await findEnvironmentUpdate("1.0.1-nightly.20260923.31", "owner/fork", signal)).toBe(
+      "1.0.1-nightly.20260924.40",
+    );
+  });
+
   it("lists another repository's releases when it has no pointer yet", async () => {
     vi.stubGlobal(
       "fetch",
