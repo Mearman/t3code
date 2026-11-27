@@ -43,7 +43,7 @@ import {
   normalizeDesktopUpdateReleaseNotes,
   releaseNotesOfOfferedVersion,
 } from "./releaseNotes.ts";
-import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
+import { desktopUpdateChannelOf, isUpstreamReleaseRepository } from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
   createInitialDesktopUpdateState,
@@ -288,6 +288,31 @@ export function describeUpdateErrorCause(cause: unknown): string {
   } catch {
     return "UnknownError";
   }
+}
+
+/** A GitHub feed that reads only the `update-feed` pointer and release list (patches/electron-updater). */
+type PointerOnlyGitHubFeed = Extract<
+  ElectronUpdater.ElectronUpdaterFeedUrl,
+  { provider: "github" }
+> & {
+  readonly updateFeedPointerOnly: true;
+};
+
+/**
+ * The feed for an app-update.yml naming a GitHub repository other than upstream's, whose tags
+ * include upstream's without their releases, so its newest tag is not its newest release.
+ */
+function pointerOnlyGitHubFeed(config: AppUpdateYmlConfig): PointerOnlyGitHubFeed | undefined {
+  const { provider, owner, repo, channel } = config;
+  if (provider !== "github" || owner === undefined || repo === undefined) return undefined;
+  if (isUpstreamReleaseRepository(`${owner}/${repo}`)) return undefined;
+  return {
+    provider: "github",
+    owner,
+    repo,
+    ...(channel === undefined ? {} : { channel }),
+    updateFeedPointerOnly: true,
+  };
 }
 
 function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYmlConfig>> {
@@ -1351,6 +1376,11 @@ export const make = Effect.gen(function* () {
           provider: "generic",
           url: policy.feedUrl,
         } as ElectronUpdater.ElectronUpdaterFeedUrl);
+      } else {
+        const pointerOnlyFeed = Option.getOrUndefined(
+          Option.map(appUpdateYmlConfig, pointerOnlyGitHubFeed),
+        );
+        if (pointerOnlyFeed !== undefined) yield* electronUpdater.setFeedURL(pointerOnlyFeed);
       }
 
       const settings = yield* desktopSettings.get;

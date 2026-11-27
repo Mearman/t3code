@@ -29,6 +29,7 @@ const offeredRelease = async (
   feedTags: ReadonlyArray<string>,
   pointerTag: string | undefined,
   listedTag?: string | Error,
+  pointerOnly = false,
 ) => {
   let apiScans = 0;
   const request = async ({ path = "" }: { readonly path?: string | null }) => {
@@ -44,7 +45,12 @@ const offeredRelease = async (
     return JSON.stringify(listedTag ? [{ tag_name: listedTag, body: "API notes" }] : []);
   };
   const provider = new GitHubProvider(
-    { provider: "github", owner: "pingdotgg", repo: "t3code" },
+    {
+      provider: "github",
+      owner: "pingdotgg",
+      repo: "t3code",
+      ...(pointerOnly ? { updateFeedPointerOnly: true } : {}),
+    },
     // Only the four fields the provider reads; a real AppUpdater needs Electron.
     {
       allowPrerelease: true,
@@ -102,6 +108,23 @@ describe("GitHubProvider nightly lookup", () => {
       tag: nightly(4606),
       releaseNotes: [{ version: nightly(4606).slice(1), note: `${nightly(4606)} feed notes` }],
       apiScans: 0,
+    });
+  });
+
+  // A fork's feed lists upstream's tags, which have no release in the fork.
+  it("offers the pointer over a newer feed tag when only the pointer is trusted", async () => {
+    expect(await offeredRelease([nightly(5300)], nightly(4606), undefined, true)).toEqual({
+      tag: nightly(4606),
+      releaseNotes: "pointer notes",
+      apiScans: 0,
+    });
+  });
+
+  it("scans the API, not the feed, when only the pointer is trusted and there is none", async () => {
+    expect(await offeredRelease([nightly(5300)], undefined, nightly(4606), true)).toEqual({
+      tag: nightly(4606),
+      releaseNotes: "API notes",
+      apiScans: 1,
     });
   });
 });
