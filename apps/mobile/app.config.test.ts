@@ -6,11 +6,14 @@ import assetLinks from "../web/public/.well-known/assetlinks.json";
 
 // Keep config parsing independent of local env files and build credentials.
 vi.mock("../../scripts/lib/public-config.ts", () => ({
-  loadRepoEnv: () => ({
-    APP_VARIANT: process.env.APP_VARIANT,
-    GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
-    T3CODE_DESKTOP_PRODUCT_NAME: process.env.T3CODE_DESKTOP_PRODUCT_NAME,
-  }),
+  // Unset variables are left out: the config copies this into process.env as "undefined".
+  loadRepoEnv: () =>
+    Object.fromEntries(
+      ["APP_VARIANT", "GITHUB_REPOSITORY", "T3CODE_DESKTOP_PRODUCT_NAME"].flatMap((name) => {
+        const value = process.env[name];
+        return value === undefined ? [] : [[name, value]];
+      }),
+    ),
 }));
 
 afterEach(() => {
