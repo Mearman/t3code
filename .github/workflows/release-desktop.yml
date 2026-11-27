@@ -398,6 +398,31 @@ jobs:
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && inputs.release_channel || 'dev' }}
         run: node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
 
+      # A certificate without App Store Connect keys is treated as self-signed, as in "Build desktop artifact". codesign and electron-builder only offer an identity the system trusts, which a self-signed one is not by default.
+      - name: Trust a self-signed macOS signing certificate
+        if: inputs.platform == 'mac'
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" || -n "$APPLE_API_KEY" ]]; then
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/t3-self-signed-trust.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          cert_path="$RUNNER_TEMP/t3-self-signed.p12"
+          trap 'rm -f "$cert_path"; security delete-keychain "$keychain" 2>/dev/null || true' EXIT
+          printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD"
+          security find-certificate -a -p "$keychain" > "$RUNNER_TEMP/t3-self-signed.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/t3-self-signed.pem"
+          echo "Trusted the self-signed macOS signing certificate for code signing."
+
       - name: Import macOS signing certificate for the CLI archive
         if: inputs.cli_archive && inputs.platform == 'mac'
         shell: bash
@@ -422,7 +447,11 @@ jobs:
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
           if [[ -z "$identity" ]]; then
-            echo "No Developer ID Application identity found in CSC_LINK." >&2
+            # A self-signed certificate, trusted by the step above.
+            identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\([^"]*\)".*/\1/p' | head -n 1)"
+          fi
+          if [[ -z "$identity" ]]; then
+            echo "No valid code signing identity found in CSC_LINK." >&2
             exit 1
           fi
           echo "::add-mask::$keychain_password"
@@ -652,6 +681,11 @@ jobs:
               export T3CODE_MACOS_PROVISIONING_PROFILE="$profile_path"
 
               echo "macOS signing enabled."
+              args+=(--signed)
+            elif has_all "$CSC_LINK" "$CSC_KEY_PASSWORD"; then
+              # No App Store Connect keys: sign with the certificate alone, without notarization, a provisioning profile or passkey entitlements.
+              export T3CODE_MACOS_SELF_SIGNED=true
+              echo "macOS signing enabled (self-signed, not notarized)."
               args+=(--signed)
             else
               echo "macOS signing disabled (missing one or more Apple signing secrets)."

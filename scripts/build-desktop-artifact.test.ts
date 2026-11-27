@@ -40,6 +40,7 @@ import {
   packWindowsServerAsar,
   preflightWindowsDesktopBuild,
   renderMacPasskeyEntitlements,
+  renderMacSelfSignedEntitlements,
   resolveMacFileExclusions,
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
@@ -1713,6 +1714,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
   });
 
+  it("gives a self-signed build the runtime entitlements without Apple-provisioned ones", () => {
+    const entitlements = renderMacSelfSignedEntitlements();
+    assert.match(entitlements, /<key>com\.apple\.security\.cs\.allow-jit<\/key>\s*<true\/>/u);
+    assert.match(entitlements, /<key>com\.apple\.security\.device\.audio-input<\/key>/u);
+    assert.notMatch(entitlements, /com\.apple\.developer\./u);
+    assert.notMatch(entitlements, /application-identifier|keychain-access-groups/u);
+  });
+
   it("rejects incomplete macOS passkey signing configuration", () => {
     const captureError = (env: Readonly<Record<string, string | undefined>>) => {
       try {
@@ -1913,6 +1922,35 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
+      assert.equal(resolved.macSelfSigned, false);
+    }),
+  );
+
+  it.effect("reads a self-signed macOS signing identity from the environment", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveBuildOptions({
+        platform: Option.some("mac"),
+        target: Option.none(),
+        arch: Option.some("arm64"),
+        buildVersion: Option.none(),
+        outputDir: Option.some("release-test"),
+        skipBuild: Option.none(),
+        keepStage: Option.none(),
+        signed: Option.some(true),
+        verbose: Option.none(),
+        mockUpdates: Option.none(),
+        mockUpdateServerPort: Option.none(),
+        wslRuntime: Option.none(),
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { T3CODE_MACOS_SELF_SIGNED: "true" } }),
+          ),
+        ),
+      );
+
+      assert.equal(resolved.signed, true);
+      assert.equal(resolved.macSelfSigned, true);
     }),
   );
 });
