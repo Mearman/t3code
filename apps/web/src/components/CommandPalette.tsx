@@ -84,6 +84,7 @@ import {
   PlugIcon,
   SquarePenIcon,
   TextSearchIcon,
+  ArrowRightLeftIcon,
   UserPlusIcon,
   WorkflowIcon,
 } from "lucide-react";
@@ -278,6 +279,10 @@ import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
+import {
+  canMoveClaudeSession,
+  openClaudeSessionMoveDialog,
+} from "./chat/claudeSessionMoveDialogState";
 import { openUseInAnotherApp } from "./mcp/UseInAnotherAppDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { primaryServerKeybindingsAtom } from "../state/server";
@@ -1581,6 +1586,24 @@ function OpenCommandPaletteDialog(props: {
         openGuestShareDialog(threadRef);
       },
     });
+  }
+
+  if (activeThread) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    if (
+      canMoveClaudeSession(threadRef.threadId, activeThreadServerConfig?.environment.capabilities)
+    ) {
+      actionItems.push({
+        kind: "action",
+        value: "action:move-claude-session",
+        searchTerms: ["move", "machine", "claude", "session", "transfer", "worktree"],
+        title: gt("Move to another machine"),
+        icon: <ArrowRightLeftIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          openClaudeSessionMoveDialog(threadRef);
+        },
+      });
+    }
   }
 
   if (activeThread !== null) {

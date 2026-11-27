@@ -3,6 +3,10 @@ import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
 import {
+  canMoveClaudeSession,
+  openClaudeSessionMoveDialog,
+} from "../components/chat/claudeSessionMoveDialogState";
+import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
   settlePromise,
@@ -39,7 +43,7 @@ import {
   readThreadShell,
   useProjects,
 } from "../state/entities";
-import { usePrimaryEnvironmentId } from "../state/environments";
+import { readEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import {
@@ -151,6 +155,10 @@ export function useThreadActionMenu(input: {
       supports,
       snoozePresets,
       canShareWithGuest,
+      canMoveClaudeSession: canMoveClaudeSession(
+        threadRef.threadId,
+        readEnvironment(threadRef.environmentId)?.serverConfig?.environment.capabilities,
+      ),
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
     });
     const run = async (action: ThreadActionMenuId) => {
@@ -272,6 +280,9 @@ export function useThreadActionMenu(input: {
           return;
         case "share-guest":
           openGuestShareDialog(threadRef);
+          return;
+        case "move-claude-session":
+          openClaudeSessionMoveDialog(threadRef);
           return;
         case "turn-into-project": {
           const result = await turnThreadIntoProject(threadRef);

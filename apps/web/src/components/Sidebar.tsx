@@ -146,6 +146,7 @@ import {
   useConnectedEnvironmentIds,
   useEnvironmentMachines,
   usePrimaryEnvironmentId,
+  readEnvironment,
 } from "../state/environments";
 import {
   readThreadShell,
@@ -165,6 +166,10 @@ import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orc
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
+import {
+  canMoveClaudeSession,
+  openClaudeSessionMoveDialog,
+} from "./chat/claudeSessionMoveDialogState";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import {
   buildThreadRouteParams,
@@ -2744,6 +2749,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               canShareWithGuest: appAtomRegistry.get(
                 canShareWithGuestAtom(threadRef.environmentId),
               ),
+              canMoveClaudeSession: canMoveClaudeSession(
+                threadRef.threadId,
+                readEnvironment(threadRef.environmentId)?.serverConfig?.environment.capabilities,
+              ),
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
               canRename: !fromSearch,
               supports: {
@@ -2874,6 +2883,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           case "share-guest":
             openGuestShareDialog(threadRef);
+            return;
+          case "move-claude-session":
+            openClaudeSessionMoveDialog(threadRef);
             return;
           case "regenerate-title": {
             if (isRegeneratingTitle) return;

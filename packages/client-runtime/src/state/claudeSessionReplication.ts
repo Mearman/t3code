@@ -33,6 +33,14 @@ export function createClaudeSessionReplicationAtoms<R, E>(
       tag: WS_METHODS.claudeSessionsListRemote,
       staleTimeMs: 10_000,
     }),
+    /** Moves a session the environment owns, with its code, to one of its linked environments. */
+    move: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:claude-replication:move",
+      tag: WS_METHODS.claudeSessionsMove,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.sessionId },
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => registry.refresh(report({ environmentId, input: {} }))),
+    }),
     replicateNow: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:claude-replication:replicate-now",
       tag: WS_METHODS.claudeSessionsReplicateNow,

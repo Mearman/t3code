@@ -55,6 +55,7 @@ import {
 import { useThreadSearch } from "../../state/queries";
 import { requestThreadMessageJump } from "../threads/threadMessageJump";
 import { useCanShareWithGuest } from "../threads/useCanShareWithGuest";
+import { useCanMoveClaudeSession } from "../threads/useCanMoveClaudeSession";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
@@ -292,6 +293,10 @@ export function CommandPalette(props: {
     triageEnvironmentId !== null &&
     serverConfigs.get(triageEnvironmentId)?.environment.capabilities.triage === true;
   const canShareWithGuest = useCanShareWithGuest(activeThreadRef?.environmentId ?? null);
+  const canMoveClaudeSession = useCanMoveClaudeSession(
+    activeThreadRef?.environmentId ?? null,
+    activeThreadRef?.threadId ?? null,
+  );
   const contentMatchByKey = new Map(
     search.matches
       .filter((match) => match.source === "user" || match.source === "assistant")
@@ -422,6 +427,15 @@ export function CommandPalette(props: {
           run: () => navigation.navigate("ThreadGuestShare", activeThreadRef),
         });
       }
+      if (canMoveClaudeSession) {
+        actions.push({
+          key: "moveClaudeSession",
+          kind: "action",
+          title: gt("Move to another machine"),
+          searchTerms: ["move", "machine", "claude", "session", "transfer", "worktree"],
+          run: () => navigation.navigate("ClaudeSessionMove", activeThreadRef),
+        });
+      }
     }
     const openProjects = projects.filter((project) => project.archivedAt == null);
     const projectItems: CommandPaletteItem[] = [
@@ -500,6 +514,7 @@ export function CommandPalette(props: {
     environments.length,
     canTriage,
     canShareWithGuest,
+    canMoveClaudeSession,
     navigation,
     projects,
     runCommand,

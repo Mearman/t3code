@@ -24,6 +24,7 @@ export type ThreadActionMenuId =
   | "regenerate-title"
   | "mark-unread"
   | "share-guest"
+  | "move-claude-session"
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -125,6 +126,8 @@ export interface ThreadActionMenuState {
   readonly snoozePresets: ReadonlyArray<SnoozePreset>;
   /** Guest links need their own grant, so the caller checks it instead of `canOperate`. */
   readonly canShareWithGuest?: boolean;
+  /** A Claude Code session's thread on a server that moves sessions to its linked machines. */
+  readonly canMoveClaudeSession?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
 }
@@ -238,6 +241,15 @@ export function buildThreadActionMenuItems(
       : []),
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: resolve(msg("Share with guest")), icon: "user-plus" }]
+      : []),
+    ...(state.canOperate && state.canMoveClaudeSession
+      ? [
+          {
+            id: "move-claude-session" as const,
+            label: resolve(msg("Move to another machine")),
+            icon: "arrow-right-left",
+          },
+        ]
       : []),
     ...(state.projectFilter
       ? [
