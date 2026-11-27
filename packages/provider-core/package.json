@@ -115,6 +115,10 @@
       "types": "./src/server/providerAuthFlow.ts",
       "import": "./src/server/providerAuthFlow.ts"
     },
+    "./server/providerAuthTerminal": {
+      "types": "./src/server/providerAuthTerminal.ts",
+      "import": "./src/server/providerAuthTerminal.ts"
+    },
     "./server/ProviderContinuationRequests": {
       "types": "./src/server/ProviderContinuationRequests.ts",
       "import": "./src/server/ProviderContinuationRequests.ts"
