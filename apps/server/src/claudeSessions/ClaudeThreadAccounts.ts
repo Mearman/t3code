@@ -1,4 +1,5 @@
-import type { ThreadId } from "@t3tools/contracts";
+import { ClaudeAccountIdentity, ThreadId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -8,21 +9,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 /**
- * The account a Claude process reports through `accountInfo()`, reduced to what names it. An
- * account with no email (an API key, a third-party backend) is told apart only by where its
- * credential comes from: `accountInfo()` exposes nothing that tells two keys from one source apart.
- */
-export const ClaudeAccountIdentity = Schema.Struct({
-  apiProvider: Schema.String,
-  email: Schema.NullOr(Schema.String),
-  organization: Schema.NullOr(Schema.String),
-  credentialSource: Schema.NullOr(Schema.String),
-});
-export type ClaudeAccountIdentity = typeof ClaudeAccountIdentity.Type;
-
-/**
- * Reads the identity out of an SDK `AccountInfo`. Undefined when the process is signed in as no
- * account at all, which is never recorded: nothing can be sent as it.
+ * Reads the identity out of an SDK `AccountInfo`. Undefined when the process names no account:
+ * no email, organisation or credential source on a first-party backend.
  */
 export const claudeAccountIdentity = (info: {
   readonly apiProvider?: string;
@@ -71,7 +59,20 @@ export class ClaudeThreadAccountChangedError extends Schema.TaggedError<ClaudeTh
     const current = describeClaudeAccount(this.current);
     return (
       `This thread was sent as ${recorded}, but Claude is now signed in as ${current}, ` +
-      `so nothing was sent. Send again to continue as ${current}.`
+      `so nothing was sent. Choose Send as this account to continue as ${current}.`
+    );
+  }
+}
+
+/** The thread has an account, but this thread's Claude process names none. */
+export class ClaudeThreadAccountUnknownError extends Schema.TaggedError<ClaudeThreadAccountUnknownError>()(
+  "ClaudeThreadAccountUnknownError",
+  { threadId: Schema.String, recorded: ClaudeAccountIdentity },
+) {
+  override get message(): string {
+    return (
+      `This thread was sent as ${describeClaudeAccount(this.recorded)}, but Claude reports no ` +
+      "account it can name, so nothing was sent. Sign Claude in, then send again."
     );
   }
 }
@@ -79,7 +80,7 @@ export class ClaudeThreadAccountChangedError extends Schema.TaggedError<ClaudeTh
 const ThreadAccountsFile = Schema.Struct({
   /** The account each app thread sends as. */
   accounts: Schema.Record(Schema.String, ClaudeAccountIdentity),
-  /** The different account a refused send saw; a resend or a confirmation makes it the thread's. */
+  /** The different account a refused send saw; only a confirmation naming it makes it the thread's. */
   pending: Schema.Record(Schema.String, ClaudeAccountIdentity),
 });
 type ThreadAccountsFile = typeof ThreadAccountsFile.Type;
@@ -89,17 +90,22 @@ const EMPTY: ThreadAccountsFile = { accounts: {}, pending: {} };
 
 export interface ClaudeThreadAccountStore {
   readonly read: (threadId: ThreadId) => Effect.Effect<ClaudeAccountIdentity | undefined>;
+  /** Every thread the store holds an account or a refusal for. */
+  readonly threadIds: Effect.Effect<ReadonlyArray<ThreadId>>;
   /**
    * Decides, in one step under the store's lock, whether a process signed in as `current` may send
-   * for `threadId`: it records a thread's first account, lets a resend after a refusal continue as
-   * the account that refusal named, and otherwise refuses a different account.
+   * for `threadId`. It records a thread's first account and refuses any other account until the
+   * user confirms it; a process that names no account sends only on a thread with no account.
    */
   readonly check: (
     threadId: ThreadId,
     current: ClaudeAccountIdentity | undefined,
-  ) => Effect.Effect<void, ClaudeThreadAccountChangedError>;
-  /** Makes the refused account the thread's own; the account it moved to, if one was refused. */
-  readonly confirm: (threadId: ThreadId) => Effect.Effect<ClaudeAccountIdentity | undefined>;
+  ) => Effect.Effect<void, ClaudeThreadAccountChangedError | ClaudeThreadAccountUnknownError>;
+  /** Makes `account` the thread's own, but only while it is the account the last refusal found. */
+  readonly confirm: (
+    threadId: ThreadId,
+    account: ClaudeAccountIdentity,
+  ) => Effect.Effect<"confirmed" | "stale" | "none">;
   /** Drops a thread's account, after a confirmed move or once the thread is deleted. */
   readonly forget: (threadId: ThreadId) => Effect.Effect<void>;
 }
@@ -116,8 +122,8 @@ const without = (record: Record<string, ClaudeAccountIdentity>, threadId: string
 
 /**
  * Keeps each app thread's account in one JSON file, so a thread keeps it across instance switches
- * and restarts. An unreadable file is set aside (`.unreadable`) and the store starts again, so
- * threads record their accounts afresh instead of every send failing.
+ * and restarts. An unreadable file is set aside under a name of its own and the store starts again,
+ * so threads record their accounts afresh instead of every send failing.
  */
 export const makeClaudeThreadAccountStore = Effect.fn("ClaudeThreadAccounts.makeStore")(function* (
   file: string,
@@ -130,7 +136,8 @@ export const makeClaudeThreadAccountStore = Effect.fn("ClaudeThreadAccounts.make
     if (!(yield* fileSystem.exists(file))) return EMPTY;
     const decoded = decodeThreadAccounts(yield* fileSystem.readFileString(file));
     if (Option.isSome(decoded)) return decoded.value;
-    yield* fileSystem.rename(file, `${file}.unreadable`);
+    const setAside = `${file}.unreadable-${DateTime.toEpochMillis(yield* DateTime.now)}`;
+    yield* fileSystem.rename(file, setAside);
     yield* Effect.logWarning("Claude thread accounts were unreadable and were set aside", { file });
     return EMPTY;
   }).pipe(Effect.orDie);
@@ -154,22 +161,35 @@ export const makeClaudeThreadAccountStore = Effect.fn("ClaudeThreadAccounts.make
   return {
     read: (threadId) =>
       lock.withPermits(1)(load.pipe(Effect.map((current) => current.accounts[threadId]))),
+    threadIds: lock.withPermits(1)(
+      load.pipe(
+        Effect.map((current) =>
+          [...new Set([...Object.keys(current.accounts), ...Object.keys(current.pending)])].map(
+            (id) => ThreadId.make(id),
+          ),
+        ),
+      ),
+    ),
     check: (threadId, current) =>
-      update((stored) => {
-        if (current === undefined) return Effect.succeed([stored, undefined] as const);
+      update<void, ClaudeThreadAccountChangedError | ClaudeThreadAccountUnknownError>((stored) => {
         const recorded = stored.accounts[threadId];
+        if (current === undefined)
+          return recorded === undefined
+            ? Effect.succeed([stored, undefined] as const)
+            : Effect.fail(new ClaudeThreadAccountUnknownError({ threadId, recorded }));
         const pending = stored.pending[threadId];
-        const accept = {
-          accounts: { ...stored.accounts, [threadId]: current },
-          pending: without(stored.pending, threadId),
-        };
-        if (recorded === undefined || sameClaudeAccount(recorded, current))
+        if (recorded === undefined)
           return Effect.succeed([
-            recorded !== undefined && pending === undefined ? stored : accept,
+            { accounts: { ...stored.accounts, [threadId]: current }, pending: stored.pending },
             undefined,
           ] as const);
-        if (pending !== undefined && sameClaudeAccount(pending, current))
-          return Effect.succeed([accept, undefined] as const);
+        if (sameClaudeAccount(recorded, current))
+          return Effect.succeed([
+            pending === undefined
+              ? stored
+              : { accounts: stored.accounts, pending: without(stored.pending, threadId) },
+            undefined,
+          ] as const);
         return Effect.fail(
           new ClaudeThreadAccountChangedError({ threadId, recorded, current }),
         ).pipe(
@@ -181,20 +201,18 @@ export const makeClaudeThreadAccountStore = Effect.fn("ClaudeThreadAccounts.make
           ),
         );
       }),
-    confirm: (threadId) =>
+    confirm: (threadId, account) =>
       update((stored) => {
         const seen = stored.pending[threadId];
-        return Effect.succeed(
-          seen === undefined
-            ? ([stored, undefined] as const)
-            : ([
-                {
-                  accounts: { ...stored.accounts, [threadId]: seen },
-                  pending: without(stored.pending, threadId),
-                },
-                seen,
-              ] as const),
-        );
+        if (seen === undefined) return Effect.succeed([stored, "none"] as const);
+        if (!sameClaudeAccount(seen, account)) return Effect.succeed([stored, "stale"] as const);
+        return Effect.succeed([
+          {
+            accounts: { ...stored.accounts, [threadId]: seen },
+            pending: without(stored.pending, threadId),
+          },
+          "confirmed",
+        ] as const);
       }),
     forget: (threadId) =>
       update((stored) =>
@@ -211,12 +229,30 @@ export const makeClaudeThreadAccountStore = Effect.fn("ClaudeThreadAccounts.make
   } satisfies ClaudeThreadAccountStore;
 });
 
-/** Drops each deleted thread's account, so the store holds no account for a thread that is gone. */
+/**
+ * Keeps the store to live threads: at start it drops accounts of threads that no longer exist
+ * (deleted while the server was down), then each thread deleted after. A failure on one thread
+ * is logged and pruning carries on.
+ */
 export const pruneDeletedClaudeThreadAccounts = Effect.fn(
   "ClaudeThreadAccounts.pruneDeletedThreads",
-)(function* <E>(input: {
+)(function* <E, ExistsError, R>(input: {
   readonly store: ClaudeThreadAccountStore;
   readonly deletedThreads: Stream.Stream<ThreadId, E>;
+  readonly threadExists: (threadId: ThreadId) => Effect.Effect<boolean, ExistsError, R>;
 }) {
-  yield* input.deletedThreads.pipe(Stream.runForEach((threadId) => input.store.forget(threadId)));
+  const forget = (threadId: ThreadId) =>
+    input.store.forget(threadId).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not drop a deleted thread's Claude account", {
+          threadId,
+          cause,
+        }),
+      ),
+    );
+  for (const threadId of yield* input.store.threadIds) {
+    const exists = yield* input.threadExists(threadId).pipe(Effect.orElseSucceed(() => true));
+    if (!exists) yield* forget(threadId);
+  }
+  yield* input.deletedThreads.pipe(Stream.runForEach(forget));
 });

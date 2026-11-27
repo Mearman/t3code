@@ -738,6 +738,10 @@ const layerClaudeThreadAccountPruner = Layer.effectDiscard(
           Stream.filter((event) => event.type === "thread.deleted"),
           Stream.map((event) => event.threadId),
         ),
+        threadExists: (threadId) =>
+          orchestrator
+            .getThreadShell(threadId)
+            .pipe(Effect.map((shell) => shell !== null && shell.deletedAt === null)),
       }),
     );
   }),
