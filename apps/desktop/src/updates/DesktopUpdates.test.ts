@@ -1461,6 +1461,41 @@ describe("DesktopUpdates under a managed policy", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
+  it.effect.each([
+    { repository: "owner/fork", pointerOnly: true },
+    { repository: "pingdotgg/t3code", pointerOnly: false },
+  ])(
+    "reads only the update feed pointer of $repository: $pointerOnly",
+    ({ repository, pointerOnly }) => {
+      const [owner, repo] = repository.split("/");
+      const harness = makeHarness({
+        env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+        appUpdateYml: `provider: github\nowner: ${owner}\nrepo: ${repo}\nupdaterCacheDirName: t3code-updater\n`,
+      });
+
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          // The patched electron-updater reads updateFeedPointerOnly, which its types do not declare.
+          assert.deepEqual<unknown>(
+            harness.feedUrls(),
+            pointerOnly
+              ? [
+                  {
+                    provider: "github",
+                    owner,
+                    repo,
+                    updateFeedPointerOnly: true,
+                  },
+                ]
+              : [],
+          );
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    },
+  );
+
   it.effect("refuses the nightly channel without nightly", () => {
     const harness = makeHarness({ policy: managed({ allowNightly: false }) });
 
