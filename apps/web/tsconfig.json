@@ -40,6 +40,7 @@
     "../../scripts/lib/product-name-define.ts",
     "../../scripts/lib/product-name-transform.ts",
     "../../scripts/lib/public-config.ts",
+    "../../scripts/lib/release-repository.ts",
     "../../scripts/lib/tagged-source-version.ts",
     "../../scripts/lib/third-party-licenses.ts"
   ]
