@@ -1417,7 +1417,7 @@ ${MAC_RUNTIME_ENTITLEMENTS}
 `;
 }
 
-/** Entitlements for a certificate Apple did not issue, which cannot carry Apple-provisioned ones. */
+/** Entitlements for a certificate Apple did not issue: none that Apple must provision. */
 export function renderMacSelfSignedEntitlements(): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

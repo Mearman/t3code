@@ -92,7 +92,8 @@ export function cliReleaseAssetUrl(
 }
 
 /**
- * The shell installer that installs `version`. Builds of another repository use the installer attached to their own release, which defaults to that repository and the release's channel.
+ * The shell installer that installs `version`. Builds of another repository use the installer
+ * attached to their own release, which defaults to that repository and the release's channel.
  */
 export function cliInstallScriptUrl(
   version: string,
