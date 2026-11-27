@@ -82,6 +82,8 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+// A take-over reads the registry and process table this often while it waits for the holder.
+const TAKE_OVER_CHECK_INTERVAL = Duration.seconds(1);
 
 const withoutUsage = (capabilities: ClaudeCapabilitiesProbe): ClaudeCapabilitiesProbe => {
   const result = { ...capabilities };
@@ -240,6 +242,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           Effect.provideService(Path.Path, path),
         ),
       claudeProcessTableRequirement(platform),
+      {
+        terminate: (pid) =>
+          Effect.try({
+            try: () => process.kill(pid, "SIGTERM"),
+            catch: (cause) => new Error(`SIGTERM to pid ${pid} failed`, { cause }),
+          }),
+        pause: Effect.sleep(TAKE_OVER_CHECK_INTERVAL),
+      },
     );
     const textGeneration = yield* makeClaudeTextGeneration(
       effectiveConfig,
