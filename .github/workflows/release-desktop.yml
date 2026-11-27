@@ -404,6 +404,7 @@ jobs:
         run: node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
 
       # A certificate without App Store Connect keys is treated as self-signed, as in "Build desktop artifact". codesign and electron-builder only offer an identity the system trusts, which a self-signed one is not by default.
+      # `security import` cannot read OpenSSL 3's default .p12 encryption, so later steps get it re-encoded in the legacy form.
       - name: Trust a self-signed macOS signing certificate
         if: inputs.platform == 'mac'
         shell: bash
@@ -416,11 +417,22 @@ jobs:
           if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" || -n "$APPLE_API_KEY" ]]; then
             exit 0
           fi
+          openssl3="$(brew --prefix openssl@3)/bin/openssl"
           keychain="$RUNNER_TEMP/t3-self-signed-trust.keychain-db"
           keychain_password="$(openssl rand -hex 16)"
+          source_path="$RUNNER_TEMP/t3-self-signed-source.p12"
+          pem_path="$RUNNER_TEMP/t3-self-signed-identity.pem"
           cert_path="$RUNNER_TEMP/t3-self-signed.p12"
-          trap 'rm -f "$cert_path"; security delete-keychain "$keychain" 2>/dev/null || true' EXIT
-          printf '%s' "$CSC_LINK" | base64 --decode > "$cert_path"
+          trap 'rm -f "$source_path" "$pem_path" "$cert_path"; security delete-keychain "$keychain" 2>/dev/null || true' EXIT
+          printf '%s' "$CSC_LINK" | base64 --decode > "$source_path"
+          if ! PASS="$CSC_KEY_PASSWORD" "$openssl3" pkcs12 -in "$source_path" -passin env:PASS -noenc -out "$pem_path"; then
+            echo "::error::CSC_LINK could not be opened with CSC_KEY_PASSWORD." >&2
+            exit 1
+          fi
+          PASS="$CSC_KEY_PASSWORD" "$openssl3" pkcs12 -export -legacy -in "$pem_path" -passout env:PASS -out "$cert_path"
+          legacy_link="$(base64 < "$cert_path" | tr -d '\n')"
+          echo "::add-mask::$legacy_link"
+          echo "T3CODE_SELF_SIGNED_CSC_LINK=$legacy_link" >> "$GITHUB_ENV"
           security create-keychain -p "$keychain_password" "$keychain"
           security import "$cert_path" -k "$keychain" -P "$CSC_KEY_PASSWORD"
           security find-certificate -a -p "$keychain" > "$RUNNER_TEMP/t3-self-signed.pem"
@@ -432,7 +444,7 @@ jobs:
         if: inputs.cli_archive && inputs.platform == 'mac'
         shell: bash
         env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_LINK: ${{ env.T3CODE_SELF_SIGNED_CSC_LINK || secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
@@ -631,7 +643,7 @@ jobs:
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: true
           T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS: ${{ steps.capture_helper_cache.outputs.cache-hit == 'true' }}
           T3CODE_DESKTOP_UNTRUSTED_BUNDLE: ${{ inputs.untrusted_bundle }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_LINK: ${{ env.T3CODE_SELF_SIGNED_CSC_LINK || secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
