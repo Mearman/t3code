@@ -20,6 +20,7 @@ import * as Predicate from "effect/Predicate";
 import {
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
+  PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
 } from "../client.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import type { ProviderAdapterFailureReason } from "./ProviderAdapter.ts";
@@ -163,10 +164,13 @@ function curatedCauseMessages(cause: unknown): {
           if (!Predicate.hasProperty(cause, "holderObserved") || cause.holderObserved !== true) {
             return { known, category: categoryMessage() };
           }
+          const continueAs = Predicate.hasProperty(cause, "continueAs") ? cause.continueAs : undefined;
           const code =
-            Predicate.hasProperty(cause, "continueInFork") && cause.continueInFork === true
+            continueAs === "fork"
               ? PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE
-              : PROVIDER_THREAD_IN_USE_FAILURE_CODE;
+              : continueAs === "send"
+                ? PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE
+                : PROVIDER_THREAD_IN_USE_FAILURE_CODE;
           return { known, category: categoryMessage(), code };
         }
         case "CodexAppServerRequestError": {

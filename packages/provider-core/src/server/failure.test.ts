@@ -25,6 +25,7 @@ import {
 import {
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
+  PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
 } from "../client.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -306,8 +307,8 @@ it("explains a native thread another client is writing to", () => {
     makeProviderFailure({ cause: Cause.fail(observed) }).code,
     PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   );
-  // The server forks on this code, so it never stands for a holder only possibly there.
-  const forkCode = (holderObserved: boolean) =>
+  // The server acts on these codes, so they never stand for a holder only possibly there.
+  const continuedCode = (continueAs: "fork" | "send", holderObserved: boolean) =>
     makeProviderFailure({
       cause: Cause.fail(
         new ProviderAdapter.ProviderAdapterThreadInUseError({
@@ -315,13 +316,15 @@ it("explains a native thread another client is writing to", () => {
           providerThreadId: inUse.providerThreadId,
           detail: inUse.detail,
           cause: inUse.cause,
-          continueInFork: true,
+          continueAs,
           ...(holderObserved ? { holderObserved: true } : {}),
         }),
       ),
     }).code;
-  assert.equal(forkCode(true), PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE);
-  assert.equal(forkCode(false), null);
+  assert.equal(continuedCode("fork", true), PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE);
+  assert.equal(continuedCode("send", true), PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE);
+  assert.equal(continuedCode("fork", false), null);
+  assert.equal(continuedCode("send", false), null);
 });
 
 it("keeps every curated message without a failure code", () => {

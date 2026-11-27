@@ -7,6 +7,18 @@ export const PROVIDER_THREAD_IN_USE_FAILURE_CODE = "provider_thread_in_use";
 /** The same refusal where the send chose to continue in a fork, which the server then makes. */
 export const PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE = "provider_thread_in_use_fork";
 
+/** The same refusal where the send chose to go beside the holder, which the server resends. */
+export const PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE = "provider_thread_in_use_send";
+
+/** Whether a failure code is a refusal because another process was seen holding the session. */
+export function isHeldRefusalCode(code: string | null | undefined): boolean {
+  return (
+    code === PROVIDER_THREAD_IN_USE_FAILURE_CODE ||
+    code === PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE ||
+    code === PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE
+  );
+}
+
 export type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
 } & Schema.Top;

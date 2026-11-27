@@ -696,7 +696,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
         Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
       const continued = (refusal: unknown) => {
         const inUse = inUseOf(refusal);
-        return Predicate.hasProperty(inUse, "continueInFork") && inUse.continueInFork === true;
+        return Predicate.hasProperty(inUse, "continueAs") && inUse.continueAs === "fork";
       };
 
       const fork = yield* Effect.flip(runtime.startTurn(forked));
@@ -722,6 +722,71 @@ describe("gateHeldClaudeSessionRuntime", () => {
       expectInUse("startTurn", fork, true);
     }),
   );
+
+  describe("send beside a holder", () => {
+    const held = (idle: boolean): ClaudeSessionHold => ({
+      _tag: "held",
+      pid: 200,
+      source: "terminal",
+      idle,
+    });
+    const sendTurn = (now: DateTime.Utc, resend: boolean) => {
+      const turn = turnInput(providerThread(now), now);
+      return {
+        ...turn,
+        message: {
+          ...turn.message,
+          heldSessionSend: "send" as const,
+          ...(resend ? { resendsHeldRefusal: true as const } : {}),
+        },
+      };
+    };
+    const continueAsOf = (refusal: unknown) => {
+      const inUse = Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
+      return Predicate.hasProperty(inUse, "continueAs") ? inUse.continueAs : undefined;
+    };
+
+    it.effect("refuses a first send, marked for the server to resend once it is shown", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({ hold: held(true) });
+
+        const refusal = yield* Effect.flip(runtime.startTurn(sendTurn(now, false)));
+
+        expect(calls).toEqual([]);
+        expect(continueAsOf(refusal)).toBe("send");
+        expectInUse("startTurn", refusal, true);
+      }),
+    );
+
+    it.effect("writes a resend beside an idle holder, and never beside a busy one", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const idle = makeGate({ hold: held(true) });
+        const busy = makeGate({ hold: held(false) });
+
+        yield* idle.runtime.startTurn(sendTurn(now, true));
+        const refusal = yield* Effect.flip(busy.runtime.startTurn(sendTurn(now, true)));
+
+        expect(idle.calls).toEqual(["startTurn"]);
+        expect(busy.calls).toEqual([]);
+        expect(continueAsOf(refusal)).toBe(undefined);
+        expectInUse("startTurn", refusal, true);
+      }),
+    );
+
+    it.effect("refuses a resend where the holder is only possibly there", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({ hold: { _tag: "unreadable", pid: 200 } });
+
+        const refusal = yield* Effect.flip(runtime.startTurn(sendTurn(now, true)));
+
+        expect(calls).toEqual([]);
+        expectInUse("startTurn", refusal, false);
+      }),
+    );
+  });
 
   describe("take over", () => {
     const held = (idle: boolean): ClaudeSessionHold => ({
@@ -922,7 +987,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
       );
 
       const inUse = Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
-      expect(Predicate.hasProperty(inUse, "continueInFork")).toBe(false);
+      expect(Predicate.hasProperty(inUse, "continueAs")).toBe(false);
       expectInUse("startTurn", refusal, false);
     }),
   );
