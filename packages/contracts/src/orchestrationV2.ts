@@ -1,3 +1,4 @@
+import { ClaudeAccountChange } from "./claudeAccount.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
@@ -1783,6 +1784,8 @@ export const OrchestrationV2ProviderFailure = Schema.Struct({
   retryable: Schema.NullOr(Schema.Boolean),
   resetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   verificationUrl: Schema.optionalKey(GoogleAccountVerificationUrl),
+  /** A Claude send refused for a changed account: the accounts, so a confirmation names one. */
+  accountChange: Schema.optionalKey(ClaudeAccountChange),
 });
 export type OrchestrationV2ProviderFailure = typeof OrchestrationV2ProviderFailure.Type;
 

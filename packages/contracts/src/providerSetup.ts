@@ -8,6 +8,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ClaudeAccountIdentity } from "./claudeAccount.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
 export const ProviderSetupInput = Schema.Struct({
@@ -158,11 +159,20 @@ export type ClaudeAccountCreateInput = typeof ClaudeAccountCreateInput.Type;
 export const ClaudeAccountCreateResult = Schema.Struct({ instanceId: ProviderInstanceId });
 export type ClaudeAccountCreateResult = typeof ClaudeAccountCreateResult.Type;
 
-/** Lets a thread send as the account its last refused send found, after the user saw both. */
-export const ClaudeThreadAccountConfirmInput = Schema.Struct({ threadId: ThreadId });
+/**
+ * Lets a thread send as `account`, the account the refused send showed the user. It applies only
+ * while that is still the account the thread's last refusal found.
+ */
+export const ClaudeThreadAccountConfirmInput = Schema.Struct({
+  threadId: ThreadId,
+  account: ClaudeAccountIdentity,
+});
 export const ClaudeThreadAccountConfirmResult = Schema.Struct({
-  /** False when the thread had no refused account to confirm. */
-  confirmed: Schema.Boolean,
+  /**
+   * `confirmed`; `stale` when a later refusal found a different account, which the user has not
+   * seen; `none` when the thread has no refused account.
+   */
+  outcome: Schema.Literals(["confirmed", "stale", "none"]),
 });
 
 export const ProviderAuthCancelInput = Schema.Struct({

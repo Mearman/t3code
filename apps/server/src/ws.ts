@@ -2817,7 +2817,7 @@ export const layerWsRpc = (
             const store = yield* ClaudeThreadAccounts.makeClaudeThreadAccountStore(
               ClaudeThreadAccounts.claudeThreadAccountsFile(path, config.stateDir),
             );
-            return { confirmed: (yield* store.confirm(input.threadId)) !== undefined };
+            return { outcome: yield* store.confirm(input.threadId, input.account) };
           }),
         [WS_METHODS.claudeAccountCreate]: (input) =>
           ClaudeAccounts.createClaudeAccount(input).pipe(

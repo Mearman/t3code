@@ -1,4 +1,5 @@
 import {
+  ClaudeAccountChange,
   GoogleAccountVerificationUrl,
   type NodeId,
   type OrchestrationV2ProviderFailure,
@@ -107,6 +108,8 @@ const PROVIDER_FAILURE_REASONS: Record<ProviderAdapterFailureReason, string> = {
   attachment_unreadable: "an attachment could not be read",
 };
 
+const decodeAccountChange = Schema.decodeUnknownOption(ClaudeAccountChange);
+
 /**
  * Walks a cause chain for curated text without reading arbitrary provider
  * defect text. `known` is the message of a domain error T3 raised itself;
@@ -116,6 +119,7 @@ function curatedCauseMessages(cause: unknown): {
   readonly known: string | undefined;
   readonly category: string | undefined;
   readonly code?: string;
+  readonly accountChange?: ClaudeAccountChange;
 } {
   const seen = new Set<unknown>();
   let category: (typeof PROVIDER_FAILURE_CATEGORIES)[string];
@@ -159,12 +163,17 @@ function curatedCauseMessages(cause: unknown): {
         case "ProviderSetupError":
         case "ProviderCompactionUnsupportedError":
           return { known: stringField(cause, "message"), category: categoryMessage() };
-        case "ClaudeThreadAccountChangedError":
+        case "ClaudeThreadAccountChangedError": {
+          const change = decodeAccountChange(cause);
           return {
             known: stringField(cause, "message"),
             category: categoryMessage(),
             code: CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE,
+            ...(Option.isSome(change) ? { accountChange: change.value } : {}),
           };
+        }
+        case "ClaudeThreadAccountUnknownError":
+          return { known: stringField(cause, "message"), category: categoryMessage() };
         case "ProviderAdapterThreadInUseError": {
           const known = stringField(cause, "message");
           // Clients offer a fork only where a holder was seen, not where one is only possible.
@@ -389,6 +398,7 @@ export function makeProviderFailure(input: {
       ? { resetAt: DateTime.formatIso(DateTime.makeUnsafe(input.resetAt)) }
       : {}),
     ...(verificationUrl === undefined ? {} : { verificationUrl }),
+    ...(curated.accountChange === undefined ? {} : { accountChange: curated.accountChange }),
   };
 }
 
