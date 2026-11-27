@@ -8,7 +8,10 @@ import {
 } from "@t3tools/contracts";
 import { PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE } from "@t3tools/provider-core/client";
 import { unsentManualContinuationSource } from "@t3tools/shared/orchestrationV2ManualContinuation";
-import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  latestRootProviderFailure,
+  runsByOrigin,
+} from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -45,7 +48,8 @@ export function planHeldSessionFork(
   }
   const source = unsentManualContinuationSource(refused, projection) ?? refused;
   const message = projection.messages.find((candidate) => candidate.id === source.userMessageId);
-  const before = projection.runs
+  // A terminal's turns are the conversation too, so the fork may start after one.
+  const before = runsByOrigin(projection.runs, "any")
     .filter((run) => run.status === "completed" && run.ordinal < source.ordinal)
     .toSorted((a, b) => b.ordinal - a.ordinal)[0];
   if (message === undefined || message.attachments.length > 0 || before === undefined) {
