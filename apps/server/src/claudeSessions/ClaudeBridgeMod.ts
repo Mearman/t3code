@@ -21,53 +21,54 @@ const SCHEMA_VERSION = ${CLAUDE_BRIDGE_SCHEMA_VERSION};
 // After a failed poll the mod waits this long, so a stopped server costs one request a minute.
 const RETRY_MS = 60_000;
 
-export const register: Register = (on) => {
-  let released = false;
-  let polling = false;
+// A reload runs the module again, so these start over with the new code.
+let released = false;
+let polling = false;
 
-  // One variable by name, never the whole environment, which holds the session's credentials.
-  const env = async ($: EngineInterface, name: string) => {
-    const { exitCode, stdout } = await $.process.run(["/usr/bin/printenv", name]);
-    return exitCode === 0 ? stdout.trim() : undefined;
-  };
+// One variable by name, never the whole environment, which holds the session's credentials.
+async function env($: EngineInterface, name: string): Promise<string | undefined> {
+  const { exitCode, stdout } = await $.process.run(["/usr/bin/printenv", name]);
+  return exitCode === 0 ? stdout.trim() : undefined;
+}
 
-  const connection = async ($: EngineInterface) => {
-    const home = (await env($, "CLAUDE_CONFIG_DIR")) ?? (await env($, "HOME")) + "/.claude";
-    const parsed = JSON.parse(await $.fs.read(home + "/" + CONNECTION_FILE));
-    if (parsed.schemaVersion !== SCHEMA_VERSION) {
-      throw new Error("T3 Code bridge schema " + parsed.schemaVersion + " is not supported");
-    }
-    return parsed;
-  };
+async function connection($: EngineInterface): Promise<{ url: string; token: string }> {
+  const home = (await env($, "CLAUDE_CONFIG_DIR")) ?? (await env($, "HOME")) + "/.claude";
+  const parsed = JSON.parse(await $.fs.read(home + "/" + CONNECTION_FILE));
+  if (parsed.schemaVersion !== SCHEMA_VERSION) {
+    throw new Error("T3 Code bridge schema " + parsed.schemaVersion + " is not supported");
+  }
+  return parsed;
+}
 
-  const loop = async ($: EngineInterface) => {
-    if (polling) return;
-    polling = true;
-    const sessionId = await $.session.id();
-    $.ui.status("T3 Code bridge");
-    while (!released) {
-      try {
-        const { url, token } = await connection($);
-        const response = await $.http.fetch(url + "/poll", {
-          method: "POST",
-          headers: { authorization: "Bearer " + token, "content-type": "application/json" },
-          body: JSON.stringify({ schemaVersion: SCHEMA_VERSION, sessionId }),
-        });
-        if (!response.ok) throw new Error("T3 Code bridge poll answered " + response.status);
-        for (const command of JSON.parse(response.text).commands) {
-          if (released || command.type !== "submit") continue;
-          await $.prompt.submit(
-            command.asUser === true ? { text: command.text, asUser: true } : { text: command.text },
-          );
-        }
-      } catch {
-        await $.clock.sleep(RETRY_MS);
+async function loop($: EngineInterface): Promise<void> {
+  if (polling) return;
+  polling = true;
+  const sessionId = await $.session.id();
+  $.ui.status("T3 Code bridge");
+  while (!released) {
+    try {
+      const { url, token } = await connection($);
+      const response = await $.http.fetch(url + "/poll", {
+        method: "POST",
+        headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+        body: JSON.stringify({ schemaVersion: SCHEMA_VERSION, sessionId }),
+      });
+      if (!response.ok) throw new Error("T3 Code bridge poll answered " + response.status);
+      for (const command of JSON.parse(response.text).commands) {
+        if (released || command.type !== "submit") continue;
+        await $.prompt.submit(
+          command.asUser === true ? { text: command.text, asUser: true } : { text: command.text },
+        );
       }
+    } catch {
+      await $.clock.sleep(RETRY_MS);
     }
-    polling = false;
-    $.ui.status(undefined);
-  };
+  }
+  polling = false;
+  $.ui.status(undefined);
+}
 
+export const register: Register = (on) => {
   on("session.start", async ($, e, next) => {
     const result = await next(e);
     if (e.isInteractive) {
@@ -104,6 +105,7 @@ export function claudeBridgeMarketplaceFiles(version: string): ReadonlyMap<strin
       ".claude-plugin/marketplace.json",
       json({
         name: CLAUDE_BRIDGE_MARKETPLACE,
+        description: "The T3 bridge mod, installed by T3 Code.",
         owner: { name: "T3 Code" },
         plugins: [{ name: CLAUDE_BRIDGE_MOD_NAME, source: `./${CLAUDE_BRIDGE_MOD_NAME}` }],
       }),
@@ -114,6 +116,8 @@ export function claudeBridgeMarketplaceFiles(version: string): ReadonlyMap<strin
         name: CLAUDE_BRIDGE_MOD_NAME,
         version,
         description: "Lets T3 Code send prompts to this session while this terminal holds it.",
+        author: { name: "T3 Code" },
+        license: "MIT",
       }),
     ],
     [`${CLAUDE_BRIDGE_MOD_NAME}/hooks/hooks.json`, json({ modules: ["./register.ts"] })],
