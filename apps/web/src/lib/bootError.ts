@@ -1,10 +1,11 @@
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 
-import { DESKTOP_DOWNLOAD_URL, PROJECT_REPOSITORY_URL } from "../branding";
+import { CLI_RELEASE_REPOSITORY, CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
+import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
 
 const FALLBACK_TRIAGE_COMMAND = "npx t3 triage";
-const DOWNLOAD_URL = DESKTOP_DOWNLOAD_URL;
-const ISSUE_URL = `${PROJECT_REPOSITORY_URL}/issues/new`;
+const DOWNLOAD_URL = IS_FORK_PRODUCT ? CLI_RELEASES_PAGE_URL : "https://t3.codes/download";
+const ISSUE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/issues/new`;
 const LAST_FAILURE_KEY = "t3code:boot-failed-at";
 const REPEAT_FAILURE_MS = 5 * 60_000;
 const MAX_CAUSES = 3;
