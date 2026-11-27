@@ -55,14 +55,20 @@ export const createManagedClaudeHome = Effect.fn("ClaudeAccounts.createManagedHo
         yield* fileSystem.remove(directory, { recursive: true });
   }).pipe(Effect.ignore);
   if (store === undefined) return rollback;
-  for (const directory of CLAUDE_SHARED_HISTORY_DIRECTORIES) {
-    const target = path.join(store, directory);
-    if (!(yield* fileSystem.exists(target))) {
-      yield* fileSystem.makeDirectory(target, { recursive: true });
-      madeInStore.push(target);
-    }
-    yield* fileSystem.symlink(yield* fileSystem.realPath(target), path.join(home, directory));
-  }
+  // A link or store directory failing part-way removes what this call made so far.
+  yield* Effect.forEach(
+    CLAUDE_SHARED_HISTORY_DIRECTORIES,
+    (directory) =>
+      Effect.gen(function* () {
+        const target = path.join(store, directory);
+        if (!(yield* fileSystem.exists(target))) {
+          yield* fileSystem.makeDirectory(target, { recursive: true });
+          madeInStore.push(target);
+        }
+        yield* fileSystem.symlink(yield* fileSystem.realPath(target), path.join(home, directory));
+      }),
+    { discard: true },
+  ).pipe(Effect.onError(() => rollback));
   return rollback;
 });
 
