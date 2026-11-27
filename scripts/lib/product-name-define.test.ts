@@ -92,7 +92,10 @@ it("bakes a valid collector in, and none from an empty key or a host without a s
 
 // The bundler configs are not importable without running a build, so read what they spread.
 const configSource = (app: string) =>
-  NodeFS.readFileSync(NodePath.join(import.meta.dirname, `../../apps/${app}/vite.config.ts`), "utf8");
+  NodeFS.readFileSync(
+    NodePath.join(import.meta.dirname, `../../apps/${app}/vite.config.ts`),
+    "utf8",
+  );
 
 it.each([
   ["server", "...buildKindDefine(repoEnv)"],
