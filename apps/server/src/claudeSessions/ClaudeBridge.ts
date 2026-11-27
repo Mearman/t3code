@@ -109,7 +109,6 @@ export const make = Effect.gen(function* () {
       }),
     ).pipe(Effect.asVoid);
 
-
   const poll: ClaudeBridge["Service"]["poll"] = Effect.fn("ClaudeBridge.poll")(function* (request) {
     const known = yield* attachment(request.sessionId);
     const now = yield* Clock.currentTimeMillis;
