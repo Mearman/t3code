@@ -290,6 +290,7 @@ export const make = Effect.gen(function* () {
       cloudVoiceTranscription: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
       serverReleaseRepository: CLI_RELEASE_REPOSITORY,
+      claudeManagedAccounts: true,
       ...(serverInstallation === null ? {} : { serverInstallation }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? { serverSelfUpdateProgress: true }

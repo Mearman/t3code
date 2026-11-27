@@ -35,6 +35,8 @@ import {
   PeerLinkThreadReadError,
 } from "./peerLink.ts";
 import {
+  ClaudeAccountCreateInput,
+  ClaudeAccountCreateResult,
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -537,6 +539,7 @@ export const WS_METHODS = {
   providerAuthCancel: "provider.auth.cancel",
   providerAuthRemoveMethod: "provider.auth.removeMethod",
   providerAuthLogout: "provider.auth.logout",
+  claudeAccountCreate: "provider.claude.account.create",
   providerAuthSubscribe: "provider.auth.subscribe",
   providerInstallStart: "provider.install.start",
   providerInstallCancel: "provider.install.cancel",
@@ -888,6 +891,12 @@ const WsProviderAuthRemoveMethodRpc = Rpc.make(WS_METHODS.providerAuthRemoveMeth
 const WsProviderAuthLogoutRpc = Rpc.make(WS_METHODS.providerAuthLogout, {
   payload: ProviderSetupInput,
   success: ProviderAuthState,
+  error: ProviderSetupRpcError,
+});
+
+const WsClaudeAccountCreateRpc = Rpc.make(WS_METHODS.claudeAccountCreate, {
+  payload: ClaudeAccountCreateInput,
+  success: ClaudeAccountCreateResult,
   error: ProviderSetupRpcError,
 });
 
@@ -2526,6 +2535,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAuthCancelRpc,
   WsProviderAuthRemoveMethodRpc,
   WsProviderAuthLogoutRpc,
+  WsClaudeAccountCreateRpc,
   WsProviderAuthSubscribeRpc,
   WsProviderInstallStartRpc,
   WsProviderInstallCancelRpc,

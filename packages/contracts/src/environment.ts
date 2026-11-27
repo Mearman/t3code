@@ -159,6 +159,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
   serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
+  /** Serves `provider.claude.account.create`; offer only existing config folders where absent. */
+  claudeManagedAccounts: Schema.optionalKey(Schema.Boolean),
   /** The repository whose releases this server updates from; absent on older servers. */
   serverReleaseRepository: Schema.optionalKey(ReleaseRepository),
   /** Server answers server.getNpmRelease using its configured npm registry. */
