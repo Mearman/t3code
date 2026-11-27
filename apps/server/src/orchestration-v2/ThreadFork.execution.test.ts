@@ -2311,7 +2311,11 @@ it.effect("a latest stable fork past a refused run carries the transcript histor
     assert.equal(forkCalls, 1);
     assert.equal(projection.contextTransfers[0]?.status, "consumed");
     assert.equal(projection.contextTransfers[0]?.resolution?.strategy, "native_fork");
-    assert.equal(projection.thread.forkedFrom?.runId, RunId.make("fork-missing-source-run"));
+    assert.deepEqual(projection.thread.forkedFrom, {
+      type: "run",
+      threadId: ThreadId.make("fork-missing-source"),
+      runId: RunId.make("fork-missing-source-run"),
+    });
   }),
 );
 
