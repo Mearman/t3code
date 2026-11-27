@@ -10,20 +10,40 @@ describe("resolveClaudeHeldSessionSend", () => {
   it("takes the send's own choice over the configured one, whoever sent it", () => {
     for (const sentByPerson of [true, false]) {
       expect(
-        resolveClaudeHeldSessionSend({ chosen: "ask", sentByPerson, configured: "fork", terminalAccess: false }),
+        resolveClaudeHeldSessionSend({
+          chosen: "ask",
+          sentByPerson,
+          configured: "fork",
+          terminalAccess: false,
+        }),
       ).toBe("ask");
     }
   });
 
   it("gives the configured choice to a person's send only", () => {
     expect(
-      resolveClaudeHeldSessionSend({ chosen: undefined, sentByPerson: true, configured: "fork", terminalAccess: false }),
+      resolveClaudeHeldSessionSend({
+        chosen: undefined,
+        sentByPerson: true,
+        configured: "fork",
+        terminalAccess: false,
+      }),
     ).toBe("fork");
     expect(
-      resolveClaudeHeldSessionSend({ chosen: undefined, sentByPerson: false, configured: "fork", terminalAccess: false }),
+      resolveClaudeHeldSessionSend({
+        chosen: undefined,
+        sentByPerson: false,
+        configured: "fork",
+        terminalAccess: false,
+      }),
     ).toBe(undefined);
     expect(
-      resolveClaudeHeldSessionSend({ chosen: undefined, sentByPerson: true, configured: null, terminalAccess: false }),
+      resolveClaudeHeldSessionSend({
+        chosen: undefined,
+        sentByPerson: true,
+        configured: null,
+        terminalAccess: false,
+      }),
     ).toBe(undefined);
   });
 });

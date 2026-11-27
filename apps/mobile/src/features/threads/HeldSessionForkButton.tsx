@@ -7,12 +7,7 @@ import {
   HELD_SESSION_TERMINAL_DISPATCH,
   heldSessionResendRunId,
 } from "@t3tools/client-runtime/state/thread-workflows";
-import {
-  MessageId,
-  ThreadId,
-  type EnvironmentId,
-  type RunId,
-} from "@t3tools/contracts";
+import { MessageId, ThreadId, type EnvironmentId, type RunId } from "@t3tools/contracts";
 import * as Haptics from "expo-haptics";
 import { useGT, useMessages } from "gt-react-native";
 import { useState } from "react";

@@ -36,8 +36,10 @@ import {
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
 
-const dispatchCommand = (command: OrchestrationV2Command, sender = { managesProviders: true, operatesTerminal: true }) =>
-  ThreadMessageIntake.dispatchCommand(command, sender);
+const dispatchCommand = (
+  command: OrchestrationV2Command,
+  sender = { managesProviders: true, operatesTerminal: true },
+) => ThreadMessageIntake.dispatchCommand(command, sender);
 
 const layerIntakeTest = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-question-intake-",
@@ -495,39 +497,41 @@ it.effect("sends a guest message with the guest's files, never ones the client n
   }).pipe(Effect.provide(layerIntakeTest)),
 );
 
-it.effect("records terminal access on a message from the session's scopes, never the client's", () =>
-  Effect.gen(function* () {
-    const captured: OrchestrationV2ServerCommand[] = [];
-    const layerCapture = Layer.mock(ThreadManagementService.ThreadManagementService)({
-      dispatch: layerFailingDispatchHandler(captured),
-    });
-    const send = (operatesTerminal: boolean, claimed: boolean) =>
-      dispatchCommand(
-        {
-          type: "message.dispatch",
-          commandId: CommandId.make(`send-${operatesTerminal}-${claimed}`),
-          threadId: ThreadId.make("thread-terminal-access"),
-          messageId: MessageId.make(`message-${operatesTerminal}-${claimed}`),
-          text: "hello",
-          attachments: [],
-          heldSessionSend: "takeOver",
-          ...(claimed ? { heldSessionTerminalAccess: true as const } : {}),
-          dispatchMode: { type: "start_immediately" },
-          createdBy: "user",
-          creationSource: "web",
-        },
-        { managesProviders: false, operatesTerminal },
-      ).pipe(Effect.provide(layerCapture), Effect.result);
+it.effect(
+  "records terminal access on a message from the session's scopes, never the client's",
+  () =>
+    Effect.gen(function* () {
+      const captured: OrchestrationV2ServerCommand[] = [];
+      const layerCapture = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        dispatch: layerFailingDispatchHandler(captured),
+      });
+      const send = (operatesTerminal: boolean, claimed: boolean) =>
+        dispatchCommand(
+          {
+            type: "message.dispatch",
+            commandId: CommandId.make(`send-${operatesTerminal}-${claimed}`),
+            threadId: ThreadId.make("thread-terminal-access"),
+            messageId: MessageId.make(`message-${operatesTerminal}-${claimed}`),
+            text: "hello",
+            attachments: [],
+            heldSessionSend: "takeOver",
+            ...(claimed ? { heldSessionTerminalAccess: true as const } : {}),
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          },
+          { managesProviders: false, operatesTerminal },
+        ).pipe(Effect.provide(layerCapture), Effect.result);
 
-    yield* send(true, false);
-    yield* send(false, true);
+      yield* send(true, false);
+      yield* send(false, true);
 
-    expect(
-      captured.map((command) =>
-        command.type === "message.dispatch" ? command.heldSessionTerminalAccess : "other",
-      ),
-    ).toEqual([true, undefined]);
-  }).pipe(Effect.provide(layerIntakeTest)),
+      expect(
+        captured.map((command) =>
+          command.type === "message.dispatch" ? command.heldSessionTerminalAccess : "other",
+        ),
+      ).toEqual([true, undefined]);
+    }).pipe(Effect.provide(layerIntakeTest)),
 );
 
 it.effect("refuses a queued edit that keeps a file another edit already deleted", () =>
