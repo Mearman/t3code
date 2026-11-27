@@ -2,7 +2,7 @@
 import * as NodeBuffer from "node:buffer";
 import * as NodePath from "node:path";
 import { Rolldown } from "vite-plus/pack";
-import { expect, it } from "vite-plus/test";
+import { afterEach, expect, it, vi } from "vite-plus/test";
 
 import { releaseRepositoryDefine, resolveReleaseRepository } from "./release-repository.ts";
 
@@ -54,4 +54,33 @@ it("points a bundle's release URLs at the repository its build defines", async (
   } finally {
     await bundle.close();
   }
+});
+
+const FORK_DEFINE = { __T3CODE_RELEASE_REPOSITORY__: '"owner/fork"' };
+const loadBuildConfig = async (configPath: string): Promise<unknown> => {
+  vi.stubEnv("GITHUB_REPOSITORY", "owner/fork");
+  vi.stubEnv("T3CODE_DESKTOP_UPDATE_REPOSITORY", "");
+  vi.resetModules();
+  return import(NodePath.resolve(import.meta.dirname, "../..", configPath));
+};
+
+afterEach(() => vi.unstubAllEnvs());
+
+it("builds the server bundle with the release repository define", async () => {
+  expect(await loadBuildConfig("apps/server/vite.config.ts")).toMatchObject({
+    default: { pack: { define: FORK_DEFINE } },
+  });
+});
+
+it("builds the desktop main process with the release repository define", async () => {
+  expect(await loadBuildConfig("apps/desktop/vite.config.ts")).toMatchObject({
+    default: {
+      pack: expect.arrayContaining([
+        expect.objectContaining({
+          entry: ["src/main.ts"],
+          define: expect.objectContaining(FORK_DEFINE),
+        }),
+      ]),
+    },
+  });
 });
