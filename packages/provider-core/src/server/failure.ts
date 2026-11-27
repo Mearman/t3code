@@ -164,7 +164,9 @@ function curatedCauseMessages(cause: unknown): {
           if (!Predicate.hasProperty(cause, "holderObserved") || cause.holderObserved !== true) {
             return { known, category: categoryMessage() };
           }
-          const continueAs = Predicate.hasProperty(cause, "continueAs") ? cause.continueAs : undefined;
+          const continueAs = Predicate.hasProperty(cause, "continueAs")
+            ? cause.continueAs
+            : undefined;
           const code =
             continueAs === "fork"
               ? PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE

@@ -79,7 +79,9 @@ export function wentBesideHolder(
   run: OrchestrationV2Run,
 ): boolean {
   if (run.heldSessionSend !== "send" || run.manualContinuationOfRunId === undefined) return false;
-  const continued = projection.runs.find((candidate) => candidate.id === run.manualContinuationOfRunId);
+  const continued = projection.runs.find(
+    (candidate) => candidate.id === run.manualContinuationOfRunId,
+  );
   if (
     continued === undefined ||
     !isHeldRefusalCode(latestRootProviderFailure(continued, projection.turnItems)?.code)
@@ -91,7 +93,9 @@ export function wentBesideHolder(
   );
   return projection.providerTurns.some(
     (turn) =>
-      turn.runAttemptId !== null && attempts.has(turn.runAttemptId) && isDeliveredProviderTurn(turn),
+      turn.runAttemptId !== null &&
+      attempts.has(turn.runAttemptId) &&
+      isDeliveredProviderTurn(turn),
   );
 }
 
