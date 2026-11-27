@@ -110,6 +110,7 @@ export const resolveNightlyReleaseMetadata = (
   runNumber: number,
   sha: string,
   channel: PrereleaseChannel = "nightly",
+  productName = "T3 Code",
 ) => {
   const shortSha = sha.slice(0, 12);
   const version = `${baseVersion}-${channel}.${date}.${runNumber}`;
@@ -117,7 +118,7 @@ export const resolveNightlyReleaseMetadata = (
     baseVersion,
     version,
     tag: `v${version}`,
-    name: `T3 Code ${CHANNEL_RELEASE_LABELS[channel]} ${version} (${shortSha})`,
+    name: `${productName} ${CHANNEL_RELEASE_LABELS[channel]} ${version} (${shortSha})`,
     shortSha,
   };
 };

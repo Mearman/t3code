@@ -7,6 +7,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Command, Flag } from "effect/cli";
 
@@ -39,6 +40,7 @@ export const resolveForkNightlyRelease = Effect.fn("resolveForkNightlyRelease")(
   readonly date: string;
   readonly sha: string;
   readonly publishedTags: ReadonlyArray<string>;
+  readonly productName?: string | undefined;
   readonly root?: string | undefined;
 }) {
   const root = input.root ?? REPO_ROOT;
@@ -50,7 +52,14 @@ export const resolveForkNightlyRelease = Effect.fn("resolveForkNightlyRelease")(
     }).trim(),
   );
   const build = forkNightlyBuildNumber(input.date, depth, input.publishedTags);
-  const metadata = resolveNightlyReleaseMetadata(baseVersion, input.date, build, input.sha);
+  const metadata = resolveNightlyReleaseMetadata(
+    baseVersion,
+    input.date,
+    build,
+    input.sha,
+    "nightly",
+    input.productName,
+  );
   const published = publishedNightlyNotOlderThan(metadata.version, input.publishedTags);
   if (published !== undefined) {
     return yield* new ForkNightlyVersionNotNewerError({ version: metadata.version, published });
@@ -66,16 +75,25 @@ const command = Command.make(
     publishedTags: Flag.String("published-tags").pipe(
       Flag.withDescription("File listing every published release's tag, one per line."),
     ),
+    productName: Flag.String("product-name").pipe(
+      Flag.withDescription("Product name the release title starts with."),
+      Flag.optional,
+    ),
     githubOutput: Flag.Boolean("github-output").pipe(
       Flag.withDescription("Write values to GITHUB_OUTPUT instead of stdout."),
       Flag.withDefault(false),
     ),
   },
-  ({ date, sha, publishedTags, githubOutput }) =>
+  ({ date, sha, publishedTags, productName, githubOutput }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const tags = (yield* fs.readFileString(publishedTags)).split("\n").filter(Boolean);
-      const metadata = yield* resolveForkNightlyRelease({ date, sha, publishedTags: tags });
+      const metadata = yield* resolveForkNightlyRelease({
+        date,
+        sha,
+        publishedTags: tags,
+        productName: Option.getOrUndefined(productName),
+      });
       yield* writeNightlyReleaseOutput(metadata, githubOutput);
     }),
 ).pipe(Command.withDescription("Resolve a fork nightly's version above every published one."));

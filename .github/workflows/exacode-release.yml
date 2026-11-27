@@ -143,6 +143,7 @@ jobs:
           node scripts/resolve-fork-nightly-release.ts \
             --date "$(date -u +%Y%m%d)" \
             --sha "$NIGHTLY_SHA" \
+            --product-name ExaCode \
             --published-tags "$RUNNER_TEMP/published-tags" \
             --github-output
 
@@ -307,6 +308,7 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: Linux x64
+      product_name: ExaCode
       runner: ubuntu-24.04
       platform: linux
       target: AppImage
@@ -335,6 +337,7 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: Linux arm64
+      product_name: ExaCode
       runner: ubuntu-24.04-arm
       platform: linux
       target: AppImage
@@ -401,6 +404,14 @@ jobs:
             nightly-mac.yml nightly-linux.yml nightly-linux-arm64.yml; do
             [[ -f "release-assets/$asset" ]] || { echo "::error::Missing release asset $asset."; exit 1; }
           done
+          # The Linux packages carry the app's name, and none carries upstream's.
+          for pattern in "ExaCode-*.AppImage" "ExaCode-*.deb"; do
+            compgen -G "release-assets/$pattern" > /dev/null || { echo "::error::Missing release asset $pattern."; exit 1; }
+          done
+          if compgen -G "release-assets/T3-Code*" > /dev/null; then
+            echo "::error::A release asset still carries upstream's name."
+            exit 1
+          fi
 
       # The installer attached to a release defaults to this repository and the nightly channel.
       - name: Attach the installer
@@ -412,11 +423,20 @@ jobs:
               'repo="${T3CODE_RELEASE_REPOSITORY:-pingdotgg/t3code}"\n':
                   'repo="${T3CODE_RELEASE_REPOSITORY:-' + sys.argv[1] + '}"\n',
               'channel="${T3CODE_CHANNEL:-stable}"\n': 'channel="${T3CODE_CHANNEL:-nightly}"\n',
+              # T3's mark and name become ExaCode's "E" and name.
+              "  printf '  %s\\n' '██████████ ████████ ' >&2\n": "  printf '  %s\\n' '██████████ ' >&2\n",
+              "  printf '  %s\\n' '    ███       ▄██▀       T3 Code' >&2\n": "  printf '  %s\\n' '███           ExaCode' >&2\n",
+              "  printf '  %s%s     %sCLI installer%s\\n' '    ███       ████▄ '": "  printf '  %s%s     %sCLI installer%s\\n' '█████████   '",
+              "  printf '  %s\\n' '    ███    ▄     ███' >&2\n": "  printf '  %s\\n' '███' >&2\n",
+              "  printf '  %s\\n' '    ███    ███████▀ ' >&2\n": "  printf '  %s\\n' '██████████' >&2\n",
           }
           for old, new in replacements.items():
               if source.count(old) != 1:
                   sys.exit(f"scripts/install.sh no longer has exactly one {old.strip()}")
               source = source.replace(old, new)
+          if "T3 Code" not in source:
+              sys.exit("scripts/install.sh no longer names T3 Code")
+          source = source.replace("T3 Code", "ExaCode")
           open("release-assets/install.sh", "w").write(source)
           EOF
           sh -n release-assets/install.sh
