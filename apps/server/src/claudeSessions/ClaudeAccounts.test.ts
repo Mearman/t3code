@@ -1,7 +1,12 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ClaudeSettings, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ServerSettingsError,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -27,7 +32,7 @@ it.effect("links a managed home's history to the store so one transcript serves 
     const store = path.join(root, "store");
     const home = path.join(root, "managed", "home");
     yield* fileSystem.makeDirectory(path.join(store, "projects", "-repo"), { recursive: true });
-    yield* createManagedClaudeHome(home, store);
+    yield* createManagedClaudeHome(home, store).pipe(Effect.asVoid);
 
     for (const directory of CLAUDE_SHARED_HISTORY_DIRECTORIES) {
       assert.strictEqual(
@@ -43,7 +48,7 @@ it.effect("links a managed home's history to the store so one transcript serves 
     );
     assert.isFalse(yield* fileSystem.exists(path.join(home, ".credentials.json")));
 
-    const existing = yield* createManagedClaudeHome(home, store).pipe(Effect.flip);
+    const existing = yield* createManagedClaudeHome(home, store).pipe(Effect.asVoid, Effect.flip);
     assert.strictEqual(existing._tag, "PlatformError");
   }).pipe(Effect.scoped, Effect.provide(services)),
 );
@@ -54,11 +59,11 @@ it.effect("a home without a store shares nothing and is never reused", () =>
     const path = yield* Path.Path;
     const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
     const home = path.join(root, "home");
-    yield* createManagedClaudeHome(home, undefined);
+    yield* createManagedClaudeHome(home, undefined).pipe(Effect.asVoid);
     assert.deepEqual(yield* fileSystem.readDirectory(home), []);
     // An existing home may hold another account's login, so it is never reused.
     assert.strictEqual(
-      (yield* createManagedClaudeHome(home, undefined).pipe(Effect.flip))._tag,
+      (yield* createManagedClaudeHome(home, undefined).pipe(Effect.asVoid, Effect.flip))._tag,
       "PlatformError",
     );
   }).pipe(Effect.scoped, Effect.provide(services)),
@@ -118,6 +123,108 @@ it.effect("refuses to share history with an instance that is not Claude", () =>
     assert.strictEqual(
       error.detail,
       "The Claude account to share history with is not configured here.",
+    );
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("links a home sharing with a managed home straight to the real store", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
+    const store = path.join(root, "store");
+    const first = path.join(root, "first", "home");
+    const second = path.join(root, "second", "home");
+    yield* fileSystem.makeDirectory(store);
+    yield* createManagedClaudeHome(first, store).pipe(Effect.asVoid);
+    yield* createManagedClaudeHome(second, first).pipe(Effect.asVoid);
+    for (const directory of CLAUDE_SHARED_HISTORY_DIRECTORIES)
+      assert.strictEqual(
+        yield* fileSystem.readLink(path.join(second, directory)),
+        path.join(store, directory),
+      );
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+const refusingSave = (root: string, store: string) =>
+  Layer.mergeAll(
+    Layer.effect(
+      ServerSettings.ServerSettingsService,
+      Effect.gen(function* () {
+        const settings = yield* ServerSettings.ServerSettingsService;
+        return {
+          ...settings,
+          updateProviderInstance: () =>
+            Effect.fail(
+              new ServerSettingsError({
+                settingsPath: "settings.json",
+                operation: "create-provider-instance",
+              }),
+            ),
+        };
+      }).pipe(
+        Effect.provide(
+          ServerSettings.layerTest({
+            providerInstances: {
+              [personal]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                config: { homePath: store },
+              },
+            },
+          }),
+        ),
+      ),
+    ),
+    ServerConfig.layerTest(root, { prefix: "t3code-claude-accounts-test-" }),
+  );
+
+it.effect("leaves no folder, link or store directory behind when the save is refused", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
+    const store = path.join(root, "personal");
+    yield* fileSystem.makeDirectory(path.join(store, "projects"), { recursive: true });
+    yield* Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const error = yield* createClaudeAccount({
+        displayName: "Work",
+        shareHistoryWith: personal,
+      }).pipe(Effect.flip);
+      assert.strictEqual(error._tag, "ProviderSetupError");
+      const accounts = path.join(stateDir, "providers", "claudeAgent");
+      assert.deepEqual(
+        (yield* fileSystem.exists(accounts)) ? yield* fileSystem.readDirectory(accounts) : [],
+        [],
+      );
+      assert.deepEqual(yield* fileSystem.readDirectory(store), ["projects"]);
+    }).pipe(Effect.provide(refusingSave(root, store)));
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("creates nothing when the organisation manages provider accounts", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
+    yield* Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const error = yield* createClaudeAccount({ displayName: "Work" }).pipe(Effect.flip);
+      assert.include(error.message, "Example Corp manages the provider accounts");
+      assert.isFalse(yield* fileSystem.exists(path.join(stateDir, "providers", "claudeAgent")));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettings.layerTest(
+            {},
+            {
+              organization: "Example Corp",
+              lockedSettings: ["providerInstances"],
+            },
+          ),
+          ServerConfig.layerTest(root, { prefix: "t3code-claude-accounts-test-" }),
+        ),
+      ),
     );
   }).pipe(Effect.scoped, Effect.provide(services)),
 );

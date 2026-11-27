@@ -1,5 +1,6 @@
 import {
   ClaudeSettings,
+  isManagedSettingPath,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSetupError,
@@ -33,7 +34,7 @@ const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 /**
  * Creates `home` (which must not exist) and, with `store`, links each shared history directory to
  * the store's real directory, creating it there first, so each transcript has one copy that both
- * homes reach.
+ * homes reach. Returns a rollback that removes the home, its links and the directories it made.
  */
 export const createManagedClaudeHome = Effect.fn("ClaudeAccounts.createManagedHome")(function* (
   home: string,
@@ -41,14 +42,28 @@ export const createManagedClaudeHome = Effect.fn("ClaudeAccounts.createManagedHo
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const parentExisted = yield* fileSystem.exists(path.dirname(home));
   yield* fileSystem.makeDirectory(path.dirname(home), { recursive: true });
   yield* fileSystem.makeDirectory(home, { mode: 0o700 });
-  if (store === undefined) return;
+  const madeInStore: Array<string> = [];
+  // Removing the home removes its links, never what they point at.
+  const rollback = Effect.gen(function* () {
+    yield* fileSystem.remove(parentExisted ? home : path.dirname(home), { recursive: true });
+    // A directory something wrote into since is left, so the rollback never deletes history.
+    for (const directory of madeInStore)
+      if ((yield* fileSystem.readDirectory(directory)).length === 0)
+        yield* fileSystem.remove(directory, { recursive: true });
+  }).pipe(Effect.ignore);
+  if (store === undefined) return rollback;
   for (const directory of CLAUDE_SHARED_HISTORY_DIRECTORIES) {
     const target = path.join(store, directory);
-    yield* fileSystem.makeDirectory(target, { recursive: true });
+    if (!(yield* fileSystem.exists(target))) {
+      yield* fileSystem.makeDirectory(target, { recursive: true });
+      madeInStore.push(target);
+    }
     yield* fileSystem.symlink(yield* fileSystem.realPath(target), path.join(home, directory));
   }
+  return rollback;
 });
 
 /** Adds a Claude instance on a new managed home under the server's state directory. */
@@ -96,8 +111,15 @@ export const createClaudeAccount = Effect.fn("ClaudeAccounts.create")(function* 
     store = yield* resolveClaudeHomePath(config.value, environment);
   }
 
+  const policy = settingsService.managedPolicy;
+  if (policy !== undefined && isManagedSettingPath(policy, `providerInstances.${instanceId}`))
+    return yield* new ProviderSetupError({
+      instanceId,
+      operation: "createAccount",
+      detail: `${policy.organization} manages the provider accounts on this environment.`,
+    });
   const home = path.join(stateDir, "providers", CLAUDE_DRIVER, instanceId, "home");
-  yield* createManagedClaudeHome(home, store).pipe(
+  const rollback = yield* createManagedClaudeHome(home, store).pipe(
     Effect.mapError(failure("Could not create the Claude account's config folder.")),
   );
   yield* settingsService
@@ -111,6 +133,9 @@ export const createClaudeAccount = Effect.fn("ClaudeAccounts.create")(function* 
         config: { homePath: home },
       },
     })
-    .pipe(Effect.mapError(failure("Could not save the Claude account.")));
+    .pipe(
+      Effect.tapError(() => rollback),
+      Effect.mapError(failure("Could not save the Claude account.")),
+    );
   return { instanceId } satisfies ClaudeAccountCreateResult;
 });
