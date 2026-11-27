@@ -32,6 +32,8 @@ import {
   readWorkspaceConfig,
   createBuildConfig,
   renderLinuxMetainfo,
+  resolveDesktopBuildIconAssets,
+  resolveDesktopWebAssetBrand,
   resolveDesktopListing,
   createStageWorkspaceConfig,
   DESKTOP_FILE_EXCLUSIONS,
@@ -2143,4 +2145,12 @@ it("renders the Linux metainfo under the fork's name and links", () => {
   assert.notInclude(rendered, "t3.codes");
   assert.notInclude(rendered, "pingdotgg");
   assert.include(rendered, "<id>com.t3tools.t3code</id>");
+});
+
+it("ships the ExaCode icons exactly when the build has its own product name", () => {
+  const version = "0.1.13-nightly.20261127.14171";
+  assert.equal(resolveDesktopWebAssetBrand(version, "ExaCode"), "fork");
+  assert.equal(resolveDesktopWebAssetBrand(version), "nightly");
+  assert.include(resolveDesktopBuildIconAssets(version, "ExaCode").macIconPng, "assets/exacode/");
+  assert.include(resolveDesktopBuildIconAssets(version).macIconPng, "assets/nightly/");
 });

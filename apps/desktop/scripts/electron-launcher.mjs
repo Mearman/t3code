@@ -13,7 +13,10 @@ const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-const APP_DISPLAY_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Beta)";
+// A fork's own product name (the build's T3CODE_DESKTOP_PRODUCT_NAME) replaces T3 Code's name and icon.
+const forkProductName = process.env.T3CODE_DESKTOP_PRODUCT_NAME?.trim() || undefined;
+const APP_BASE_NAME = forkProductName ?? "T3 Code";
+const APP_DISPLAY_NAME = `${APP_BASE_NAME} (${isDevelopment ? "Dev" : "Beta"})`;
 const APP_BUNDLE_ID = isDevelopment
   ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
   : "com.t3tools.t3code";
@@ -25,12 +28,9 @@ const developmentMacIconPngPath = NodePath.join(
   "dev",
   "blueprint-macos-1024.png",
 );
-const productionMacIconPngPath = NodePath.join(
-  repoRoot,
-  "assets",
-  "exacode",
-  "exacode-macos-1024.png",
-);
+const productionMacIconPngPath = forkProductName
+  ? NodePath.join(repoRoot, "assets", "exacode", "exacode-macos-1024.png")
+  : NodePath.join(repoRoot, "assets", "prod", "black-macos-1024.png");
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher script has no Effect runtime.
 const hostPlatform = NodeOS.platform();
 
@@ -211,7 +211,7 @@ function resolveMacLauncherIconPaths(runtimeDir, development = isDevelopment) {
     sourceIconPath: development ? developmentMacIconPngPath : productionMacIconPngPath,
     generatedIconPath: NodePath.posix.join(
       runtimeDir,
-      development ? "icon-dev.icns" : "icon-prod.icns",
+      development ? "icon-dev.icns" : forkProductName ? "icon-fork.icns" : "icon-prod.icns",
     ),
   };
 }
@@ -273,8 +273,8 @@ function resolveMacBundleInfoPlistStrings(executableName) {
     CFBundleExecutable: executableName,
     CFBundleIconFile: "icon.icns",
     NSScreenCaptureUsageDescription:
-      "T3 Code captures the active window when you use the snapshot shortcut.",
-    NSDocumentsFolderUsageDescription: "T3 Code reads project files you open in the desktop app.",
+      `${APP_BASE_NAME} captures the active window when you use the snapshot shortcut.`,
+    NSDocumentsFolderUsageDescription: `${APP_BASE_NAME} reads project files you open in the desktop app.`,
   };
 }
 

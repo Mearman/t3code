@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import { APP_BASE_NAME, UPSTREAM_APP_BASE_NAME } from "./DesktopAppName.ts";
 
 export interface DesktopIconPaths {
   readonly ico: Option.Option<string>;
@@ -79,6 +80,15 @@ function resolveSourceTreeIconPath(
   ext: keyof DesktopIconPaths,
 ): string | undefined {
   if (environment.isPackaged || ext === "icns") return undefined;
+  if (APP_BASE_NAME !== UPSTREAM_APP_BASE_NAME) {
+    const forkFileName =
+      ext === "ico"
+        ? "exacode-windows.ico"
+        : environment.platform === "darwin"
+          ? "exacode-macos-1024.png"
+          : "exacode-universal-1024.png";
+    return environment.path.join(environment.rootDir, "assets", "exacode", forkFileName);
+  }
   const brand = environment.isDevelopment ? "dev" : "prod";
   const fileNames = sourceTreeIconFileNames[brand];
   const fileName =

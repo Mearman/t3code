@@ -2792,11 +2792,24 @@ export function isDesktopPreviewVersion(version: string): boolean {
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
-export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
-  return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
+export function resolveDesktopWebAssetBrand(
+  version: string,
+  forkProductName?: string | undefined,
+): WebAssetBrand {
+  return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version), forkProductName);
 }
 
-export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
+export function resolveDesktopBuildIconAssets(
+  version: string,
+  forkProductName?: string | undefined,
+): DesktopBuildIconAssets {
+  if (forkProductName !== undefined) {
+    return {
+      macIconPng: EXACODE_ICON_PATHS.macIconPng,
+      linuxIconPng: EXACODE_ICON_PATHS.linuxIconPng,
+      windowsIconIco: EXACODE_ICON_PATHS.windowsIconIco,
+    };
+  }
   if (resolveDesktopUpdateChannel(version) === "nightly") {
     return {
       macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
@@ -2837,6 +2850,7 @@ interface DesktopListing {
   readonly maintainer: string;
   readonly bugTracker: string;
   readonly sourceUrl: string;
+  readonly unofficialStatement: string | undefined;
 }
 
 /**
@@ -2858,17 +2872,20 @@ export function resolveDesktopListing(input: {
       maintainer: listing.maintainer,
       bugTracker: "https://github.com/pingdotgg/t3code/issues",
       sourceUrl: "https://github.com/pingdotgg/t3code",
+      unofficialStatement: undefined,
     };
   }
   const sourceUrl = `https://github.com/${input.repository}`;
+  const unofficialStatement = `${input.productName} is an unofficial fork based on the T3 Code source code, not affiliated with, endorsed by or maintained by T3 Tools, Inc.`;
   return {
     appName: input.productName,
-    description: `${input.productName} is an unofficial fork based on the T3 Code source code, not affiliated with, endorsed by or maintained by T3 Tools, Inc. ${upstreamDescription.replace("T3 Code is", "It is")}`,
+    description: `${unofficialStatement} ${upstreamDescription.replace("T3 Code is", "It is")}`,
     homepage: sourceUrl,
     author: input.productName,
     maintainer: `${input.productName} <noreply@users.noreply.github.com>`,
     bugTracker: `${sourceUrl}/issues`,
     sourceUrl,
+    unofficialStatement,
   };
 }
 
@@ -3089,6 +3106,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         entry: {
           // Match Electron's WM_CLASS from setDesktopName so docks use this launcher.
           StartupWMClass: "com.t3tools.T3Code",
+          // Electron's About panel shows no credits on Linux, so the launcher states it.
+          ...(listing.unofficialStatement === undefined
+            ? {}
+            : { Comment: listing.unofficialStatement }),
         },
       },
     };
@@ -3876,7 +3897,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
 
   const appVersion =
     options.version ?? resolveTaggedSourceVersion(repoRoot, serverPackageJson.version);
-  const iconAssets = resolveDesktopBuildIconAssets(appVersion);
+  const forkProductName = Option.getOrUndefined((yield* DesktopIdentityConfig).productName);
+  const iconAssets = resolveDesktopBuildIconAssets(appVersion, forkProductName);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
@@ -3963,7 +3985,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     });
   }
 
-  const webAssetBrand = resolveDesktopWebAssetBrand(appVersion);
+  const webAssetBrand = resolveDesktopWebAssetBrand(appVersion, forkProductName);
   yield* applyWebBrandAssets(webAssetBrand, "apps/server/dist/client");
   yield* Effect.log(`[desktop-artifact] Applied ${webAssetBrand} web client branding.`);
   yield* validateBundledClientAssets(path.dirname(bundledClientEntry));
