@@ -669,15 +669,18 @@ const writeParentRun = (input: {
   readonly text: string;
   /** A checkpointed run on a native provider thread, which `latest_stable` forks start from. */
   readonly stable?: boolean;
+  /** A run read back from the provider's transcript: a native provider thread and no checkpoint. */
+  readonly transcript?: boolean;
 }) =>
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
     const now = yield* DateTime.now;
     const { driver, instanceId, modelSelection } = forkCases[0]!;
     const messageId = MessageId.make(`${input.runId}:message`);
-    const providerThreadId = input.stable
-      ? ProviderThreadId.make(`${input.runId}:provider-thread`)
-      : null;
+    const providerThreadId =
+      input.stable || input.transcript === true
+        ? ProviderThreadId.make(`${input.runId}:provider-thread`)
+        : null;
     const setupUnfinished =
       input.status === "preparing" || input.status === "failed" || input.status === "interrupted";
     yield* eventSink.write({
@@ -741,6 +744,15 @@ const writeParentRun = (input: {
                 : now,
             checkpointId: input.stable ? CheckpointId.make(`${input.runId}:checkpoint`) : null,
             contextHandoffId: null,
+            ...(input.transcript === true
+              ? {
+                  nativeOrigin: {
+                    kind: "claude_transcript" as const,
+                    nativeSessionId: `${input.runId}:native`,
+                    promptUuid: `${input.runId}:prompt`,
+                  },
+                }
+              : {}),
             ...(setupUnfinished
               ? { workspacePreparation: { type: "worktree" as const, baseRef: "main" } }
               : {}),
@@ -883,6 +895,103 @@ const askSideChat = (
       creationSource: "web",
     });
   });
+
+it.effect("a latest stable fork skips a refused run and starts from the last transcript run", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const parentId = ThreadId.make("transcript-fork-parent");
+    const forkId = ThreadId.make("transcript-fork-child");
+    yield* createParent(parentId);
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: RunId.make("transcript-fork-run-1"),
+      ordinal: 1,
+      status: "completed",
+      text: "FIRST_TRANSCRIPT_MARKER",
+      transcript: true,
+    });
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: RunId.make("transcript-fork-run-2"),
+      ordinal: 2,
+      status: "completed",
+      text: "LAST_TRANSCRIPT_MARKER",
+      transcript: true,
+    });
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: RunId.make("transcript-fork-refused"),
+      ordinal: 3,
+      status: "failed",
+      text: "REFUSED_MARKER",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.fork",
+      commandId: CommandId.make("transcript-fork"),
+      sourceThreadId: parentId,
+      targetThreadId: forkId,
+      sourcePoint: { type: "latest_stable" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const forked = yield* orchestrator.getThreadProjection(forkId);
+    assert.deepEqual(forked.thread.forkedFrom, {
+      type: "run",
+      threadId: parentId,
+      runId: RunId.make("transcript-fork-run-2"),
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("transcript-fork-send"),
+      threadId: forkId,
+      messageId: MessageId.make("transcript-fork-send"),
+      text: "Continue",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const target = yield* orchestrator.getThreadProjection(forkId);
+    const transfer = target.contextTransfers.find((candidate) => candidate.type === "fork");
+    assert.include(["native_fork", "portable_context"], transfer?.resolution?.strategy);
+    const handoff = target.contextHandoffs[0];
+    const history = `${handoff?.summaryText ?? ""}\n${
+      handoff?.history?.messages.map((message) => message.text).join("\n") ?? ""
+    }`;
+    if (transfer?.resolution?.strategy === "portable_context") {
+      assert.include(history, "FIRST_TRANSCRIPT_MARKER");
+      assert.include(history, "LAST_TRANSCRIPT_MARKER");
+      assert.notInclude(history, "REFUSED_MARKER");
+    }
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+it.effect("a latest stable fork with no completed run still fails", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const parentId = ThreadId.make("no-stable-fork-parent");
+    yield* createParent(parentId);
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: RunId.make("no-stable-fork-refused"),
+      ordinal: 1,
+      status: "failed",
+      text: "REFUSED_MARKER",
+    });
+    const error = yield* orchestrator
+      .dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make("no-stable-fork"),
+        sourceThreadId: parentId,
+        targetThreadId: ThreadId.make("no-stable-fork-child"),
+        sourcePoint: { type: "latest_stable" },
+        createdBy: "user",
+        creationSource: "web",
+      })
+      .pipe(Effect.flip);
+    assert.include(String(error.cause), "No stable source run was found");
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
 
 it.effect("resolves an explicit checkpoint fork to its source run", () =>
   Effect.gen(function* () {
