@@ -90,7 +90,8 @@ export function wentBesideHolder(
     projection.attempts.filter((attempt) => attempt.runId === run.id).map((attempt) => attempt.id),
   );
   return projection.providerTurns.some(
-    (turn) => attempts.has(turn.runAttemptId) && isDeliveredProviderTurn(turn),
+    (turn) =>
+      turn.runAttemptId !== null && attempts.has(turn.runAttemptId) && isDeliveredProviderTurn(turn),
   );
 }
 
