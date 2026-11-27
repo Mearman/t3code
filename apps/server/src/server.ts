@@ -198,6 +198,10 @@ import * as EnvironmentAuthPolicy from "./auth/EnvironmentAuthPolicy.ts";
 import * as CloudHttp from "./cloud/http.ts";
 import * as GuestHttp from "./guest/http.ts";
 import * as LinkThreadHttp from "./peer/linkThreadHttp.ts";
+import * as ClaudeSessionReplicaHttp from "./peer/claudeSessionReplicaHttp.ts";
+import * as PeerClaudeSessions from "./peer/PeerClaudeSessions.ts";
+import * as ClaudeSessionReplication from "./claudeSessions/ClaudeSessionReplication.ts";
+import * as ClaudeSessionReplicas from "./persistence/ClaudeSessionReplicas.ts";
 import * as CloudLink from "./cloud/CloudLink.ts";
 import * as ConnectReachability from "./cloud/ConnectReachability.ts";
 import { pendingServiceUpdateExists } from "./cloud/updateHandoff.ts";
@@ -770,6 +774,22 @@ const layerServerRestart = Layer.effect(
   }),
 );
 
+// Route handlers and the WebSocket read it per request; the send gate's ownership check inside
+// it is the drivers' own instance, through the same infrastructure layer reference.
+const layerClaudeSessionReplication = ClaudeSessionReplication.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      ClaudeSessionReplicas.layer,
+      ClaudeLiveSessions.layer.pipe(
+        Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer),
+      ),
+      ProviderOrchestrationAdapterInfrastructure.layer,
+    ),
+  ),
+  Layer.provide(PeerClaudeSessions.layer),
+  Layer.provide(PeerLinks.layer),
+);
+
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   ProviderHostPathWatcher.layer.pipe(Layer.provide(layerDesktopTelemetryReceiver)),
@@ -777,6 +797,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
   layerClaudeSessionSyncWorker,
+  layerClaudeSessionReplication,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
@@ -974,6 +995,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAttachmentUploadRoute,
     GuestHttp.layer,
     LinkThreadHttp.layer,
+    ClaudeSessionReplicaHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
     PreviewTunnel.routeLayer,
@@ -989,6 +1011,10 @@ const layerMakeRoutes = Layer.mergeAll(
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
+  ),
+  // Copies linked environments' Claude sessions by this environment's rules.
+  Layer.effectDiscard(
+    ClaudeSessionReplication.ClaudeSessionReplication.use((replication) => replication.start()),
   ),
 ).pipe(
   Layer.provide(

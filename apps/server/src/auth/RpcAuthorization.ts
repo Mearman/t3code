@@ -106,6 +106,11 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.peerLinksSubscribeThread]: AuthOrchestrationReadScope,
   [WS_METHODS.peerLinksThreadHistoryPage]: AuthOrchestrationReadScope,
   [WS_METHODS.peerLinksThreadItem]: AuthOrchestrationReadScope,
+  // Listing a linked environment's sessions reads them as its threads are read.
+  [WS_METHODS.claudeSessionsListRemote]: AuthOrchestrationReadScope,
+  [WS_METHODS.claudeSessionsReplicationReport]: AuthOrchestrationReadScope,
+  // A pass writes copies into this machine's Claude home, as a run writes to its sessions.
+  [WS_METHODS.claudeSessionsReplicateNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
   [WS_METHODS.serverSearchAcpRegistry]: AuthOrchestrationReadScope,
   [WS_METHODS.serverPrepareAcpRegistryAgent]: AuthProvidersManageScope,

@@ -1088,3 +1088,54 @@ it.effect("requires the terminal scope for a send that acts on a terminal's clau
     expect(handled).toEqual(["plain", "ask", "fork", "takeOver-allowed"]);
   }).pipe(Effect.scoped),
 );
+
+it.effect("lists linked sessions for thread readers, but copies them only for operators", () =>
+  Effect.gen(function* () {
+    const tested = [
+      WS_METHODS.claudeSessionsListRemote,
+      WS_METHODS.claudeSessionsReplicationReport,
+      WS_METHODS.claudeSessionsReplicateNow,
+    ] as const;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+          !(tested as ReadonlyArray<string>).includes(tag),
+      ),
+    );
+    const passes: Array<string> = [];
+    const report = { lastRunAt: null, sources: [], replicas: [], skipped: [] };
+    const handlers = group.toLayer({
+      [WS_METHODS.claudeSessionsListRemote]: () => Effect.succeed({ sessions: [] }),
+      [WS_METHODS.claudeSessionsReplicationReport]: () => Effect.succeed(report),
+      [WS_METHODS.claudeSessionsReplicateNow]: () =>
+        Effect.sync(() => passes.push("pass")).pipe(Effect.as(report)),
+    });
+    const reader = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+    );
+    const environmentId = EnvironmentId.make("environment-box");
+
+    expect(yield* reader[WS_METHODS.claudeSessionsListRemote]({ environmentId })).toEqual({
+      sessions: [],
+    });
+    expect(yield* reader[WS_METHODS.claudeSessionsReplicationReport]({})).toEqual(report);
+    expect(
+      yield* reader[WS_METHODS.claudeSessionsReplicateNow]({}).pipe(Effect.flip),
+    ).toMatchObject({
+      _tag: "EnvironmentAuthorizationError",
+      requiredPermission: AuthOrchestrationOperateScope,
+    });
+    expect(passes).toEqual([]);
+
+    const operator = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          handlers,
+          RpcAuthorization.layer([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]),
+        ),
+      ),
+    );
+    yield* operator[WS_METHODS.claudeSessionsReplicateNow]({});
+    expect(passes).toEqual(["pass"]);
+  }).pipe(Effect.scoped),
+);
