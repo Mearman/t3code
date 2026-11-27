@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import { expect, it } from "vite-plus/test";
 
 import {
@@ -84,4 +88,16 @@ it("bakes a valid collector in, and none from an empty key or a host without a s
   ]) {
     expect(telemetryEndpointDefine(env)).toEqual({});
   }
+});
+
+// The bundler configs are not importable without running a build, so read what they spread.
+const configSource = (app: string) =>
+  NodeFS.readFileSync(NodePath.join(import.meta.dirname, `../../apps/${app}/vite.config.ts`), "utf8");
+
+it.each([
+  ["server", "...buildKindDefine(repoEnv)"],
+  ["server", "...telemetryEndpointDefine(repoEnv)"],
+  ["web", "...buildKindDefine(repoEnv)"],
+])("spreads the %s bundle's usage-data define %s", (app, spread) => {
+  expect(configSource(app)).toContain(spread);
 });

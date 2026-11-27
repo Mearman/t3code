@@ -581,6 +581,7 @@ it("treats an empty key or a host without a scheme as unusable, not as an endpoi
 const requestsFor = (
   buildKind: AnalyticsService.AnalyticsBuild,
   env: Readonly<Record<string, unknown>>,
+  policy?: ManagedPolicyDocument,
 ) =>
   Effect.gen(function* () {
     const requests: Array<{ readonly url: string; readonly apiKey: string }> = [];
@@ -604,7 +605,7 @@ const requestsFor = (
           Layer.succeed(HostProcess.Platform, "win32"),
           Layer.succeed(HostProcess.Architecture, "x64"),
           Layer.succeed(HttpClient.HttpClient, client),
-          ManagedPolicy.layerTest(undefined),
+          ManagedPolicy.layerTest(policy),
         ),
       ),
     );
@@ -690,6 +691,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("usage data by bu
       const baked = { key: "phc_baked", host: "https://baked.example.com" };
       assert.deepEqual(
         yield* requestsFor(build(false, baked), { T3CODE_TELEMETRY_ENABLED: false }),
+        [],
+      );
+      const policy = { schemaVersion: 1, organization: "Example Corp" } as const;
+      const allowed = yield* requestsFor(build(false, baked), enabled, {
+        ...policy,
+        limits: { telemetry: true },
+      });
+      assert.isAbove(allowed.length, 0);
+      assert.deepEqual(
+        yield* requestsFor(build(false, baked), enabled, {
+          ...policy,
+          limits: { telemetry: false },
+        }),
         [],
       );
     }),
