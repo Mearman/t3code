@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -19,22 +20,36 @@ import {
 const instanceId = ProviderInstanceId.make("claude-auth-test");
 const state = "test-only-state";
 const manualUrl = `https://claude.ai/oauth/authorize?code=true&state=${state}`;
+const automaticUrl = `https://claude.ai/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcallback&state=${state}`;
+const links = [manualUrl, automaticUrl];
 const services = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
 
 it("reads a bare code, code#state and a redirect URL, refusing another flow's state", () => {
+  const parse = (pasted: string) => parseClaudeAuthorizationPaste(pasted, state, links);
   const expected = { authorizationCode: "test-only-code", state };
-  assert.deepEqual(parseClaudeAuthorizationPaste(" test-only-code ", state), expected);
-  assert.deepEqual(parseClaudeAuthorizationPaste(`test-only-code#${state}`, state), expected);
+  assert.deepEqual(parse(" test-only-code "), expected);
+  assert.deepEqual(parse(`test-only-code#${state}`), expected);
   assert.deepEqual(
-    parseClaudeAuthorizationPaste(
-      `https://console.anthropic.com/oauth/code/callback?code=test-only-code&state=${state}`,
-      state,
-    ),
+    parse(`https://console.anthropic.com/oauth/code/callback?code=test-only-code&state=${state}`),
     expected,
   );
-  assert.strictEqual(parseClaudeAuthorizationPaste("test-only-code#other", state), "wrongFlow");
-  assert.strictEqual(parseClaudeAuthorizationPaste("   ", state), "invalid");
-  assert.strictEqual(parseClaudeAuthorizationPaste("two words", state), "invalid");
+  assert.deepEqual(
+    parse(`http://localhost:1/callback?code=test-only-code&state=${state}`),
+    expected,
+  );
+  assert.strictEqual(parse("test-only-code#other"), "wrongFlow");
+  assert.strictEqual(
+    parse("http://localhost:1/callback?code=test-only-code&state=other"),
+    "wrongFlow",
+  );
+  assert.strictEqual(parse("http://localhost:1/callback?code=test-only-code"), "wrongFlow");
+  assert.strictEqual(parse("   "), "invalid");
+  assert.strictEqual(parse("two words"), "invalid");
+});
+
+it("does not take the sign-in link itself as an answer", () => {
+  for (const link of links)
+    assert.strictEqual(parseClaudeAuthorizationPaste(link, state, links), "signInLink");
 });
 
 interface Fakes {
@@ -50,9 +65,9 @@ const harness = (fakes: Fakes = {}) =>
     const commands: Array<ReadonlyArray<string>> = [];
     let changed = 0;
     const session: ClaudeLoginSession = {
-      authenticate: () =>
-        Effect.succeed({ manualUrl, automaticUrl: "http://localhost:1/callback" }),
+      authenticate: () => Effect.succeed({ manualUrl, automaticUrl }),
       submitCode: (code, flowState) => Effect.sync(() => void submitted.push([code, flowState])),
+      awaitAutomaticCompletion: Effect.never,
       ...fakes.session,
     };
     const auth = makeClaudeAuth({
@@ -89,7 +104,8 @@ it.effect("signs in with a pasted bare code through the CLI's control requests",
     assert.deepEqual(waiting.interaction, {
       type: "browser",
       id: "claude-oauth",
-      url: manualUrl,
+      url: automaticUrl,
+      codeUrl: manualUrl,
       requiresConsent: false,
       acceptsCallback: true,
       callbackInput: "code",
@@ -99,6 +115,11 @@ it.effect("signs in with a pasted bare code through the CLI's control requests",
       .complete("owner", { flowId, callbackUrl: "test-only-code#other" })
       .pipe(Effect.flip);
     assert.notInclude(wrong.detail, "test-only-code");
+    const link = yield* h.controller
+      .complete("owner", { flowId, callbackUrl: manualUrl })
+      .pipe(Effect.flip);
+    assert.include(link.detail, "That is the sign-in link.");
+    assert.deepEqual(h.submitted, []);
     yield* h.controller.complete("owner", { flowId, callbackUrl: "test-only-code" });
     const done = yield* h.phase("succeeded", "failed");
     assert.strictEqual(done.phase, "succeeded");
@@ -106,6 +127,32 @@ it.effect("signs in with a pasted bare code through the CLI's control requests",
     assert.deepEqual(h.commands, [["auth", "status", "--json"]]);
     assert.strictEqual(h.changed(), 1);
   }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("finishes without a paste when the automatic link's redirect completes", () =>
+  Effect.gen(function* () {
+    const completed = yield* Deferred.make<void>();
+    const h = yield* harness({ session: { awaitAutomaticCompletion: Deferred.await(completed) } });
+    yield* h.controller.start("owner");
+    yield* h.phase("waiting");
+    yield* Deferred.succeed(completed, undefined);
+    assert.strictEqual((yield* h.phase("succeeded", "failed")).phase, "succeeded");
+    assert.deepEqual(h.submitted, []);
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("asks a CLI with the request to wait for the automatic redirect", () =>
+  Effect.gen(function* () {
+    let waited = 0;
+    const session = makeClaudeQueryLoginSession(instanceId, {
+      claudeOAuthWaitForCompletion: () => {
+        waited++;
+        return Promise.resolve({});
+      },
+    });
+    yield* session.awaitAutomaticCompletion;
+    assert.strictEqual(waited, 1);
+  }),
 );
 
 it.effect("fails when Claude reports no account after the code is accepted", () =>
@@ -210,8 +257,10 @@ it.effect("treats a CLI without the control request as unavailable and redacts o
         ),
     });
     const error = yield* leaky.submitCode(secret, state).pipe(Effect.flip);
-    assert.notInclude(error.detail, secret);
-    assert.notInclude(error.detail, "https://");
+    for (const recorded of [error.detail, JSON.stringify(error.cause), String(error.cause)]) {
+      assert.notInclude(recorded, secret);
+      assert.notInclude(recorded, "https://");
+    }
     assert.include(error.detail, "Claude did not accept the sign-in code.");
   }),
 );

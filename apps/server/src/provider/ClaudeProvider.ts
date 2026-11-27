@@ -488,7 +488,7 @@ class ClaudeCapabilitiesProbeSdkError extends Schema.TaggedError<ClaudeCapabilit
 
 /**
  * Resolves how to start a Claude query whose prompt never yields, so control requests and
- * initialization IPC run without sending an Anthropic request.
+ * initialisation IPC run without sending an Anthropic request.
  */
 export const prepareClaudeIdleQuery = Effect.fn("prepareClaudeIdleQuery")(function* (
   claudeSettings: ClaudeSettings,
