@@ -329,7 +329,11 @@ describe("systemNoticeLabel", () => {
 
   it("words the note on a send beside a holder itself, whatever the server wrote", () => {
     expect(
-      systemNoticeLabel({ id: "x:held-send:run-1", status: "completed", message: "English." }),
+      systemNoticeLabel({
+        id: TurnItemId.make("x:held-send:run-1"),
+        status: "completed",
+        message: "English.",
+      }),
     ).toContain("Its next prompt continues from before this reply");
   });
 
