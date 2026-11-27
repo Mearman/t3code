@@ -28,22 +28,24 @@ describe("resolveClaudeHeldSessionSend", () => {
   });
 });
 
+const decodeSettings = Schema.decodeUnknownSync(ServerSettings);
+const decodeRunChoice = Schema.decodeUnknownSync(
+  Schema.Struct({ heldSessionSend: OrchestrationV2Run.fields.heldSessionSend }),
+);
+
 describe("a held-session choice from a newer server", () => {
   const future = "someLaterChoice";
 
   it("reads as the default in settings, so the rest of the settings still decode", () => {
     const stored: unknown = { claudeSessionSync: { heldSessionSend: future } };
-    const settings = Schema.decodeUnknownSync(ServerSettings)(stored);
+    const settings = decodeSettings(stored);
     expect(settings.claudeSessionSync.heldSessionSend).toBeNull();
   });
 
   it("drops from a run, so the run still decodes", () => {
-    const decode = Schema.decodeUnknownSync(
-      Schema.Struct({ heldSessionSend: OrchestrationV2Run.fields.heldSessionSend }),
-    );
     const unknownChoice: unknown = { heldSessionSend: future };
     const knownChoice: unknown = { heldSessionSend: "fork" };
-    expect(decode(unknownChoice)).toEqual({});
-    expect(decode(knownChoice)).toEqual({ heldSessionSend: "fork" });
+    expect(decodeRunChoice(unknownChoice)).toEqual({});
+    expect(decodeRunChoice(knownChoice)).toEqual({ heldSessionSend: "fork" });
   });
 });
