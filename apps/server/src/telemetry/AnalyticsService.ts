@@ -95,7 +95,7 @@ export interface AnalyticsBuild {
   readonly bakedHost: Option.Option<string>;
 }
 
-export const currentBuild: AnalyticsBuild = {
+const currentBuild: AnalyticsBuild = {
   upstreamBuild: IS_PROVABLY_UPSTREAM_BUILD,
   bakedKey: Option.fromNullishOr(
     typeof __T3CODE_BUILD_TELEMETRY_KEY__ === "undefined"
@@ -191,7 +191,7 @@ function serverOsFromNodePlatform(platform: string): ClientOs {
 }
 
 /** The service for a build of the given kind (see `currentBuild`). */
-export const makeFor = Effect.fnUntraced(function* (build: AnalyticsBuild) {
+const makeFor = Effect.fnUntraced(function* (build: AnalyticsBuild) {
   const telemetryConfig = yield* TelemetryEnvConfig;
   const hostEnvironment = yield* HostProcess.Environment;
   const awaitingShellConsent = hostEnvironment.T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING === "1";
