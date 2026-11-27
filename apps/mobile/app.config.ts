@@ -2,6 +2,7 @@ import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { resolveReleaseRepository } from "../../scripts/lib/release-repository.ts";
 
 type AppVariant = "development" | "preview" | "production";
 
@@ -473,6 +474,8 @@ const config: ExpoConfig = {
   ],
   extra: {
     appVariant: APP_VARIANT,
+    // Connected servers update from this repository's releases; unset keeps upstream's.
+    releaseRepository: resolveReleaseRepository(repoEnv) ?? null,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
