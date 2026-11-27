@@ -234,6 +234,8 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: macOS arm64
+      product_name: ExaCode
+      app_id: io.exadev.exacode
       runner: macos-26
       platform: mac
       target: dmg
@@ -266,6 +268,8 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: macOS x64
+      product_name: ExaCode
+      app_id: io.exadev.exacode
       runner: macos-26-intel
       platform: mac
       target: dmg
@@ -381,6 +385,8 @@ jobs:
             "t3-$version-darwin-arm64.tar.gz" \
             "t3-$version-linux-x64.tar.gz" \
             "t3-$version-linux-arm64.tar.gz" \
+            "ExaCode-$version-arm64.zip" "ExaCode-$version-arm64.dmg" \
+            "ExaCode-$version-x64.zip" "ExaCode-$version-x64.dmg" \
             nightly-mac.yml nightly-linux.yml nightly-linux-arm64.yml; do
             [[ -f "release-assets/$asset" ]] || { echo "::error::Missing release asset $asset."; exit 1; }
           done
