@@ -26,8 +26,9 @@ const MACOS_GUARDED_HOME_FOLDERS = [
   "Library/Group Containers",
 ];
 // Mount parents: tccd guards network and removable volumes, and a dead server hangs their reads.
-// A `*` segment matches any one name. `perUser` parents hold a folder per user first (udisks and
-// Ubuntu mount under `<parent>/<user>/<volume>`); a `maybePerUser` parent may also hold volumes.
+// A `*` segment matches any one name. An `"always"` `perUser` parent holds a folder per user first
+// (udisks mounts under `<parent>/<user>/<volume>`); a `"maybe"` one does only when the first name
+// is this user's, and otherwise holds volumes directly.
 interface VolumeParent {
   readonly parent: string;
   readonly perUser?: "always" | "maybe";
@@ -192,17 +193,27 @@ export const trackUnavailableReads = Effect.fn("UserPathReads.trackUnavailableRe
   return [value, tracker.unavailable] as const;
 });
 
-/** Runs `stream`, then emits `marker` last if any `readUserPath` in it was unavailable. */
+/**
+ * Runs `stream`, then emits `marker` last if any `readUserPath` in it was unavailable. Like
+ * `trackUnavailableReads`, it also reports that to an enclosing tracker.
+ */
 export const trackUnavailableReadsInStream = <A, E, R, M>(
   stream: Stream.Stream<A, E, R>,
   marker: M,
-): Stream.Stream<A | M, E, R> => {
-  const tracker = { unavailable: false };
-  return Stream.concat(
-    stream.pipe(Stream.provideService(UnavailableReads, tracker)),
-    Stream.suspend(() => (tracker.unavailable ? Stream.make(marker) : Stream.empty)),
+): Stream.Stream<A | M, E, R> =>
+  Stream.unwrap(
+    Effect.gen(function* () {
+      const outer = yield* UnavailableReads;
+      const tracker = { unavailable: false };
+      return Stream.concat(
+        stream.pipe(Stream.provideService(UnavailableReads, tracker)),
+        Stream.suspend(() => {
+          if (tracker.unavailable && outer !== undefined) outer.unavailable = true;
+          return tracker.unavailable ? Stream.make(marker) : Stream.empty;
+        }),
+      );
+    }),
   );
-};
 
 const reportUnavailable = Effect.gen(function* () {
   const tracker = yield* UnavailableReads;
@@ -213,8 +224,9 @@ const reportUnavailable = Effect.gen(function* () {
 /**
  * Runs `read` of `target` (or of something inside it) in its lane, one read at a time, and gives it
  * up at the deadline: a macOS privacy prompt or a dead mount pins a pool thread nothing can free.
- * `Unavailable` when given up on, when its lane or path is still closed by such a read, or when
- * reads in all lanes hold half the pool. A defect in `read` is logged and rethrown, never hidden.
+ * `Unavailable` when given up on, when its lane or path is closed by such a read, when stuck reads
+ * hold half the pool, or when no read ends for a deadline while it waits for room under that cap.
+ * A defect in `read` is logged and rethrown, never hidden.
  */
 export const readUserPath = Effect.fn("UserPathReads.readUserPath")(function* <A, E>(
   target: string,
@@ -268,7 +280,8 @@ export const readUserPath = Effect.fn("UserPathReads.readUserPath")(function* <A
   if (settled._tag === "Unavailable") return yield* reportUnavailable;
   if (Exit.isFailure(settled) && Cause.hasDies(settled.cause)) {
     yield* Effect.logError("A folder read failed unexpectedly", { folder: target }, settled.cause);
-    return yield* Effect.die(Cause.squash(settled.cause));
+    const defects = settled.cause.reasons.filter(Cause.isDieReason);
+    return yield* Effect.failCause(Cause.fromReasons(defects));
   }
   return settled;
 });
@@ -306,9 +319,20 @@ const finishRead = (state: UserPathReadState) => {
   for (const waiter of state.waiters.splice(0)) Deferred.doneUnsafe(waiter, Effect.void);
 };
 
-// Waits, for at most the deadline, until a read may start under the cap; false when it may not.
-const admit = Effect.fn("UserPathReads.admit")(function* (state: UserPathReadState, limit: number) {
-  while (state.running >= limit) {
+// Takes a slot under the cap in the same step as the check, so no other lane can pass it first.
+// Waits for a read to end, for up to the deadline each time; false when the job must not start.
+const admit = Effect.fn("UserPathReads.admit")(function* (
+  state: UserPathReadState,
+  lane: Lane,
+  job: Job,
+  limit: number,
+) {
+  while (!job.cancelled && !isBlocked(state, lane, job.target)) {
+    if (state.running < limit) {
+      job.started = true;
+      state.running += 1;
+      return true;
+    }
     if (state.stuckReads >= limit) return false;
     const turn = Deferred.makeUnsafe<void>();
     state.waiters.push(turn);
@@ -319,7 +343,7 @@ const admit = Effect.fn("UserPathReads.admit")(function* (state: UserPathReadSta
       return false;
     }
   }
-  return true;
+  return false;
 });
 
 // Detached from every caller, so a caller that goes away cannot leave a stuck read unrecorded.
@@ -332,20 +356,10 @@ const drain = Effect.fn("UserPathReads.drain")(function* (
 ) {
   for (let job = lane.queue.shift(); job !== undefined; job = lane.queue.shift()) {
     const { target } = job;
-    if (job.cancelled) continue;
-    if (isBlocked(state, lane, target) || !(yield* admit(state, limit))) {
+    if (!(yield* admit(state, lane, job, limit))) {
       job.giveUp();
       continue;
     }
-    // The lane may have closed, or the caller left, while this waited for room under the cap.
-    if (job.cancelled) continue;
-    if (isBlocked(state, lane, target)) {
-      job.giveUp();
-      continue;
-    }
-    // Counted before the fork, with no yield between the cap check and here.
-    job.started = true;
-    state.running += 1;
     const reading = yield* Effect.forkDetach(job.run);
     // The deadline starts here, so time spent queued behind other reads never counts.
     const finished = yield* Fiber.join(reading).pipe(Effect.timeoutOption(USER_PATH_READ_DEADLINE));

@@ -127,7 +127,7 @@ const UNANSWERED_FOLDER_MESSAGE = msg(
   "A folder did not answer, so some projects or conversations may be missing. If macOS is asking for access, answer the prompt and check again.",
 );
 
-// An unanswered folder is the one the user can fix, so it is named before the scan budget.
+// An unanswered folder is the one the user can fix, so its notice replaces the scan limit one.
 function scanNotice(result: { readonly unanswered?: boolean | undefined }, m: MessageResolver) {
   return m(result.unanswered === true ? UNANSWERED_FOLDER_MESSAGE : SCAN_LIMIT_MESSAGE);
 }
