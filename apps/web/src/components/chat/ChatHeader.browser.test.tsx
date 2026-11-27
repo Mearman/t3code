@@ -1,4 +1,5 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -21,10 +22,26 @@ vi.mock(import("~/hooks/useThreadActionMenu"), () => ({
   useThreadActionMenu: () => ({ openMenu, closeMenu: () => {}, readMenu: () => null }),
 }));
 
+import "../../index.css";
 import { render, stubGlobal } from "../../../test/render";
 import { ChatHeader } from "./ChatHeader";
 
-function header(title: string, fromTerminal = false) {
+const project: EnvironmentProject = {
+  environmentId: EnvironmentId.make("environment"),
+  id: ProjectId.make("project"),
+  title: "Claude sessions",
+  workspaceRoot: "/work/claude-sessions",
+  defaultModelSelection: null,
+  scripts: [],
+  createdAt: "2026-11-26T10:00:00.000Z",
+  updatedAt: "2026-11-26T10:00:00.000Z",
+};
+
+function header(
+  title: string,
+  fromTerminal = false,
+  activeProject: EnvironmentProject | null = null,
+) {
   return (
     <>
       <ChatHeader
@@ -33,7 +50,7 @@ function header(title: string, fromTerminal = false) {
         activeThreadTitle={title}
         activeThreadFromTerminal={fromTerminal}
         isServerThread
-        activeProject={null}
+        activeProject={activeProject}
         parentThreadLink={null}
         onOpenThread={() => {}}
         rightPanelOpen={false}
@@ -119,9 +136,10 @@ function terminalBadge(screen: Awaited<ReturnType<typeof render>>) {
   return { label, badge, icon: badge.querySelector("svg") };
 }
 
-it("keeps space around the terminal badge on both sides", async () => {
-  await using screen = await render(header("Refactor the config parser", true));
-  const title = screen.getByRole("heading", { name: "Refactor the config parser" }).element();
+it("keeps space around the terminal badge on both sides when the title fills the row", async () => {
+  const longTitle = "Refactor the config parser to return a result instead of throwing ".repeat(8);
+  await using screen = await render(header(longTitle, true));
+  const title = screen.getByRole("button", { name: `Thread actions for ${longTitle}` }).element();
   const { badge } = terminalBadge(screen);
   const item = badge.parentElement;
   expect(badge.getBoundingClientRect().left - title.getBoundingClientRect().right).toBeGreaterThan(
@@ -157,4 +175,19 @@ it("shows the terminal badge as its label on a wide screen", async () => {
   const { label, icon } = terminalBadge(screen);
   expect(label.getBoundingClientRect().width).toBeGreaterThan(1);
   expect(icon === null || icon.getBoundingClientRect().width === 0).toBe(true);
+});
+
+it("leaves the title more room than the project crumb on a narrow screen", async () => {
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  await page.viewport(390, 800);
+  await using _viewport = {
+    [Symbol.asyncDispose]: () => page.viewport(viewport.width, viewport.height),
+  };
+  const title = "Refactor the config parser to return a result instead of throwing";
+  await using screen = await render(header(title, true, project));
+  const crumb = screen.getByRole("button", { name: "New thread in Claude sessions" }).element();
+  const heading = screen.getByRole("button", { name: `Thread actions for ${title}` }).element();
+  expect(heading.getBoundingClientRect().width).toBeGreaterThan(
+    crumb.getBoundingClientRect().width,
+  );
 });
