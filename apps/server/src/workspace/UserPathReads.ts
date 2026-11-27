@@ -180,14 +180,17 @@ const UnavailableReads = Context.Reference<{ unavailable: boolean } | undefined>
 );
 
 /** Runs `effect`, and also returns whether any `readUserPath` in it was unavailable. */
-export const trackUnavailableReads = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const outer = yield* UnavailableReads;
-    const tracker = { unavailable: false };
-    const value = yield* effect.pipe(Effect.provideService(UnavailableReads, tracker));
-    if (tracker.unavailable && outer !== undefined) outer.unavailable = true;
-    return [value, tracker.unavailable] as const;
-  });
+export const trackUnavailableReads = Effect.fn("UserPathReads.trackUnavailableReads")(function* <
+  A,
+  E,
+  R,
+>(effect: Effect.Effect<A, E, R>) {
+  const outer = yield* UnavailableReads;
+  const tracker = { unavailable: false };
+  const value = yield* effect.pipe(Effect.provideService(UnavailableReads, tracker));
+  if (tracker.unavailable && outer !== undefined) outer.unavailable = true;
+  return [value, tracker.unavailable] as const;
+});
 
 /** Runs `stream`, then emits `marker` last if any `readUserPath` in it was unavailable. */
 export const trackUnavailableReadsInStream = <A, E, R, M>(
