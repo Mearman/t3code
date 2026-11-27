@@ -1085,12 +1085,15 @@ const make = Effect.gen(function* () {
     state: { readonly status: "running" | "completed" | "failed"; readonly message: string },
   ) {
     const id = TurnItemId.make(`x:${target.idScope}:${kind}`);
+    // A notice without a level reads as a warning, so only a failed load leaves the level to that default.
+    const level = state.status === "failed" ? "warning" : "info";
     const existing = yield* projections.getTurnItem({ threadId: target.threadId, itemId: id });
     if (
       existing !== null &&
       existing.type === "system_notice" &&
       existing.status === state.status &&
-      existing.message === state.message
+      existing.message === state.message &&
+      existing.level === level
     ) {
       return;
     }
@@ -1119,7 +1122,7 @@ const make = Effect.gen(function* () {
             updatedAt: at,
             type: "system_notice",
             message: state.message,
-            ...(state.status === "failed" ? { level: "warning" as const } : {}),
+            level,
           },
         },
       ],
