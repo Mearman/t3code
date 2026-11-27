@@ -28,6 +28,7 @@ import * as Stream from "effect/Stream";
 
 import { forkParked } from "../serverActivation.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import { ClaudeSecondWriterRuns } from "./ClaudeSecondWriterRuns.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 
@@ -40,7 +41,9 @@ type ForkPlan =
   | { readonly type: "fork_only"; readonly sourceRunId: OrchestrationV2Run["id"] };
 
 /**
- * How a send refused for a holder, whose choice was to fork, continues: fork from the run before it and send its text there. A message with attachments, which only a fresh upload can carry, or one with no run before it is forked from the refused run, whose recorded message the fork carries.
+ * How a send refused for a holder, whose choice was to fork, continues: fork from the run before it
+ * and send its text there. A message with attachments, which only a fresh upload can carry, or one
+ * with no run before it is forked from the refused run, whose recorded message the fork carries.
  */
 export function planHeldSessionFork(
   projection: Pick<
@@ -68,8 +71,9 @@ export function planHeldSessionFork(
 }
 
 /**
- * Whether `run` went beside a holder: it resent a refusal with the `send` choice and its prompt
- * reached Claude, so the holder's next prompt continues from before its reply.
+ * Whether `run` went beside a holder: it resent a refusal with the `send` choice, the gate saw a
+ * holder when it let the run through (`sawHolder`), and its prompt reached Claude, so the holder's
+ * next prompt continues from before its reply.
  */
 export function wentBesideHolder(
   projection: Pick<
@@ -77,8 +81,15 @@ export function wentBesideHolder(
     "runs" | "attempts" | "providerTurns" | "turnItems"
   >,
   run: OrchestrationV2Run,
+  sawHolder: boolean,
 ): boolean {
-  if (run.heldSessionSend !== "send" || run.manualContinuationOfRunId === undefined) return false;
+  if (
+    !sawHolder ||
+    run.heldSessionSend !== "send" ||
+    run.manualContinuationOfRunId === undefined
+  ) {
+    return false;
+  }
   const continued = projection.runs.find(
     (candidate) => candidate.id === run.manualContinuationOfRunId,
   );
@@ -115,6 +126,7 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const eventSink = yield* EventSink.EventSinkV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
+  const secondWriters = yield* ClaudeSecondWriterRuns;
 
   // Says, after the reply, that the session now branches, once per run.
   const noteSecondWriter = Effect.fnUntraced(function* (
@@ -171,7 +183,8 @@ const make = Effect.gen(function* () {
         "messages",
       ]);
       if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) return;
-      if (wentBesideHolder(projection, run)) {
+      const sawHolder = run.heldSessionSend === "send" ? yield* secondWriters.take(run.id) : false;
+      if (wentBesideHolder(projection, run, sawHolder)) {
         yield* noteSecondWriter(projection, run);
         return;
       }

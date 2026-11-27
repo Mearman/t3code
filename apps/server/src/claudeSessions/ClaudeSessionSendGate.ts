@@ -10,6 +10,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { T3_CODE_ENTRYPOINT } from "../provider/Drivers/ClaudeHome.ts";
+import type { ClaudeSecondWriterRuns } from "./ClaudeSecondWriterRuns.ts";
 import {
   indexClaudeProcessTable,
   type ClaudeProcessRow,
@@ -273,6 +274,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   /** What the host needs to list processes, told to the user when it cannot. */
   processTableRequirement: string,
   takeOver: ClaudeSessionTakeOver,
+  secondWriters: Pick<ClaudeSecondWriterRuns["Service"], "record">,
 ): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
   // A failed check or a holder only possibly there may clear on its own (a slow `ps`, an entry
   // being written), so it is checked again before the write is refused.
@@ -421,17 +423,21 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     return step(undefined);
   };
   // A resend that chose `send` goes beside a holder waiting for a prompt, never one mid-turn.
+  // Records the run only when a holder is there to write beside, so only it gets the branch note.
   const sendBeside = (
     providerThread: OrchestrationV2ProviderThread,
+    runId: string,
   ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
     const sessionId = providerThread.nativeThreadRef?.nativeId;
     if (sessionId === undefined || sessionId === null) return Effect.void;
-    return Effect.flatMap(Effect.result(probe(sessionId)), (probed) =>
-      Result.isSuccess(probed) &&
-      (probed.success === undefined || (probed.success._tag === "held" && probed.success.idle))
-        ? Effect.void
-        : refuseHeld(providerThread, "send", true),
-    );
+    return Effect.flatMap(Effect.result(probe(sessionId)), (probed) => {
+      if (Result.isFailure(probed)) return refuseHeld(providerThread, "send", true);
+      const hold = probed.success;
+      if (hold === undefined) return Effect.void;
+      return hold._tag === "held" && hold.idle
+        ? secondWriters.record(runId)
+        : refuseHeld(providerThread, "send", true);
+    });
   };
   const refuseBeforePrompt = (
     input: Pick<
@@ -450,7 +456,7 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
       choice === "takeOver"
         ? takeOverHeld(input.providerThread)
         : choice === "send" && resend
-          ? sendBeside(input.providerThread)
+          ? sendBeside(input.providerThread, input.runId)
           : refuseHeld(input.providerThread, choice)
     ).pipe(
       Effect.mapError(
@@ -542,6 +548,7 @@ export function gateHeldClaudeSessions(
   probe: ClaudeSessionHoldProbe,
   processTableRequirement: string,
   takeOver: ClaudeSessionTakeOver,
+  secondWriters: Pick<ClaudeSecondWriterRuns["Service"], "record">,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     ...adapter,
@@ -550,7 +557,13 @@ export function gateHeldClaudeSessions(
         .openSession(input)
         .pipe(
           Effect.map((runtime) =>
-            gateHeldClaudeSessionRuntime(runtime, probe, processTableRequirement, takeOver),
+            gateHeldClaudeSessionRuntime(
+              runtime,
+              probe,
+              processTableRequirement,
+              takeOver,
+              secondWriters,
+            ),
           ),
         ),
   };

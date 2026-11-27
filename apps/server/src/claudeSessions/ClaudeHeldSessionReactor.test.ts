@@ -138,15 +138,20 @@ it("notes a branch only on a resend with `send` whose prompt reached Claude", ()
     PROVIDER_THREAD_IN_USE_FAILURE_CODE,
     PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
   ]) {
-    assert.isTrue(wentBesideHolder(projection({ code, delivered: true }), resent));
+    assert.isTrue(wentBesideHolder(projection({ code, delivered: true }), resent, true));
+    // The holder had gone when the resend went, so it wrote alone and nothing branched.
+    assert.isFalse(wentBesideHolder(projection({ code, delivered: true }), resent, false));
   }
   assert.isFalse(
     wentBesideHolder(
       projection({ code: PROVIDER_THREAD_IN_USE_FAILURE_CODE, delivered: false }),
       resent,
+      true,
     ),
   );
-  assert.isFalse(wentBesideHolder(projection({ code: "provider_error", delivered: true }), resent));
+  assert.isFalse(
+    wentBesideHolder(projection({ code: "provider_error", delivered: true }), resent, true),
+  );
   const askedAgain = run(2, { manualContinuationOfRunId: refused.id });
   assert.isFalse(
     wentBesideHolder(
@@ -156,6 +161,7 @@ it("notes a branch only on a resend with `send` whose prompt reached Claude", ()
         resent: askedAgain,
       }),
       askedAgain,
+      true,
     ),
   );
 });

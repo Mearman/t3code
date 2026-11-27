@@ -10,6 +10,7 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as ClaudeHeldSessionReactor from "./claudeSessions/ClaudeHeldSessionReactor.ts";
+import * as ClaudeSecondWriterRuns from "./claudeSessions/ClaudeSecondWriterRuns.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as MilestoneHub from "./milestones/MilestoneHub.ts";
 import * as OrchestrationMilestones from "./milestones/OrchestrationMilestones.ts";
@@ -817,7 +818,13 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ).pipe(
     Layer.provide(ClaudeHeldSessionReactor.layer),
     Layer.provide(
-      Layer.mergeAll(ProjectionStoreV2.layer, RuntimeLayer.layerEventSink, IdAllocator.layer),
+      Layer.mergeAll(
+        ProjectionStoreV2.layer,
+        RuntimeLayer.layerEventSink,
+        IdAllocator.layer,
+        // The layer the drivers' infrastructure merges, so the gate and this share one record.
+        ClaudeSecondWriterRuns.layer,
+      ),
     ),
   ),
   Layer.effectDiscard(

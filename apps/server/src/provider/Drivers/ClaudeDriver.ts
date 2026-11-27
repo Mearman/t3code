@@ -15,6 +15,7 @@ import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { claudeProcessTableRequirement } from "../../claudeSessions/ClaudeProcessTable.ts";
+import { ClaudeSecondWriterRuns } from "../../claudeSessions/ClaudeSecondWriterRuns.ts";
 import { ClaudeSpawnedProcesses } from "../../claudeSessions/ClaudeSpawnedProcesses.ts";
 import {
   ClaudeTakeOverSignalError,
@@ -94,6 +95,7 @@ const withoutUsage = (capabilities: ClaudeCapabilitiesProbe): ClaudeCapabilities
 
 export type ClaudeDriverEnv =
   | ClaudeAdapterV2DriverEnv
+  | ClaudeSecondWriterRuns
   | ClaudeSpawnedProcesses
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
@@ -226,6 +228,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       ),
     );
     const spawnedProcesses = yield* ClaudeSpawnedProcesses;
+    const secondWriters = yield* ClaudeSecondWriterRuns;
     const platform = yield* HostProcess.Platform;
     const sessionsDir = path.join(configDir, "sessions");
     const sendGatedAdapter = gateHeldClaudeSessions(
@@ -253,6 +256,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         running: (pid) =>
           Effect.map(spawnedProcesses.readProcesses, (rows) => rows.some((row) => row.pid === pid)),
       },
+      secondWriters,
     );
     const textGeneration = yield* makeClaudeTextGeneration(
       effectiveConfig,

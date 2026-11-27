@@ -604,6 +604,12 @@ describe("gateHeldClaudeSessionRuntime", () => {
             return (lingering -= 1) >= 0;
           }),
       },
+      {
+        record: (runId) =>
+          Effect.sync(() => {
+            calls.push(`second-writer:${runId}`);
+          }),
+      },
     );
     return { runtime, calls, probes, state };
   };
@@ -768,10 +774,22 @@ describe("gateHeldClaudeSessionRuntime", () => {
         yield* idle.runtime.startTurn(sendTurn(now, true));
         const refusal = yield* Effect.flip(busy.runtime.startTurn(sendTurn(now, true)));
 
-        expect(idle.calls).toEqual(["startTurn"]);
+        // Only a send beside a holder is recorded for the branch note.
+        expect(idle.calls).toEqual(["second-writer:run-held", "startTurn"]);
         expect(busy.calls).toEqual([]);
         expect(continueAsOf(refusal)).toBe(undefined);
         expectInUse("startTurn", refusal, true);
+      }),
+    );
+
+    it.effect("records nothing for a resend whose holder has gone, which writes alone", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({});
+
+        yield* runtime.startTurn(sendTurn(now, true));
+
+        expect(calls).toEqual(["startTurn"]);
       }),
     );
 
