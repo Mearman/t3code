@@ -46,6 +46,7 @@ vi.mock("../../state/preferences", () => ({
 }));
 vi.mock("./components/AutoSettleDaysField", () => ({ AutoSettleDaysField: () => null }));
 vi.mock("./ClaudeSessionSyncSection", () => ({ ClaudeSessionSyncSection: () => null }));
+vi.mock("./ClaudeReplicationSection", () => ({ ClaudeReplicationSection: () => null }));
 vi.mock("./components/IssueTrackerSection", () => ({ IssueTrackerSection: () => null }));
 vi.mock("./components/SourceControlProvidersSection", () => ({
   SourceControlProvidersSection: () => null,
