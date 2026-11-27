@@ -45,6 +45,8 @@ export const AgentSessionScanResult = Schema.Struct({
   candidates: Schema.Array(AgentSessionProjectCandidate),
   scannedAt: IsoDateTime,
   truncated: Schema.optional(Schema.Boolean),
+  /** A folder did not answer, such as one behind an unanswered macOS prompt. */
+  unanswered: Schema.optional(Schema.Boolean),
 });
 export type AgentSessionScanResult = typeof AgentSessionScanResult.Type;
 
@@ -75,6 +77,8 @@ export class AgentSessionImportProjectChangedError extends Schema.TaggedError<Ag
 export const AgentSessionImportResult = Schema.Struct({
   importedCount: NonNegativeInt,
   skippedCount: NonNegativeInt,
+  /** A folder did not answer, so threads may be missing from this import. */
+  unanswered: Schema.optional(Schema.Boolean),
 });
 export type AgentSessionImportResult = typeof AgentSessionImportResult.Type;
 

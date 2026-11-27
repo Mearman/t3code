@@ -266,9 +266,14 @@ const make = Effect.gen(function* () {
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
+    let unanswered = false;
 
     yield* Stream.runForEach(outcomes, (outcome) =>
       Effect.gen(function* () {
+        if (outcome._tag === "Unanswered") {
+          unanswered = true;
+          return;
+        }
         if (outcome._tag === "Skipped") {
           skippedCount += 1;
           return;
@@ -495,7 +500,11 @@ const make = Effect.gen(function* () {
       }),
     );
 
-    return { importedCount, skippedCount } satisfies AgentSessionImportResult;
+    return {
+      importedCount,
+      skippedCount,
+      ...(unanswered ? { unanswered: true } : {}),
+    } satisfies AgentSessionImportResult;
   });
 
   /**
