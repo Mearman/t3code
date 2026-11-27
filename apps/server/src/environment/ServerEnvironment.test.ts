@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
+import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
@@ -114,6 +115,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
         expect(descriptor.capabilities.serverSelfUpdate).toBe(
           mode === "web" ? undefined : "desktop-managed",
         );
+        // Clients check this server for updates against the repository it reports.
+        expect(descriptor.capabilities.serverReleaseRepository).toBe(CLI_RELEASE_REPOSITORY);
         expect(descriptor.capabilities).toMatchObject({
           settledWorktreeCleanup: true,
           storageCleanupRun: true,

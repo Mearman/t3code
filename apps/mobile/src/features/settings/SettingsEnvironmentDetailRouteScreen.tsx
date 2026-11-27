@@ -42,7 +42,11 @@ import {
   canUpdateEnvironmentProvider,
   supportsEnvironmentUpdate,
 } from "./environment-maintenance";
-import { environmentReleaseCheckAtom, releaseCheckValue } from "./environmentUpdateCheck";
+import {
+  environmentReleaseCheckAtom,
+  environmentReleaseSource,
+  releaseCheckValue,
+} from "./environmentUpdateCheck";
 
 export function SettingsEnvironmentDetailRouteScreen({
   route,
@@ -320,11 +324,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       loading={pending === "check"}
                       onPress={() => {
                         if (disabled) return;
-                        const source = {
-                          serverVersion: config.environment.serverVersion,
-                          releaseRepository:
-                            config.environment.capabilities.serverReleaseRepository,
-                        };
+                        const source = environmentReleaseSource(config.environment);
                         void run("check", async () => {
                           const exit = await checkRelease(async () => source);
                           // `run` owns the error message, so a failed lookup rethrows to it.

@@ -19,6 +19,7 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { SettingsSection } from "./components/SettingsSection";
 import {
   environmentReleaseCheckAtom,
+  environmentReleaseSource,
   releaseCheckError,
   releaseCheckValue,
 } from "./environmentUpdateCheck";
@@ -49,10 +50,7 @@ export function OutdatedServerUpdateSection({
     startCheck(async () => {
       const description = await describe(environmentId);
       if (AsyncResult.isFailure(description)) throw squashAtomCommandFailure(description);
-      return {
-        serverVersion: description.value.serverVersion,
-        releaseRepository: description.value.capabilities.serverReleaseRepository,
-      };
+      return environmentReleaseSource(description.value);
     });
   }
 
