@@ -319,7 +319,7 @@ describe("workEntriesViewedImages", () => {
 
 describe("systemNoticeLabel", () => {
   it("shows the history notice of a synced session as its own wording per state", () => {
-    const id = "x:session:history";
+    const id = TurnItemId.make("x:session:history");
     const message = "English from the server.";
     expect(systemNoticeLabel({ id, status: "running", message })).toBe(
       "Loading this session's history",
@@ -329,11 +329,19 @@ describe("systemNoticeLabel", () => {
 
   it("keeps the reason a history load failed with, and the text of every other notice", () => {
     const reason = "History not loaded: the disk is below the 10 GB the sync keeps free.";
-    expect(systemNoticeLabel({ id: "x:session:history", status: "failed", message: reason })).toBe(
-      reason,
-    );
     expect(
-      systemNoticeLabel({ id: "x:session:disk", status: "completed", message: "Following again." }),
+      systemNoticeLabel({
+        id: TurnItemId.make("x:session:history"),
+        status: "failed",
+        message: reason,
+      }),
+    ).toBe(reason);
+    expect(
+      systemNoticeLabel({
+        id: TurnItemId.make("x:session:disk"),
+        status: "completed",
+        message: "Following again.",
+      }),
     ).toBe("Following again.");
   });
 });
