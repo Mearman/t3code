@@ -3,6 +3,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ClaudeSecondWriterRuns from "../claudeSessions/ClaudeSecondWriterRuns.ts";
 import type { ClaudeSpawnedProcesses } from "../claudeSessions/ClaudeSpawnedProcesses.ts";
 import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as CodexAdapterV2 from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -16,6 +17,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 export type ProviderOrchestrationAdapterInfrastructure =
   | ClaudeAdapterV2.ClaudeAgentSdkQueryRunner
+  | ClaudeSecondWriterRuns.ClaudeSecondWriterRuns
   | ClaudeSpawnedProcesses
   | CodexAdapterV2.CodexAppServerClientFactory
   | CursorAgentSdk.CursorAgentSdkRunner
@@ -63,6 +65,7 @@ const resolveCursorWorkerLaunch = Effect.gen(function* () {
 /** Reuse the continuation worker's exact layer reference so memoization shares one queue. */
 export const layer = Layer.mergeAll(
   ClaudeAdapterV2.layerQueryRunner,
+  ClaudeSecondWriterRuns.layer,
   CodexAdapterV2.layerAppServerClientFactory,
   Layer.unwrap(
     Effect.gen(function* () {
