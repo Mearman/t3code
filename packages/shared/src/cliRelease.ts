@@ -3,7 +3,13 @@ import * as Schema from "effect/Schema";
 
 import { compareSemverVersions } from "./semver.ts";
 
-const CLI_RELEASE_REPOSITORY = "pingdotgg/t3code";
+const UPSTREAM_RELEASE_REPOSITORY = "pingdotgg/t3code";
+// Bundles define this from the build's release repository (scripts/lib/release-repository.ts).
+declare const __T3CODE_RELEASE_REPOSITORY__: string | undefined;
+const CLI_RELEASE_REPOSITORY =
+  typeof __T3CODE_RELEASE_REPOSITORY__ === "undefined"
+    ? UPSTREAM_RELEASE_REPOSITORY
+    : __T3CODE_RELEASE_REPOSITORY__;
 export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
@@ -65,6 +71,18 @@ export function cliReleaseAssetUrl(
   baseUrl: string | undefined = CLI_RELEASE_DEFAULT_BASE_URL,
 ): string {
   return releaseAssetUrl(baseUrl?.trim() || CLI_RELEASE_DEFAULT_BASE_URL, `v${version}`, fileName);
+}
+
+/**
+ * The shell installer that installs `version`. Builds of another repository use the installer attached to their own release, which defaults to that repository and the release's channel.
+ */
+export function cliInstallScriptUrl(
+  version: string,
+  repository: string = CLI_RELEASE_REPOSITORY,
+): string {
+  return repository === UPSTREAM_RELEASE_REPOSITORY
+    ? "https://t3.codes/install.sh"
+    : `https://github.com/${repository}/releases/download/v${version}/install.sh`;
 }
 
 export function parseChecksums(text: string): ReadonlyMap<string, string> {
