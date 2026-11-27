@@ -6,6 +6,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as ClaudeAccounts from "./claudeSessions/ClaudeAccounts.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as PeerClientPairing from "./peer/PeerClientPairing.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
@@ -2808,6 +2809,13 @@ export const layerWsRpc = (
         [WS_METHODS.providerAuthCancel]: (input) => providerAuth.cancel(input, currentSessionId),
         [WS_METHODS.providerAuthRemoveMethod]: (input) => providerAuth.removeMethod(input),
         [WS_METHODS.providerAuthLogout]: (input) => providerAuth.logout(input),
+        [WS_METHODS.claudeAccountCreate]: (input) =>
+          ClaudeAccounts.createClaudeAccount(input).pipe(
+            Effect.provideService(ServerSettings.ServerSettingsService, serverSettings),
+            Effect.provideService(ServerConfig.ServerConfig, config),
+            Effect.provideService(HostProcess.Environment, hostEnvironment),
+            Effect.provideService(SecureRandom.SecureRandom, random),
+          ),
         [WS_METHODS.providerAuthSubscribe]: (input) =>
           providerAuth.subscribe(input, currentSessionId),
         [WS_METHODS.providerInstallStart]: (input) => providerInstallation.start(input),

@@ -147,6 +147,16 @@ export const ProviderAuthCompleteInput = Schema.Struct({
 });
 export type ProviderAuthCompleteInput = typeof ProviderAuthCompleteInput.Type;
 
+/** Adds a Claude instance on a config directory the server creates, which signs in on its own. */
+export const ClaudeAccountCreateInput = Schema.Struct({
+  displayName: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  // The new home links this instance's projects, sessions, file-history and tasks directories.
+  shareHistoryWith: Schema.optionalKey(ProviderInstanceId),
+});
+export type ClaudeAccountCreateInput = typeof ClaudeAccountCreateInput.Type;
+export const ClaudeAccountCreateResult = Schema.Struct({ instanceId: ProviderInstanceId });
+export type ClaudeAccountCreateResult = typeof ClaudeAccountCreateResult.Type;
+
 export const ProviderAuthCancelInput = Schema.Struct({
   instanceId: ProviderInstanceId,
   flowId: SetupOperationId,
