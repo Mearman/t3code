@@ -53,6 +53,18 @@ describe("V2 client presentation", () => {
     expect(effectiveSnoozed(active, { now: "2026-06-20T00:05:00.000Z" })).toBe(false);
   });
 
+  it("marks the latest run of a thread whose shell carries the native-origin marker as external", () => {
+    const shell = {
+      ...v2ThreadShell,
+      latestRunId: RunId.make("run-native"),
+      status: "completed" as const,
+    };
+    expect(
+      presentThreadShell(environmentId, { ...shell, latestRunNativeOrigin: true }).latestRun,
+    ).toMatchObject({ runId: "run-native", external: true });
+    expect(presentThreadShell(environmentId, shell).latestRun?.external).toBeUndefined();
+  });
+
   it("moves a running thread with any question out of Working", () => {
     for (const capability of [{ blocking: false }, { blocking: true }, {}]) {
       const shell = presentThreadShell(environmentId, {

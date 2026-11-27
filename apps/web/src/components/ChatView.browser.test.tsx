@@ -827,6 +827,47 @@ it("forks a held session from the refused run's error row", async () => {
   );
 });
 
+it("marks a thread header as from a terminal only when its latest run was read back from one", async () => {
+  const history = threadWithHistory("terminal-origin", 1);
+  const nativeRun = {
+    ...history.runs[0]!,
+    nativeOrigin: {
+      kind: "claude_transcript" as const,
+      nativeSessionId: "session-1",
+      promptUuid: "prompt-1",
+    },
+  };
+  const terminalThread = { ...history, runs: [nativeRun] };
+  using _environment = installFakeEnvironment([terminalThread, threadWithHistory("app-origin", 1)]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const open = async (id: string) => {
+    const router = getRouter(createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${id}`] }));
+    await router.load();
+    return render(<AppRoot router={router} />, {
+      // AppRoot brings its own router.
+      router: false,
+    });
+  };
+
+  // The open thread's title bar is the one header that names the thread.
+  const headerText = (title: string) =>
+    [...document.querySelectorAll("header")]
+      .map((header) => header.textContent)
+      .find((text) => text.includes(title));
+
+  {
+    await using _app = await open(terminalThread.id);
+    await vi.waitFor(() => expect(headerText(terminalThread.title)).toContain("Terminal"));
+  }
+  const appThread = threadWithHistory("app-origin", 1);
+  await using _app = await open(appThread.id);
+  await vi.waitFor(() => expect(headerText(appThread.title)).toBeDefined());
+  expect(headerText(appThread.title)).not.toContain("Terminal");
+});
+
 it("Enter on an empty prompt resumes an interrupted thread", async () => {
   const history = threadWithHistory("interrupted", 1);
   const interruptedRun = { ...history.runs[0]!, status: "interrupted" as const };
