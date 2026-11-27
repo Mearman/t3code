@@ -18,6 +18,7 @@ import { summarizeToolGroup } from "@t3tools/client-runtime/work-log/presentatio
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { MessageResolver } from "../i18n/messages";
 import {
   buildThreadFeed,
   workEntryRowLabel,
@@ -68,6 +69,26 @@ it.each([
     )[0];
     expect(activity?.summary).toBe(label);
     expect(workEntryRowLabel(activity!.workEntry)).toBe(label);
+  },
+);
+
+it.each(["running", "completed"] as const)(
+  "resolves a %s history notice's summary and row label through the feed's resolver",
+  (status) => {
+    const marker = (message: string) => `[xx] ${message}`;
+    // The marker proves the resolver the feed was given reached the notice, not the default one.
+    const resolve = marker as unknown as MessageResolver;
+    const item = {
+      ...base("x:session:history", "2026-08-29T00:00:00.000Z", 1),
+      status,
+      type: "system_notice" as const,
+      message: "English from the server.",
+    };
+    const activity = buildThreadFeed([projected(item, 0)], { resolve }).flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    )[0];
+    expect(activity?.summary).toContain("[xx] ");
+    expect(workEntryRowLabel(activity!.workEntry, false, resolve)).toContain("[xx] ");
   },
 );
 
