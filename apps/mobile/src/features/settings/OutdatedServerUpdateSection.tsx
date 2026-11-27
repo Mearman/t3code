@@ -49,7 +49,10 @@ export function OutdatedServerUpdateSection({
     startCheck(async () => {
       const description = await describe(environmentId);
       if (AsyncResult.isFailure(description)) throw squashAtomCommandFailure(description);
-      return description.value.serverVersion;
+      return {
+        serverVersion: description.value.serverVersion,
+        releaseRepository: description.value.capabilities.serverReleaseRepository,
+      };
     });
   }
 

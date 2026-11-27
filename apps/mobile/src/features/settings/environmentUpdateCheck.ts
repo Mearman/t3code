@@ -13,10 +13,16 @@ import { findEnvironmentUpdate } from "./environment-maintenance";
 
 // app.config.ts records the build's release repository; Metro substitutes no bundle defines.
 const configuredReleaseRepository: unknown = Constants.expoConfig?.extra?.releaseRepository;
-const releaseRepository =
+const buildReleaseRepository =
   typeof configuredReleaseRepository === "string"
     ? configuredReleaseRepository
     : CLI_RELEASE_REPOSITORY;
+
+/** A server's version, and the repository it updates from when it reports one. */
+export interface EnvironmentReleaseSource {
+  readonly serverVersion: string;
+  readonly releaseRepository: string | undefined;
+}
 
 export interface EnvironmentReleaseCheck {
   readonly fromVersion: string;
@@ -43,15 +49,18 @@ const asError = (cause: unknown) =>
 /**
  * Looks up the newest T3 Code release for one environment. The atom is not
  * kept alive, so leaving the screen interrupts the lookup and aborts its fetch.
- * The argument reads the server version, which an outdated server only
- * reports through a separate description request.
+ * The argument reads the server's version and release repository, which an
+ * outdated server only reports through a separate description request.
  */
 export const environmentReleaseCheckAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.fn((readServerVersion: () => Promise<string>) =>
+  Atom.fn((readServer: () => Promise<EnvironmentReleaseSource>) =>
     Effect.gen(function* () {
-      const fromVersion = yield* Effect.tryPromise({ try: readServerVersion, catch: asError });
+      const server = yield* Effect.tryPromise({ try: readServer, catch: asError });
+      const fromVersion = server.serverVersion;
+      // Servers from before serverReleaseRepository update from this app's own repository.
+      const repository = server.releaseRepository ?? buildReleaseRepository;
       const targetVersion = yield* Effect.tryPromise({
-        try: (signal) => findEnvironmentUpdate(fromVersion, releaseRepository, signal),
+        try: (signal) => findEnvironmentUpdate(fromVersion, repository, signal),
         catch: asError,
       }).pipe(
         Effect.timeoutOrElse({
