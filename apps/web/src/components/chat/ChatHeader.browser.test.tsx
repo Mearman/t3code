@@ -24,13 +24,14 @@ vi.mock(import("~/hooks/useThreadActionMenu"), () => ({
 import { render, stubGlobal } from "../../../test/render";
 import { ChatHeader } from "./ChatHeader";
 
-function header(title: string) {
+function header(title: string, fromTerminal = false) {
   return (
     <>
       <ChatHeader
         activeThreadEnvironmentId={EnvironmentId.make("environment")}
         activeThreadId={ThreadId.make("thread")}
         activeThreadTitle={title}
+        activeThreadFromTerminal={fromTerminal}
         isServerThread
         activeProject={null}
         parentThreadLink={null}
@@ -102,4 +103,11 @@ it("keeps the Escape that cancels a rename from also reaching window shortcuts",
   await expect.element(input).not.toBeInTheDocument();
   expect(persisted.title).toBe("New thread");
   expect(windowEscapes).toEqual([true]);
+});
+
+it("marks a thread whose latest run came from a terminal, and no other", async () => {
+  await using screen = await render(header("Synced session", true));
+  await expect.element(screen.getByText("Terminal", { exact: true })).toBeInTheDocument();
+  await screen.rerender(header("Synced session", false));
+  await expect.element(screen.getByText("Terminal", { exact: true })).not.toBeInTheDocument();
 });

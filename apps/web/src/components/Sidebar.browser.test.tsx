@@ -9,6 +9,7 @@ import {
   EnvironmentId,
   type LocalApi,
   ProjectId,
+  RunId,
   ThreadId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -572,5 +573,59 @@ describe("sidebar settled pagination", () => {
     const loadedRows = screen.container.querySelectorAll("[data-thread-item]").length;
     await act(() => moreButton.click());
     expect(screen.container.querySelectorAll("[data-thread-item]")).toHaveLength(loadedRows);
+  });
+});
+
+describe("sidebar terminal origin badge", () => {
+  it("marks only the thread whose latest run was read back from a terminal", async () => {
+    const activeProject = project("active");
+    const run = {
+      runId: RunId.make("run"),
+      status: "completed" as const,
+      requestedAt: "2026-01-01T00:00:00.000Z",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:01:00.000Z",
+      assistantMessageId: null,
+    };
+    const threads = [
+      makeThreadFixture({
+        environmentId: activeProject.environmentId,
+        projectId: activeProject.id,
+        id: ThreadId.make("terminal-thread"),
+        title: "Started in a terminal",
+        latestRun: { ...run, external: true },
+      }),
+      makeThreadFixture({
+        environmentId: activeProject.environmentId,
+        projectId: activeProject.id,
+        id: ThreadId.make("app-thread"),
+        title: "Started in the app",
+        latestRun: run,
+      }),
+    ];
+    vi.mocked(useProjects).mockReturnValue([activeProject]);
+    vi.mocked(useQuietThreadShells).mockReturnValue(threads);
+    vi.mocked(useThreadRouteTarget).mockReturnValue(null);
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: null,
+      defaultProjectRef: {
+        environmentId: activeProject.environmentId,
+        projectId: activeProject.id,
+      },
+      defaultProjectFallbackReady: true,
+      handleNewThread: vi.fn().mockResolvedValue(null),
+      routeDraftId: null,
+      routeThreadRef: null,
+    });
+    await using screen = await render(
+      <SidebarProvider>
+        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+      </SidebarProvider>,
+    );
+
+    await expect.element(screen.getByText("Started in the app").first()).toBeInTheDocument();
+    await expect.element(screen.getByText("Terminal", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Terminal", { exact: true }).elements()).toHaveLength(1);
   });
 });

@@ -859,6 +859,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         showBadge: providerInstance.showBadge,
       })
     : null;
+  const fromTerminal = thread.latestRun?.external === true;
   const pr = useThreadPr(thread);
   const prBadgeLabel = pr ? resolveThreadPrBadgeAction(pr, m).accessibilityLabel : null;
   const handleOpenPullRequests = useCallback(() => {
@@ -869,6 +870,19 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const sidebarPane = props.pane === "sidebar";
   const selected = props.selected === true;
   const rowAppearance = getThreadListV2RowAppearance(theme, sidebarPane, selected);
+  const terminalBadge = fromTerminal ? (
+    <Text
+      className={cn(
+        "shrink-0 text-xs",
+        selected
+          ? selectedThreadRowColors.mutedForegroundClassName
+          : rowAppearance.tertiaryForegroundClassName,
+      )}
+      numberOfLines={1}
+    >
+      {gt("Terminal", { $context: "badge: the thread's latest run came from a terminal" })}
+    </Text>
+  ) : null;
 
   const rawStatus = resolveThreadListV2Status(thread);
   const status = resolveThreadListV2RowStatus(thread);
@@ -911,6 +925,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       timeLabel,
       snoozeWakeLabel: snoozedRow && !pendingSync ? snoozeWakeLabelText : undefined,
       providerNameLabel,
+      fromTerminal,
       hasQueuedMessages: props.hasQueuedMessages === true,
       regeneratingTitle: isRegeneratingTitle,
     },
@@ -1559,6 +1574,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         ) : (
           <View className="flex-1" />
         )}
+        {terminalBadge}
         {pr ? (
           <Pressable
             // Padding cancelled by negative margin grows the touch target into
@@ -1742,6 +1758,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 {providerNameLabel}
               </Text>
             ) : null}
+            {terminalBadge}
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
                 sidebar={sidebarPane}

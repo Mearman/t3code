@@ -254,6 +254,7 @@ describe("threadListV2RowAccessibilityLabel", () => {
     timeLabel: "5m",
     snoozeWakeLabel: undefined,
     providerNameLabel: "Codex",
+    fromTerminal: false,
     hasQueuedMessages: false,
     regeneratingTitle: false,
   } as const;
@@ -274,6 +275,12 @@ describe("threadListV2RowAccessibilityLabel", () => {
         snoozeWakeLabel: "in 2h",
       }),
     ).toBe("Fix login, in 2h, Codex");
+  });
+
+  it("says a thread whose latest run came from a terminal", () => {
+    expect(threadListV2RowAccessibilityLabel({ ...row, fromTerminal: true })).toBe(
+      "Fix login, 5m, Codex, from a terminal",
+    );
   });
 });
 

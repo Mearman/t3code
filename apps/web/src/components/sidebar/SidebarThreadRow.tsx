@@ -134,6 +134,7 @@ import { useThreadRunningTerminalIds } from "../../state/terminalSessions";
 import { InlineButton } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import { Badge } from "../ui/badge";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ActivityShimmerOverlay } from "../chat/TimelineRowParts";
@@ -1220,6 +1221,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       />
     </ThreadLinkBadge>
   ) : null;
+  const terminalOriginBadge =
+    thread.latestRun?.external === true ? (
+      <SharedTooltipTrigger
+        render={<Badge variant="outline" size="sm" />}
+        label={
+          <>
+            <T>The latest activity in this thread came from Claude Code in a terminal.</T>
+          </>
+        }
+      >
+        <T>Terminal</T>
+      </SharedTooltipTrigger>
+    ) : null;
   const terminalStatusIcon = (
     <ThreadTerminalStatusButton
       threadRef={threadRef}
@@ -1289,6 +1303,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     props.environmentLabel === null &&
     prBadge === null &&
     issueBadge === null &&
+    terminalOriginBadge === null &&
     diff === null &&
     runningTerminalIds.length === 0;
   const metaLine = metaLineEmpty ? null : (
@@ -1305,6 +1320,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       ) : (
         <span className="flex-1" />
       )}
+      {terminalOriginBadge}
       {terminalStatusIcon}
       {prBadge}
       {issueBadge}

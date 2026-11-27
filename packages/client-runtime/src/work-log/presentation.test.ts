@@ -7,6 +7,7 @@ import { compactT3McpToolOutput } from "@t3tools/shared/toolOutput";
 import {
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
+  systemNoticeLabel,
   toolItemForDisplay,
   type WorkLogPresentationEntry,
   workEntryIndicatesToolFailure,
@@ -313,5 +314,26 @@ describe("workEntriesViewedImages", () => {
         read("again", "/repo/a.png", "completed"),
       ]),
     ).toEqual(["/repo/a.png", "/repo/b.png"]);
+  });
+});
+
+describe("systemNoticeLabel", () => {
+  it("shows the history notice of a synced session as its own wording per state", () => {
+    const id = "x:session:history";
+    const message = "English from the server.";
+    expect(systemNoticeLabel({ id, status: "running", message })).toBe(
+      "Loading this session's history",
+    );
+    expect(systemNoticeLabel({ id, status: "completed", message })).toBe("History loaded");
+  });
+
+  it("keeps the reason a history load failed with, and the text of every other notice", () => {
+    const reason = "History not loaded: the disk is below the 10 GB the sync keeps free.";
+    expect(systemNoticeLabel({ id: "x:session:history", status: "failed", message: reason })).toBe(
+      reason,
+    );
+    expect(
+      systemNoticeLabel({ id: "x:session:disk", status: "completed", message: "Following again." }),
+    ).toBe("Following again.");
   });
 });
