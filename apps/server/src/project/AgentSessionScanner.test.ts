@@ -384,6 +384,115 @@ const layerReportingProcessRunner = (
     }),
   ).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(NodeServices.layer));
 
+/**
+ * Wraps `fileSystem` so a stat, realpath or listing at or under `root` never returns, like a
+ * folder whose macOS privacy prompt nobody answers. Each blocked path is offered to `blocked`.
+ */
+const fileSystemBlockedUnder = (
+  fileSystem: FileSystem.FileSystem,
+  root: string,
+  blocked: Queue.Queue<string>,
+) => {
+  const block = <A, E>(target: string, read: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+    target === root || target.startsWith(`${root}/`)
+      ? Queue.offer(blocked, target).pipe(Effect.andThen(Effect.never))
+      : read;
+  return FileSystem.FileSystem.of({
+    ...fileSystem,
+    stat: (target) => block(target, fileSystem.stat(target)),
+    realPath: (target) => block(target, fileSystem.realPath(target)),
+    readDirectory: (target, options) => block(target, fileSystem.readDirectory(target, options)),
+  });
+};
+
+/** Writes Codex rollouts for `chats` and a state DB that files every chat under one project. */
+const writeCodexProjectChats = Effect.fn("AgentSessionScanner.test.writeCodexProjectChats")(
+  function* (input: {
+    readonly codexHomePath: string;
+    readonly nowMs: number;
+    readonly projectId: string;
+    readonly projectDir: string;
+    readonly chats: ReadonlyArray<{
+      readonly id: string;
+      readonly rolloutId?: string | undefined;
+      readonly cwd: string;
+      readonly message: string;
+    }>;
+  }) {
+    const path = yield* Path.Path;
+    const { codexHomePath, nowMs, projectId, projectDir, chats } = input;
+    const rolloutPaths: Array<string> = [];
+    for (const [index, chat] of chats.entries()) {
+      const rolloutId = chat.rolloutId === undefined ? chat.id : `${chat.id}_${chat.rolloutId}`;
+      const filePath = path.join(
+        codexHomePath,
+        "sessions",
+        "2026",
+        "11",
+        "08",
+        `rollout-2026-11-08T08-0${index}-00-${rolloutId}.jsonl`,
+      );
+      rolloutPaths.push(filePath);
+      yield* writeTranscript({
+        filePath,
+        contents: [
+          encodeTranscriptRecord({
+            type: "session_meta",
+            payload: { id: chat.id, cwd: chat.cwd },
+          }),
+          encodeTranscriptRecord({ type: "turn_context", payload: { cwd: chat.cwd } }),
+          encodeTranscriptRecord({
+            type: "event_msg",
+            payload: { type: "user_message", message: chat.message },
+          }),
+        ].join("\n"),
+        mtimeMs: nowMs - 60_000 + index,
+      });
+    }
+    // Codex records a chat's project only in its state DB; the rollout keeps the original cwd.
+    yield* Effect.sync(() => {
+      const db = new NodeSqlite.DatabaseSync(path.join(codexHomePath, "state_5.sqlite"));
+      try {
+        db.exec(`
+          CREATE TABLE projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            position INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+          );
+          CREATE TABLE project_roots (
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY (project_id, position)
+          );
+          CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            project_id TEXT REFERENCES projects(id) ON DELETE SET NULL
+          );
+        `);
+        db.prepare("INSERT INTO projects VALUES (?, ?, '{}', 0, ?, ?)").run(
+          projectId,
+          path.basename(projectDir),
+          nowMs,
+          nowMs,
+        );
+        db.prepare("INSERT INTO project_roots VALUES (?, 0, ?)").run(projectId, projectDir);
+        const insertThread = db.prepare("INSERT INTO threads VALUES (?, ?, ?, ?)");
+        for (const [index, chat] of chats.entries()) {
+          insertThread.run(chat.id, rolloutPaths[index]!, chat.cwd, projectId);
+        }
+      } finally {
+        db.close();
+      }
+    });
+  },
+);
+
 it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
   describe("scan", () => {
     it.effect("reads Claude project cwds from transcripts, newest first", () =>
@@ -2003,74 +2112,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
             message: "Rewound with no project",
           },
         ];
-        const rolloutPaths: Array<string> = [];
-        for (const [index, chat] of chats.entries()) {
-          const filePath = path.join(
-            codexHomePath,
-            "sessions",
-            "2026",
-            "11",
-            "08",
-            `rollout-2026-11-08T08-0${index}-00-${"rolloutId" in chat ? `${chat.id}_${chat.rolloutId}` : chat.id}.jsonl`,
-          );
-          rolloutPaths.push(filePath);
-          yield* writeTranscript({
-            filePath,
-            contents: [
-              encodeTranscriptRecord({
-                type: "session_meta",
-                payload: { id: chat.id, cwd: chat.cwd },
-              }),
-              encodeTranscriptRecord({ type: "turn_context", payload: { cwd: chat.cwd } }),
-              encodeTranscriptRecord({
-                type: "event_msg",
-                payload: { type: "user_message", message: chat.message },
-              }),
-            ].join("\n"),
-            mtimeMs: nowMs - 60_000 + index,
-          });
-        }
-        // Codex records a chat's project only in its state DB; the rollout keeps the original cwd.
-        yield* Effect.sync(() => {
-          const db = new NodeSqlite.DatabaseSync(path.join(codexHomePath, "state_5.sqlite"));
-          try {
-            db.exec(`
-              CREATE TABLE projects (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                metadata TEXT NOT NULL DEFAULT '{}',
-                position INTEGER NOT NULL,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL
-              );
-              CREATE TABLE project_roots (
-                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                position INTEGER NOT NULL,
-                path TEXT NOT NULL,
-                PRIMARY KEY (project_id, position)
-              );
-              CREATE TABLE threads (
-                id TEXT PRIMARY KEY,
-                rollout_path TEXT NOT NULL,
-                cwd TEXT NOT NULL,
-                project_id TEXT REFERENCES projects(id) ON DELETE SET NULL
-              );
-            `);
-            db.prepare("INSERT INTO projects VALUES (?, ?, '{}', 0, ?, ?)").run(
-              projectId,
-              "my-project",
-              nowMs,
-              nowMs,
-            );
-            db.prepare("INSERT INTO project_roots VALUES (?, 0, ?)").run(projectId, projectDir);
-            const insertThread = db.prepare("INSERT INTO threads VALUES (?, ?, ?, ?)");
-            for (const [index, chat] of chats.entries()) {
-              insertThread.run(chat.id, rolloutPaths[index]!, chat.cwd, projectId);
-            }
-          } finally {
-            db.close();
-          }
-        });
+        yield* writeCodexProjectChats({ codexHomePath, nowMs, projectId, projectDir, chats });
 
         const threads = yield* runRecentThreads({
           claudeHomePath,
@@ -2135,73 +2177,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
               message: "Started in a T3 worktree",
             },
           ];
-          const rolloutPaths: Array<string> = [];
-          for (const [index, chat] of chats.entries()) {
-            const filePath = path.join(
-              codexHomePath,
-              "sessions",
-              "2026",
-              "11",
-              "08",
-              `rollout-2026-11-08T08-0${index}-00-${chat.id}.jsonl`,
-            );
-            rolloutPaths.push(filePath);
-            yield* writeTranscript({
-              filePath,
-              contents: [
-                encodeTranscriptRecord({
-                  type: "session_meta",
-                  payload: { id: chat.id, cwd: chat.cwd },
-                }),
-                encodeTranscriptRecord({ type: "turn_context", payload: { cwd: chat.cwd } }),
-                encodeTranscriptRecord({
-                  type: "event_msg",
-                  payload: { type: "user_message", message: chat.message },
-                }),
-              ].join("\n"),
-              mtimeMs: nowMs - 60_000 + index,
-            });
-          }
-          yield* Effect.sync(() => {
-            const db = new NodeSqlite.DatabaseSync(path.join(codexHomePath, "state_5.sqlite"));
-            try {
-              db.exec(`
-              CREATE TABLE projects (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                metadata TEXT NOT NULL DEFAULT '{}',
-                position INTEGER NOT NULL,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL
-              );
-              CREATE TABLE project_roots (
-                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                position INTEGER NOT NULL,
-                path TEXT NOT NULL,
-                PRIMARY KEY (project_id, position)
-              );
-              CREATE TABLE threads (
-                id TEXT PRIMARY KEY,
-                rollout_path TEXT NOT NULL,
-                cwd TEXT NOT NULL,
-                project_id TEXT REFERENCES projects(id) ON DELETE SET NULL
-              );
-            `);
-              db.prepare("INSERT INTO projects VALUES (?, ?, '{}', 0, ?, ?)").run(
-                projectId,
-                "my-project",
-                nowMs,
-                nowMs,
-              );
-              db.prepare("INSERT INTO project_roots VALUES (?, 0, ?)").run(projectId, projectDir);
-              const insertThread = db.prepare("INSERT INTO threads VALUES (?, ?, ?, ?)");
-              for (const [index, chat] of chats.entries()) {
-                insertThread.run(chat.id, rolloutPaths[index]!, chat.cwd, projectId);
-              }
-            } finally {
-              db.close();
-            }
-          });
+          yield* writeCodexProjectChats({ codexHomePath, nowMs, projectId, projectDir, chats });
 
           const threads = yield* runRecentThreads({
             claudeHomePath,
@@ -3547,6 +3523,140 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     );
   },
 );
+
+describe("AgentSessionScanner with a folder whose reads never return", () => {
+  it.effect("builds without reading T3's own folders", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+      const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+      const configBaseDir = yield* makeTempDir("t3code-scanner-base-");
+      const blocked = yield* Queue.unbounded<string>();
+
+      const outcome = yield* AgentSessionScanner.AgentSessionScanner.pipe(
+        Effect.as("built"),
+        Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, configBaseDir })),
+        Effect.provideService(
+          FileSystem.FileSystem,
+          fileSystemBlockedUnder(fileSystem, configBaseDir, blocked),
+        ),
+        Effect.raceFirst(Queue.take(blocked).pipe(Effect.map((target) => `read ${target}`))),
+      );
+
+      expect(outcome).toBe("built");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("excludes a scratch folder by its path without reading inside it", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const nowMs = Date.parse("2026-11-08T12:00:00.000Z");
+      yield* TestClock.setTime(nowMs);
+      const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+      const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+      const homeDir = yield* makeTempDir("t3code-home-");
+      const projectDir = path.join(homeDir, "code", "my-project");
+      const scratchDir = path.join(homeDir, "Documents", "Codex", "2026-11-08", "new-chat");
+      yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+      yield* fileSystem.makeDirectory(scratchDir, { recursive: true });
+      yield* writeCodexProjectChats({
+        codexHomePath,
+        nowMs,
+        projectId: "019a5f00-0000-7000-8000-000000000201",
+        projectDir,
+        chats: [
+          {
+            id: "019a5f00-0000-7000-8000-00000000020a",
+            cwd: scratchDir,
+            message: "Started with no project",
+          },
+          {
+            id: "019a5f00-0000-7000-8000-00000000020b",
+            cwd: projectDir,
+            message: "Started in the project",
+          },
+        ],
+      });
+      const blocked = yield* Queue.unbounded<string>();
+      const importableTitles = (outcomes: Iterable<AgentSessionScanner.AgentSessionRecentThread>) =>
+        Array.from(outcomes)
+          .flatMap((outcome) => (outcome._tag === "Importable" ? [outcome.thread.title] : []))
+          .toSorted();
+
+      const outcome = yield* Effect.gen(function* () {
+        const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+        const { candidates } = yield* scanner.scan;
+        return {
+          candidates: candidates.map(({ path, threadCount }) => ({ path, threadCount })),
+          projectThreads: importableTitles(
+            yield* scanner.recentThreads(projectDir).pipe(Stream.runCollect),
+          ),
+          scratchThreads: importableTitles(
+            yield* scanner.recentThreads(scratchDir).pipe(Stream.runCollect),
+          ),
+        };
+      }).pipe(
+        Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })),
+        Effect.provideService(
+          FileSystem.FileSystem,
+          fileSystemBlockedUnder(fileSystem, path.join(homeDir, "Documents"), blocked),
+        ),
+        Effect.provideService(HostProcess.HomeDirectory, homeDir),
+        Effect.raceFirst(Queue.take(blocked).pipe(Effect.map((target) => `read ${target}`))),
+      );
+
+      expect(outcome).toEqual({
+        candidates: [{ path: projectDir, threadCount: 2 }],
+        projectThreads: ["Started in the project", "Started with no project"],
+        scratchThreads: [],
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("gives up on a protected folder at the deadline and keeps scanning the rest", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+      const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+      const homeDir = yield* makeTempDir("t3code-home-");
+      const documentsProject = path.join(homeDir, "Documents", "my-project");
+      const otherProject = path.join(homeDir, "code", "other-project");
+      for (const [index, cwd] of [documentsProject, otherProject].entries()) {
+        yield* fileSystem.makeDirectory(cwd, { recursive: true });
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", `-slug-${index}`, "a.jsonl"),
+          contents: claudeSessionLine(cwd),
+          mtimeMs: Date.parse(`2026-01-0${index + 1}T00:00:00.000Z`),
+        });
+      }
+      const blocked = yield* Queue.unbounded<string>();
+
+      yield* Effect.gen(function* () {
+        const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+        const scanPaths = scanner.scan.pipe(
+          Effect.map(({ candidates }) => candidates.map(({ path }) => path)),
+        );
+        const first = yield* Effect.forkChild(scanPaths);
+        expect(yield* Queue.take(blocked)).toBe(documentsProject);
+        yield* TestClock.adjust("2 seconds");
+        expect(yield* Fiber.join(first)).toEqual([otherProject]);
+        // The pending read still holds its lane, so this scan skips the folder at once.
+        expect(yield* scanPaths).toEqual([otherProject]);
+        expect(yield* Queue.size(blocked)).toBe(0);
+      }).pipe(
+        Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })),
+        Effect.provideService(
+          FileSystem.FileSystem,
+          fileSystemBlockedUnder(fileSystem, path.join(homeDir, "Documents"), blocked),
+        ),
+        Effect.provideService(HostProcess.HomeDirectory, homeDir),
+        Effect.provideService(HostProcess.Platform, "darwin"),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
 
 describe("parseAgentSessionTranscript", () => {
   it.each([false, true])(
