@@ -19,10 +19,12 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
@@ -35,6 +37,11 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import {
+  makeUserPathReadState,
+  UserPathReads,
+} from "../workspace/UserPathReads.ts";
+import { fileSystemBlockedUnder } from "../workspace/UserPathReads.testkit.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 
 const makeProjectShell = (workspaceRoot: string): OrchestrationProjectShell => ({
@@ -383,27 +390,6 @@ const layerReportingProcessRunner = (
       });
     }),
   ).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(NodeServices.layer));
-
-/**
- * Wraps `fileSystem` so a stat, realpath or listing at or under `root` never returns, like a
- * folder whose macOS privacy prompt nobody answers. Each blocked path is offered to `blocked`.
- */
-const fileSystemBlockedUnder = (
-  fileSystem: FileSystem.FileSystem,
-  root: string,
-  blocked: Queue.Queue<string>,
-) => {
-  const block = <A, E>(target: string, read: Effect.Effect<A, E>): Effect.Effect<A, E> =>
-    target === root || target.startsWith(`${root}/`)
-      ? Queue.offer(blocked, target).pipe(Effect.andThen(Effect.never))
-      : read;
-  return FileSystem.FileSystem.of({
-    ...fileSystem,
-    stat: (target) => block(target, fileSystem.stat(target)),
-    realPath: (target) => block(target, fileSystem.realPath(target)),
-    readDirectory: (target, options) => block(target, fileSystem.readDirectory(target, options)),
-  });
-};
 
 /** Writes Codex rollouts for `chats` and a state DB that files every chat under one project. */
 const writeCodexProjectChats = Effect.fn("AgentSessionScanner.test.writeCodexProjectChats")(
@@ -3524,22 +3510,39 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   },
 );
 
+/** Fresh lanes and a filesystem whose reads under `root` wait for `answered`. */
+const blockedUnder = Effect.fn("AgentSessionScanner.test.blockedUnder")(function* (root: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const blocked = yield* Queue.unbounded<string>();
+  const answered = yield* Deferred.make<void>();
+  const blockedFileSystem = fileSystemBlockedUnder({
+    fileSystem,
+    root,
+    separator: path.sep,
+    blocked,
+    answered,
+  });
+  const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(FileSystem.FileSystem, blockedFileSystem),
+      Effect.provideService(UserPathReads, makeUserPathReadState()),
+    );
+  return { blocked, answered, provide };
+});
+
 describe("AgentSessionScanner with a folder whose reads never return", () => {
   it.effect("builds without reading T3's own folders", () =>
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
       const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
       const codexHomePath = yield* makeTempDir("t3code-codex-home-");
       const configBaseDir = yield* makeTempDir("t3code-scanner-base-");
-      const blocked = yield* Queue.unbounded<string>();
+      const { blocked, provide } = yield* blockedUnder(configBaseDir);
 
       const outcome = yield* AgentSessionScanner.AgentSessionScanner.pipe(
         Effect.as("built"),
         Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, configBaseDir })),
-        Effect.provideService(
-          FileSystem.FileSystem,
-          fileSystemBlockedUnder(fileSystem, configBaseDir, blocked),
-        ),
+        provide,
         Effect.raceFirst(Queue.take(blocked).pipe(Effect.map((target) => `read ${target}`))),
       );
 
@@ -3578,7 +3581,7 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
           },
         ],
       });
-      const blocked = yield* Queue.unbounded<string>();
+      const { blocked, provide } = yield* blockedUnder(path.join(homeDir, "Documents"));
       const importableTitles = (outcomes: Iterable<AgentSessionScanner.AgentSessionRecentThread>) =>
         Array.from(outcomes)
           .flatMap((outcome) => (outcome._tag === "Importable" ? [outcome.thread.title] : []))
@@ -3586,9 +3589,10 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
 
       const outcome = yield* Effect.gen(function* () {
         const scanner = yield* AgentSessionScanner.AgentSessionScanner;
-        const { candidates } = yield* scanner.scan;
+        const { candidates, truncated } = yield* scanner.scan;
         return {
           candidates: candidates.map(({ path, threadCount }) => ({ path, threadCount })),
+          truncated,
           projectThreads: importableTitles(
             yield* scanner.recentThreads(projectDir).pipe(Stream.runCollect),
           ),
@@ -3598,23 +3602,21 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
         };
       }).pipe(
         Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })),
-        Effect.provideService(
-          FileSystem.FileSystem,
-          fileSystemBlockedUnder(fileSystem, path.join(homeDir, "Documents"), blocked),
-        ),
+        provide,
         Effect.provideService(HostProcess.HomeDirectory, homeDir),
         Effect.raceFirst(Queue.take(blocked).pipe(Effect.map((target) => `read ${target}`))),
       );
 
       expect(outcome).toEqual({
         candidates: [{ path: projectDir, threadCount: 2 }],
+        truncated: undefined,
         projectThreads: ["Started in the project", "Started with no project"],
         scratchThreads: [],
       });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("gives up on a protected folder at the deadline and keeps scanning the rest", () =>
+  it.effect("gives up on a folder at the deadline, says so, and lists it once it answers", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -3631,28 +3633,41 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
           mtimeMs: Date.parse(`2026-01-0${index + 1}T00:00:00.000Z`),
         });
       }
-      const blocked = yield* Queue.unbounded<string>();
+      const { blocked, answered, provide } = yield* blockedUnder(documentsProject);
+      const reopened = yield* Deferred.make<void>();
+      const reopenedLogger = Logger.make(({ message }) => {
+        if (Array.isArray(message) && String(message[0]).startsWith("A folder read returned")) {
+          Deferred.doneUnsafe(reopened, Effect.void);
+        }
+      });
 
       yield* Effect.gen(function* () {
         const scanner = yield* AgentSessionScanner.AgentSessionScanner;
         const scanPaths = scanner.scan.pipe(
-          Effect.map(({ candidates }) => candidates.map(({ path }) => path)),
+          Effect.map(({ candidates, truncated }) => ({
+            paths: candidates.map(({ path }) => path).toSorted(),
+            truncated,
+          })),
         );
         const first = yield* Effect.forkChild(scanPaths);
         expect(yield* Queue.take(blocked)).toBe(documentsProject);
         yield* TestClock.adjust("2 seconds");
-        expect(yield* Fiber.join(first)).toEqual([otherProject]);
-        // The pending read still holds its lane, so this scan skips the folder at once.
-        expect(yield* scanPaths).toEqual([otherProject]);
+        expect(yield* Fiber.join(first)).toEqual({ paths: [otherProject], truncated: true });
+        // The read still waiting closes the folder, so this scan skips it without reading.
+        expect(yield* scanPaths).toEqual({ paths: [otherProject], truncated: true });
         expect(yield* Queue.size(blocked)).toBe(0);
+
+        yield* Deferred.succeed(answered, undefined);
+        yield* Deferred.await(reopened);
+        expect(yield* scanPaths).toEqual({
+          paths: [documentsProject, otherProject].toSorted(),
+          truncated: undefined,
+        });
       }).pipe(
         Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })),
-        Effect.provideService(
-          FileSystem.FileSystem,
-          fileSystemBlockedUnder(fileSystem, path.join(homeDir, "Documents"), blocked),
-        ),
+        provide,
         Effect.provideService(HostProcess.HomeDirectory, homeDir),
-        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(Logger.layer([reopenedLogger], { mergeWithExisting: true })),
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

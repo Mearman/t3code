@@ -20,7 +20,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -46,6 +46,7 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { piHome, resolvePiSessionsDir } from "@t3tools/provider-pi/server/usage";
 import * as ServerSettings from "../serverSettings.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
+import { readUserPath, trackUnavailableReads } from "../workspace/UserPathReads.ts";
 import {
   createTranscriptJsonReader,
   createTranscriptJsonSelector,
@@ -106,20 +107,6 @@ const GIT_FILE_READ_CONCURRENCY = 16;
 // A blocked path is skipped for a while, then read again in case it was fixed.
 const BLOCKED_GIT_FILE_RETRY_MS = 5 * 60 * 1000;
 const MAX_BLOCKED_GIT_FILE_PATHS = 1024;
-/**
- * stat() and realpath() wait on the same prompt inside the libuv pool. Each lane of folder reads
- * runs one at a time, so a prompt pins at most one pool thread per lane, and while it waits the
- * lane's other reads report the folder unreadable instead of queueing behind it.
- */
-const USER_PATH_READ_DEADLINE = "2 seconds";
-// Relative to the home folder; `/Volumes` (removable and network volumes) is guarded too.
-const PRIVACY_PROTECTED_HOME_FOLDERS = [
-  "Desktop",
-  "Documents",
-  "Downloads",
-  "Library/Mobile Documents",
-  "Library/CloudStorage",
-];
 
 const TranscriptContentBlock = Schema.Struct({
   type: Schema.optional(Schema.String),
@@ -1004,72 +991,37 @@ export const make = Effect.gen(function* () {
     path.join(homeDir, "Downloads"),
     path.join(homeDir, "Documents", "Codex"),
   ];
-  // Folders behind a macOS privacy prompt. APFS is case-insensitive by default.
-  const privacyProtectedRoots =
-    platform === "darwin"
-      ? [
-          ...PRIVACY_PROTECTED_HOME_FOLDERS.map((folder) => path.join(homeDir, folder)),
-          "/Volumes",
-        ].map((root) => root.toLowerCase())
-      : [];
-  const isPrivacyProtected = (target: string) => {
-    const folded = target.toLowerCase();
-    return privacyProtectedRoots.some((root) => folded === root || folded.startsWith(`${root}/`));
-  };
-
-  const makeUserPathLane = Effect.gen(function* () {
-    const permit = yield* Semaphore.make(1);
-    let pinned = false;
-    return <A, E>(read: Effect.Effect<A, E>) =>
-      Effect.gen(function* () {
-        if (pinned) return Option.none<A>();
-        let started = false;
-        const fiber = yield* permit
-          .withPermits(1)(
-            Effect.uninterruptible(
-              Effect.suspend(() => {
-                started = true;
-                return Effect.option(read);
-              }),
-            ),
-          )
-          .pipe(Effect.forkDetach);
-        const outcome = yield* Fiber.join(fiber).pipe(
-          Effect.timeoutOption(USER_PATH_READ_DEADLINE),
-        );
-        if (Option.isSome(outcome)) return outcome.value;
-        if (started) {
-          pinned = true;
-          yield* Fiber.await(fiber).pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                pinned = false;
-              }),
-            ),
-            Effect.forkDetach,
-          );
-        } else yield* Effect.forkDetach(Fiber.interrupt(fiber));
-        return Option.none<A>();
-      });
-  });
-  const protectedLane = yield* makeUserPathLane;
-  const otherLane = yield* makeUserPathLane;
-  /** Runs a read of a folder a transcript or project names; none when it fails or blocks. */
-  const readUserPath = <A, E>(target: string, read: Effect.Effect<A, E>) =>
-    (isPrivacyProtected(target) ? protectedLane : otherLane)(read);
-  const statUserPath = (target: string) => readUserPath(target, fileSystem.stat(target));
-  const realPathOf = (target: string) =>
-    readUserPath(target, fileSystem.realPath(target)).pipe(
-      Effect.map(Option.getOrElse(() => target)),
+  const readOption = <A, E>(target: string, read: Effect.Effect<A, E>) =>
+    Effect.map(readUserPath(target, read), (outcome) =>
+      outcome._tag === "Unavailable" ? Option.none<A>() : Exit.getSuccess(outcome),
     );
+  const statUserPath = (target: string) => readOption(target, fileSystem.stat(target));
+  const realPathOf = (target: string) =>
+    Effect.map(readOption(target, fileSystem.realPath(target)), Option.getOrElse(() => target));
   // Resolved candidates are compared with T3's folders as resolved too, so a symlinked base still
-  // matches. Resolved on first use so that building the scanner reads nothing.
-  const realT3Dirs = yield* Effect.cached(
-    Effect.all({
-      baseDir: realPathOf(configuredT3Dirs.baseDir),
-      worktreesDir: realPathOf(configuredT3Dirs.worktreesDir),
-    }),
-  );
+  // matches. Resolved on first use, so building the scanner reads nothing, and kept only once both
+  // folders answered, so an unanswered read is retried instead of leaving the lexical spelling.
+  let resolvedT3Dirs: typeof configuredT3Dirs | undefined;
+  const realT3Dirs = Effect.suspend(() => {
+    if (resolvedT3Dirs !== undefined) return Effect.succeed(resolvedT3Dirs);
+    const resolve = (directory: string) =>
+      Effect.map(readUserPath(directory, fileSystem.realPath(directory)), (outcome) =>
+        outcome._tag === "Unavailable"
+          ? undefined
+          : Option.getOrElse(Exit.getSuccess(outcome), () => directory),
+      );
+    return Effect.map(
+      Effect.all({
+        baseDir: resolve(configuredT3Dirs.baseDir),
+        worktreesDir: resolve(configuredT3Dirs.worktreesDir),
+      }),
+      ({ baseDir, worktreesDir }) => {
+        if (baseDir === undefined || worktreesDir === undefined) return configuredT3Dirs;
+        resolvedT3Dirs = { baseDir, worktreesDir };
+        return resolvedT3Dirs;
+      },
+    );
+  });
 
   const isScratchPath = (candidatePath: string) =>
     excludedProjectRoots.has(normalizeProjectPathForComparison(candidatePath)) ||
@@ -1085,7 +1037,8 @@ export const make = Effect.gen(function* () {
   const isExcludedProjectPath = (candidatePath: string, t3Dirs = configuredT3Dirs) =>
     isScratchPath(candidatePath) || isT3OwnedPath(candidatePath, t3Dirs);
 
-  // Agent homes, not user folders, so their many reads skip the lanes.
+  // Reads inside an agent home skip the lanes: the home itself is read through one first, and a
+  // home that does not answer is left out of that scan.
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
 
@@ -2068,7 +2021,12 @@ export const make = Effect.gen(function* () {
           homePath = layout.sharedHomePath;
         }
 
-        const homeKey = `${source}\0${yield* directoryIdentity(homePath)}`;
+        const homeStats = yield* readUserPath(homePath, fileSystem.stat(homePath));
+        if (homeStats._tag === "Unavailable") continue;
+        const homeKey = `${source}\0${yield* directoryIdentity(
+          homePath,
+          Option.getOrUndefined(Exit.getSuccess(homeStats)),
+        )}`;
         if (seenHomes.has(homeKey)) continue;
         seenHomes.add(homeKey);
         homes.push({ homePath, providerInstanceId: instanceId });
@@ -2149,9 +2107,19 @@ export const make = Effect.gen(function* () {
 
   let cachedCandidates: Effect.Success<ReturnType<typeof collectCandidates>> | null = null;
 
+  // A folder that did not answer leaves its projects out, so the result is marked truncated and
+  // the candidates are not kept for imports, which collect them again.
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
-    cachedCandidates = yield* collectCandidates();
-    const { candidates: raw, truncated } = cachedCandidates;
+    const [collected, collectedPartially] = yield* trackUnavailableReads(collectCandidates());
+    cachedCandidates = collectedPartially ? null : collected;
+    const [result, mergedPartially] = yield* trackUnavailableReads(mergeCandidates(collected));
+    return collectedPartially || mergedPartially ? { ...result, truncated: true } : result;
+  });
+
+  const mergeCandidates = Effect.fnUntraced(function* (
+    collected: Effect.Success<ReturnType<typeof collectCandidates>>,
+  ) {
+    const { candidates: raw, truncated } = collected;
 
     const merged = new Map<
       string,
@@ -2244,7 +2212,7 @@ export const make = Effect.gen(function* () {
       candidates,
       scannedAt: DateTime.formatIso(yield* DateTime.now),
       ...(truncated ? { truncated: true } : {}),
-    };
+    } satisfies AgentSessionScanResult;
   });
 
   const prepareRecentThreads = Effect.fn("AgentSessionScanner.prepareRecentThreads")(function* (
