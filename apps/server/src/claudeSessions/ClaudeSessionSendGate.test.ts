@@ -536,6 +536,8 @@ describe("gateHeldClaudeSessionRuntime", () => {
     /** Runs at each take-over wait, so a test can let the holder go idle or exit. */
     readonly onPause?: (state: { hold: ClaudeSessionHold | undefined }) => void;
     readonly terminateFails?: boolean;
+    /** Runs before each probe answers, with how many probes came before it. */
+    readonly onProbe?: (state: { hold: ClaudeSessionHold | undefined }, before: number) => void;
   }) => {
     const calls: Array<string> = [];
     const probes: Array<string> = [];
@@ -574,6 +576,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
     const runtime = gateHeldClaudeSessionRuntime(
       fake,
       (sessionId) => {
+        input.onProbe?.(state, probes.length);
         probes.push(sessionId);
         const failing = input.failingProbes ?? Number.POSITIVE_INFINITY;
         return input.probeFailure !== undefined && probes.length <= failing
@@ -799,6 +802,58 @@ describe("gateHeldClaudeSessionRuntime", () => {
           expectInUse("startTurn", stuckRefusal, true);
           expectInUse("startTurn", unstoppableRefusal, true);
         }),
+    );
+
+    it.effect.each(["non-interactive", "agent-sdk", "t3-code", "unknown"] as const)(
+      "never stops an idle holder started %s, only a terminal's claude",
+      (source) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const { runtime, calls } = makeGate({
+            hold: { _tag: "held", pid: 200, source, idle: true },
+          });
+
+          const refusal = yield* Effect.flip(runtime.startTurn(takeOverTurn(now)));
+
+          expect(calls).toEqual([]);
+          expectInUse("startTurn", refusal, true);
+        }),
+    );
+
+    it.effect("signals nothing when the holder changed between its read and the signal", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({
+          hold: held(true),
+          // The read just before the signal finds it busy; it then goes idle and is stopped.
+          onProbe: (state, before) => {
+            if (before === 1) state.hold = held(false);
+            if (before === 2) state.hold = held(true);
+            if (before === 4) state.hold = undefined;
+          },
+        });
+
+        yield* runtime.startTurn(takeOverTurn(now));
+
+        expect(calls).toEqual(["pause", "terminate:200", "pause", "startTurn"]);
+      }),
+    );
+
+    it.effect("signals once per send: a new holder after the signal refuses instead", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({
+          hold: held(true),
+          onPause: (state) => {
+            state.hold = { _tag: "held", pid: 300, source: "terminal", idle: true };
+          },
+        });
+
+        const refusal = yield* Effect.flip(runtime.startTurn(takeOverTurn(now)));
+
+        expect(calls).toEqual(["terminate:200", "pause"]);
+        expectInUse("startTurn", refusal, true);
+      }),
     );
 
     it.effect("stops nothing it cannot confirm, refusing as ask does", () =>
