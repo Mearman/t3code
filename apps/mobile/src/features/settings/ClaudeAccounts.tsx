@@ -24,6 +24,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   claudeConfigDir,
+  claudeEditorAction,
   DEFAULT_CLAUDE_INSTANCE_ID,
   planClaudeAccountSave,
   type ClaudeAccountDraft,
@@ -129,10 +130,10 @@ export function useClaudeAccountEditor(
     actions,
     pending,
     onAction: (id) => {
-      if (id === "claude:edit") setEditing(true);
-      else if (id === "claude:remove") remove();
-      else return false;
-      return true;
+      const action = claudeEditorAction(id, pending);
+      if (action === "edit") setEditing(true);
+      else if (action === "remove") remove();
+      return action !== undefined;
     },
     panel: editing ? (
       <ClaudeAccountForm
@@ -189,7 +190,7 @@ export function ClaudeAccount({
             title={name}
             actions={[...editor.actions]}
             onPressAction={({ nativeEvent }) => {
-              if (!editor.pending) editor.onAction(nativeEvent.event);
+              editor.onAction(nativeEvent.event);
             }}
           >
             <ControlPill

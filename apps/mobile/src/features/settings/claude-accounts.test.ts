@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { planClaudeAccountSave, providerAccountRows } from "./claude-accounts";
+import { claudeEditorAction, planClaudeAccountSave, providerAccountRows } from "./claude-accounts";
 
 const claude = ProviderDriverKind.make("claudeAgent");
 const work = ProviderInstanceId.make("claudeAgent_work");
@@ -147,5 +147,15 @@ describe("providerAccountRows", () => {
       ["claudeAgent", false, true],
       ["codex", true, false],
     ]);
+  });
+});
+
+describe("claudeEditorAction", () => {
+  it("runs Edit or Remove only while no save is pending", () => {
+    expect(claudeEditorAction("claude:edit", false)).toBe("edit");
+    expect(claudeEditorAction("claude:remove", false)).toBe("remove");
+    expect(claudeEditorAction("claude:edit", true)).toBe("ignored");
+    expect(claudeEditorAction("claude:remove", true)).toBe("ignored");
+    expect(claudeEditorAction("signOut", false)).toBeUndefined();
   });
 });

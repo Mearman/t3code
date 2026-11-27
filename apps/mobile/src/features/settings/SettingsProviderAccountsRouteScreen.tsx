@@ -212,9 +212,11 @@ function ProviderAccount({
     (provider.setup?.canAuthenticate === false ||
       (provider.driver === "acpRegistry" && state?.methods?.length === 0));
   const url =
-    interaction?.type === "browser" || interaction?.type === "deviceCode"
-      ? interaction.url
-      : state?.authorizationUrl;
+    interaction?.type === "browser"
+      ? (interaction.codeUrl ?? interaction.url)
+      : interaction?.type === "deviceCode"
+        ? interaction.url
+        : state?.authorizationUrl;
   const disabled = pending || auth.error !== null || isDiscovering;
   async function run(command: () => Promise<AtomCommandResult<unknown, unknown>>) {
     if (pendingRef.current) return false;
