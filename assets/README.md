@@ -49,6 +49,8 @@ Verify every result is 1024×1024 and has the classic macOS safe area: an 824×8
 
 Do not edit the generated PNG or ICO files directly.
 
+The desktop and web icons for the production and nightly brands are ExaCode's own, in `exacode/`. `scripts/generate-exacode-icons.sh` renders every one from `exacode/logo.svg` (it needs `rsvg-convert` and ImageMagick); edit the SVG and rerun it rather than the rasters.
+
 ## Android launcher and splash artwork
 
 Android masks the central 72dp of a 108dp adaptive canvas, and the Android 12+ splash screen masks
