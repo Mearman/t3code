@@ -1108,7 +1108,7 @@ export const ClaudeSessionSyncSettings = Schema.Struct({
    * What a person's send to a session another process holds does when the send names no choice;
    * null takes `DEFAULT_CLAUDE_HELD_SESSION_SEND`.
    */
-  heldSessionSend: Schema.NullOr(ClaudeHeldSessionSend).pipe(
+  heldSessionSend: ForwardCompatibleNullable(ClaudeHeldSessionSend).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
 });
