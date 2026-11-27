@@ -11,7 +11,9 @@ const publishedNightlies = (publishedTags: ReadonlyArray<string>) =>
   });
 
 /**
- * The build number of a fork nightly cut on `date` from a commit at first-parent `depth` on main. Depth follows commit order; rewriting main can lower or repeat it, so the number also clears every nightly already published for `date`.
+ * The build number of a fork nightly cut on `date` from a commit at first-parent `depth` on
+ * main. Rewriting main can lower or repeat the depth, so the number also clears every nightly
+ * already published for `date`.
  */
 export function forkNightlyBuildNumber(
   date: string,
