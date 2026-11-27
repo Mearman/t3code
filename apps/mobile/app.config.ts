@@ -1,7 +1,11 @@
 import type { ExpoConfig } from "expo/config";
 
-import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
-import { provablyUpstream } from "../../scripts/lib/product-name-define.ts";
+import {
+  BRAND_ASSET_PATHS,
+  EXACODE_ICON_BACKGROUND_COLOR,
+  EXACODE_ICON_PATHS,
+} from "../../scripts/lib/brand-assets.ts";
+import { forkIdentity, provablyUpstream } from "../../scripts/lib/product-name-define.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import { resolveReleaseRepository } from "../../scripts/lib/release-repository.ts";
 
@@ -20,6 +24,47 @@ const runtimeVersionPolicy =
 
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
+const ANDROID_PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
+
+// Android's largest versionCode.
+const MAX_ANDROID_VERSION_CODE = 2_100_000_000;
+
+function resolveForkAndroidPackage(name: string, value: string | undefined): string {
+  const androidPackage = value?.trim();
+  if (
+    !androidPackage ||
+    !ANDROID_PACKAGE_PATTERN.test(androidPackage) ||
+    androidPackage.startsWith("com.t3tools.")
+  ) {
+    throw new Error(
+      `A build named ${name} needs T3CODE_ANDROID_PACKAGE, an Android package of its own such as io.example.app.`,
+    );
+  }
+  return androidPackage;
+}
+
+function resolveAndroidVersionCode(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const versionCode = /^[1-9][0-9]*$/.test(value.trim()) ? Number(value.trim()) : Number.NaN;
+  if (!(versionCode <= MAX_ANDROID_VERSION_CODE)) {
+    throw new Error(
+      `T3CODE_ANDROID_VERSION_CODE must be an integer from 1 to ${MAX_ANDROID_VERSION_CODE}.`,
+    );
+  }
+  return versionCode;
+}
+
+// A fork build (T3CODE_DESKTOP_PRODUCT_NAME) installs beside T3 Code under its own Android
+// package, never upstream's.
+const forkProduct = forkIdentity(repoEnv);
+const fork =
+  forkProduct === undefined
+    ? undefined
+    : {
+        name: forkProduct.name,
+        androidPackage: resolveForkAndroidPackage(forkProduct.name, repoEnv.T3CODE_ANDROID_PACKAGE),
+      };
+const androidVersionCode = resolveAndroidVersionCode(repoEnv.T3CODE_ANDROID_VERSION_CODE);
 
 // Compiled into the native project. Without a relay, Observe's native side could dispatch to
 // Expo's own ingest before observe.ts turns it off; `.invalid` never resolves (RFC 6761).
@@ -79,6 +124,19 @@ const RELEASE_ASSETS = {
   androidNotificationColor: "#FFFFFF",
 } as const;
 
+const FORK_ASSETS = {
+  appIcon: fromRepoRoot(EXACODE_ICON_PATHS.linuxIconPng),
+  iosIcon: fromRepoRoot(EXACODE_ICON_PATHS.linuxIconPng),
+  splashIcon: fromRepoRoot(EXACODE_ICON_PATHS.linuxIconPng),
+  androidAdaptiveForeground: fromRepoRoot(EXACODE_ICON_PATHS.androidForegroundPng),
+  androidAdaptiveBackgroundColor: EXACODE_ICON_BACKGROUND_COLOR,
+  androidAdaptiveBackgroundImage: undefined,
+  androidSplashIcon: fromRepoRoot(EXACODE_ICON_PATHS.androidSplashPng),
+  androidMonochromeIcon: fromRepoRoot(EXACODE_ICON_PATHS.androidForegroundPng),
+  androidNotificationIcon: fromRepoRoot(EXACODE_ICON_PATHS.androidForegroundPng),
+  androidNotificationColor: EXACODE_ICON_BACKGROUND_COLOR,
+} as const;
+
 const VARIANT_CONFIG = {
   development: {
     appName: "T3 Code Dev",
@@ -119,7 +177,16 @@ function resolveAppVariant(value: string | undefined): AppVariant {
   }
 }
 
-const variant = VARIANT_CONFIG[APP_VARIANT];
+const variant =
+  fork === undefined
+    ? VARIANT_CONFIG[APP_VARIANT]
+    : {
+        ...VARIANT_CONFIG[APP_VARIANT],
+        appName: fork.name,
+        scheme: fork.androidPackage,
+        androidPackage: fork.androidPackage,
+        assets: FORK_ASSETS,
+      };
 // Copied thread links open the app. app.t3.codes/.well-known lists every variant's identifiers.
 const HOSTED_APP_HOST = "app.t3.codes";
 const iosBundleIdentifier = isIosPersonalTeamBuild
@@ -304,6 +371,7 @@ const config: ExpoConfig = {
   android: {
     icon: variant.assets.appIcon,
     package: variant.androidPackage,
+    ...(androidVersionCode === undefined ? {} : { versionCode: androidVersionCode }),
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
       : {}),
@@ -319,14 +387,18 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: true,
     // expo-sensors declares this for its pedometer, which the app does not use.
     blockedPermissions: ["android.permission.ACTIVITY_RECOGNITION"],
-    intentFilters: [
-      {
-        action: "VIEW",
-        autoVerify: true,
-        data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
-        category: ["BROWSABLE", "DEFAULT"],
-      },
-    ],
+    // app.t3.codes verifies only upstream's packages, so a fork claims none of its links.
+    intentFilters:
+      fork === undefined
+        ? [
+            {
+              action: "VIEW",
+              autoVerify: true,
+              data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
+              category: ["BROWSABLE", "DEFAULT"],
+            },
+          ]
+        : [],
   },
   web: {
     favicon: variant.assets.appIcon,
@@ -476,6 +548,8 @@ const config: ExpoConfig = {
   ],
   extra: {
     appVariant: APP_VARIANT,
+    // The fork's own product name; null for T3 Code.
+    productName: fork?.name ?? null,
     // Connected servers update from this repository's releases; unset keeps upstream's.
     releaseRepository: resolveReleaseRepository(repoEnv) ?? null,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,

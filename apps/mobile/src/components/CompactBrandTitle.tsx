@@ -1,5 +1,6 @@
 import { NATIVE_WORKSPACE_COLUMNS_SUPPORTED } from "../native/NativeWorkspaceColumns";
 import Constants from "expo-constants";
+import { Image } from "expo-image";
 import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { Platform, View } from "react-native";
@@ -8,6 +9,8 @@ import { AppText as Text } from "./ui/AppText";
 import { T3Wordmark } from "./T3Wordmark";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
 import { resolveMobileStageLabel } from "../lib/mobileBranding";
+import { FORK_PRODUCT_NAME } from "../lib/productName";
+import { T3_CODE_BRAND_MARK_SOURCE } from "./brandAssets";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
 
 const BRAND_MAX_FONT_SCALE = 1.4;
@@ -42,7 +45,12 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? gt("T3 Code, Threads")}
+      accessibilityLabel={
+        props.accessibilityLabel ??
+        (FORK_PRODUCT_NAME === undefined
+          ? gt("T3 Code, Threads")
+          : gt("{product}, Threads", { product: FORK_PRODUCT_NAME }))
+      }
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -52,7 +60,15 @@ export function CompactBrandTitle(
         props.fit && { flexShrink: 0 },
       ]}
     >
-      <T3Wordmark colorClassName="accent-icon" height={Math.round(15 * scale)} />
+      {FORK_PRODUCT_NAME === undefined ? (
+        <T3Wordmark colorClassName="accent-icon" height={Math.round(15 * scale)} />
+      ) : (
+        <Image
+          source={T3_CODE_BRAND_MARK_SOURCE}
+          accessibilityIgnoresInvertColors
+          style={{ width: 22 * scale, height: 22 * scale, borderRadius: 5 * scale }}
+        />
+      )}
       {/* A logo beside a fixed-size wordmark: it may grow with Dynamic Type, not crowd the bar. */}
       <Text
         allowFontScaling={props.allowFontScaling}
@@ -60,7 +76,7 @@ export function CompactBrandTitle(
         className="font-t3-medium text-foreground-muted"
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        {WORDMARK_SUFFIX}
+        {FORK_PRODUCT_NAME ?? WORDMARK_SUFFIX}
       </Text>
       {showStage ? (
         <View

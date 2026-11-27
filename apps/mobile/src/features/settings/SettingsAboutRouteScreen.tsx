@@ -9,6 +9,7 @@ import { Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { UnofficialForkNotice } from "../../components/UnofficialForkNotice";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { useDeadlinePassed } from "../../lib/clock";
 import {
@@ -35,6 +36,7 @@ export function SettingsAboutRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
         <AppSettingsSection />
+        <UnofficialForkNotice className="px-1 text-sm text-foreground-muted" />
       </ScrollView>
     </SettingsScreen>
   );
