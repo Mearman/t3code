@@ -4,6 +4,9 @@ import type * as Schema from "effect/Schema";
 /** Failure code of a turn refused because another process holds the provider's native thread. */
 export const PROVIDER_THREAD_IN_USE_FAILURE_CODE = "provider_thread_in_use";
 
+/** The same refusal where the send chose to continue in a fork, which the server then makes. */
+export const PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE = "provider_thread_in_use_fork";
+
 export type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
 } & Schema.Top;

@@ -633,6 +633,59 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 
+  it.effect("marks a send that chose to fork, and nothing else, for the server to fork", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, source: "terminal" } });
+      const turn = turnInput(providerThread(now), now);
+      const forked = { ...turn, message: { ...turn.message, heldSessionSend: "fork" as const } };
+      const inUseOf = (refusal: unknown) =>
+        Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
+      const continued = (refusal: unknown) => {
+        const inUse = inUseOf(refusal);
+        return Predicate.hasProperty(inUse, "continueInFork") && inUse.continueInFork === true;
+      };
+
+      const fork = yield* Effect.flip(runtime.startTurn(forked));
+      const asked = yield* Effect.flip(runtime.startTurn(turn));
+      // A compaction would compact a copy, so it never forks whatever the send chose.
+      const compacted = yield* Effect.flip(runtime.compactThread(forked));
+      const steered = yield* Effect.flip(
+        runtime.steerTurn({
+          threadId,
+          runId: forked.runId,
+          providerThread: forked.providerThread,
+          providerTurnId: ProviderTurnId.make("provider-turn-held"),
+          message: forked.message,
+        }),
+      );
+
+      expect(calls).toEqual([]);
+      expect([fork, asked, compacted, steered].map(continued)).toEqual([true, false, false, false]);
+      const forkError = inUseOf(fork);
+      expect(Predicate.hasProperty(forkError, "message") ? String(forkError.message) : "").toContain(
+        "continues this message in a fork",
+      );
+      expectInUse("startTurn", fork, true);
+    }),
+  );
+
+  it.effect("never marks a fork where a holder was only possibly there", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const { runtime } = makeGate({ hold: { _tag: "unreadable", pid: 200 } });
+      const turn = turnInput(providerThread(now), now);
+
+      const refusal = yield* Effect.flip(
+        runtime.startTurn({ ...turn, message: { ...turn.message, heldSessionSend: "fork" } }),
+      );
+
+      const inUse = Predicate.hasProperty(refusal, "cause") ? refusal.cause : refusal;
+      expect(Predicate.hasProperty(inUse, "continueInFork")).toBe(false);
+      expectInUse("startTurn", refusal, false);
+    }),
+  );
+
   it.effect("refuses for an unreadable entry without marking a holder as seen", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;

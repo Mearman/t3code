@@ -8,6 +8,7 @@ import {
   NodeId,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
+  OrchestrationV2Run,
   OrchestrationV2ExecutionNode,
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderSession,
@@ -85,6 +86,7 @@ export const ProviderAdapterV2TurnMessage = Schema.Struct({
   creationSource: OrchestrationV2ConversationMessage.fields.creationSource,
   scheduledTaskId: OrchestrationV2ConversationMessage.fields.scheduledTaskId,
   senderThreadId: OrchestrationV2ConversationMessage.fields.senderThreadId,
+  heldSessionSend: OrchestrationV2Run.fields.heldSessionSend,
 });
 export type ProviderAdapterV2TurnMessage = typeof ProviderAdapterV2TurnMessage.Type;
 
@@ -316,6 +318,8 @@ export class ProviderAdapterThreadInUseError extends Schema.TaggedError<Provider
     cause: Schema.Defect(),
     /** Another process was seen holding the thread; unset when it may, or may not, be held. */
     holderObserved: Schema.optional(Schema.Literal(true)),
+    /** The send chose to continue in a fork, which the server makes once the refusal is recorded. */
+    continueInFork: Schema.optional(Schema.Literal(true)),
   },
 ) {
   override get message(): string {

@@ -17,7 +17,10 @@ import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 
-import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "../client.ts";
+import {
+  PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+  PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
+} from "../client.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import type { ProviderAdapterFailureReason } from "./ProviderAdapter.ts";
 import * as Schema from "effect/Schema";
@@ -157,9 +160,14 @@ function curatedCauseMessages(cause: unknown): {
         case "ProviderAdapterThreadInUseError": {
           const known = stringField(cause, "message");
           // Clients offer a fork only where a holder was seen, not where one is only possible.
-          return Predicate.hasProperty(cause, "holderObserved") && cause.holderObserved === true
-            ? { known, category: categoryMessage(), code: PROVIDER_THREAD_IN_USE_FAILURE_CODE }
-            : { known, category: categoryMessage() };
+          if (!Predicate.hasProperty(cause, "holderObserved") || cause.holderObserved !== true) {
+            return { known, category: categoryMessage() };
+          }
+          const code =
+            Predicate.hasProperty(cause, "continueInFork") && cause.continueInFork === true
+              ? PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE
+              : PROVIDER_THREAD_IN_USE_FAILURE_CODE;
+          return { known, category: categoryMessage(), code };
         }
         case "CodexAppServerRequestError": {
           // Only Codex's fixed-shape goal validation and managed-requirements
