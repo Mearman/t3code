@@ -7,6 +7,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as Effect from "effect/Effect";
 import type * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
 import { T3_CODE_ENTRYPOINT } from "../provider/Drivers/ClaudeHome.ts";
 import {
@@ -209,10 +210,16 @@ function uncheckedRefusal(
   };
 }
 
+/** SIGTERM could not be sent to a holder T3 Code chose to take over. */
+export class ClaudeTakeOverSignalError extends Schema.TaggedError<ClaudeTakeOverSignalError>()(
+  "ClaudeTakeOverSignalError",
+  { pid: Schema.Int, cause: Schema.Defect() },
+) {}
+
 /** How a send that chose `takeOver` stops a holder and waits between checks of the registry. */
 export interface ClaudeSessionTakeOver {
   /** Sends SIGTERM to `pid`, which the probe has just confirmed by its start time. */
-  readonly terminate: (pid: number) => Effect.Effect<void, Error>;
+  readonly terminate: (pid: number) => Effect.Effect<void, ClaudeTakeOverSignalError>;
   /** The wait between two checks while the holder is busy or exiting. */
   readonly pause: Effect.Effect<void>;
 }

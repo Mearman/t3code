@@ -32,6 +32,7 @@ import { T3_CODE_ENTRYPOINT } from "../provider/Drivers/ClaudeHome.ts";
 import { ClaudeSessionRegistryEntry } from "./ClaudeSessionRegistry.ts";
 import {
   gateHeldClaudeSessionRuntime,
+  ClaudeTakeOverSignalError,
   probeClaudeSessionHold,
   type ClaudeSessionHold,
   claudeHolderSource,
@@ -583,7 +584,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
       {
         terminate: (pid) => {
           calls.push(`terminate:${pid}`);
-          return input.terminateFails === true ? Effect.fail(new Error("EPERM")) : Effect.void;
+          return input.terminateFails === true
+            ? Effect.fail(new ClaudeTakeOverSignalError({ pid, cause: "EPERM" }))
+            : Effect.void;
         },
         pause: Effect.sync(() => {
           calls.push("pause");

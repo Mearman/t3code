@@ -17,6 +17,7 @@ import { ChildProcessSpawner } from "effect/process";
 import { claudeProcessTableRequirement } from "../../claudeSessions/ClaudeProcessTable.ts";
 import { ClaudeSpawnedProcesses } from "../../claudeSessions/ClaudeSpawnedProcesses.ts";
 import {
+  ClaudeTakeOverSignalError,
   gateHeldClaudeSessions,
   probeClaudeSessionHold,
 } from "../../claudeSessions/ClaudeSessionSendGate.ts";
@@ -246,7 +247,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         terminate: (pid) =>
           Effect.try({
             try: () => process.kill(pid, "SIGTERM"),
-            catch: (cause) => new Error(`SIGTERM to pid ${pid} failed`, { cause }),
+            catch: (cause) => new ClaudeTakeOverSignalError({ pid, cause }),
           }),
         pause: Effect.sleep(TAKE_OVER_CHECK_INTERVAL),
       },
