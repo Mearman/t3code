@@ -31,6 +31,26 @@ describe("provider auth state", () => {
     });
   });
 
+  it("keeps a browser interaction that takes a pasted code", () => {
+    const interaction = {
+      type: "browser",
+      id: "claude-oauth",
+      url: "https://claude.ai/oauth/authorize?state=s",
+      requiresConsent: false,
+      acceptsCallback: true,
+      callbackInput: "code",
+    };
+    const state = {
+      instanceId: "claudeAgent",
+      phase: "waiting",
+      flowId: "flow",
+      authorizationUrl: interaction.url,
+      expiresAt: null,
+      message: null,
+    };
+    expect(decodeState({ ...state, interaction }).interaction).toEqual(interaction);
+  });
+
   it("refuses sign-in URLs that are not web pages", () => {
     const state = {
       instanceId: "cursor",
