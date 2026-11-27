@@ -165,40 +165,40 @@ export const readUserPath = Effect.fn("UserPathReads.readUserPath")(function* <A
   target: string,
   read: Effect.Effect<A, E>,
 ) {
-    const state = yield* UserPathReads;
-    const platform = yield* HostProcess.Platform;
-    const { key, closes } = userPathLane(target, platform, yield* HostProcess.HomeDirectory);
-    const lane = laneOf(state, key);
-    const spelled = laneSpelling(target, platform);
-    const limit = stuckReadLimit(yield* HostProcess.Environment);
-    if (lane.closed || isClosedPath(state, spelled) || state.stuckReads >= limit) {
-      return yield* reportUnavailable;
-    }
-    const outcome = Deferred.makeUnsafe<UserPathOutcome<A, E>>();
-    const job: Job = {
-      target: spelled,
-      run: Effect.exit(read).pipe(
-        Effect.flatMap((exit) => Deferred.succeed(outcome, exit)),
-        Effect.asVoid,
-      ),
-      giveUp: () => {
-        Deferred.doneUnsafe(outcome, unavailableOutcome);
-      },
-      started: false,
-    };
-    lane.queue.push(job);
-    if (!lane.draining) {
-      lane.draining = true;
-      yield* Effect.forkDetach(drain(state, lane, key, closes, limit));
-    }
-    const settled = yield* Deferred.await(outcome).pipe(
-      Effect.onInterrupt(() =>
-        Effect.sync(() => {
-          if (!job.started) lane.queue.splice(lane.queue.indexOf(job), 1);
-        }),
-      ),
-    );
-    return settled._tag === "Unavailable" ? yield* reportUnavailable : settled;
+  const state = yield* UserPathReads;
+  const platform = yield* HostProcess.Platform;
+  const { key, closes } = userPathLane(target, platform, yield* HostProcess.HomeDirectory);
+  const lane = laneOf(state, key);
+  const spelled = laneSpelling(target, platform);
+  const limit = stuckReadLimit(yield* HostProcess.Environment);
+  if (lane.closed || isClosedPath(state, spelled) || state.stuckReads >= limit) {
+    return yield* reportUnavailable;
+  }
+  const outcome = Deferred.makeUnsafe<UserPathOutcome<A, E>>();
+  const job: Job = {
+    target: spelled,
+    run: Effect.exit(read).pipe(
+      Effect.flatMap((exit) => Deferred.succeed(outcome, exit)),
+      Effect.asVoid,
+    ),
+    giveUp: () => {
+      Deferred.doneUnsafe(outcome, unavailableOutcome);
+    },
+    started: false,
+  };
+  lane.queue.push(job);
+  if (!lane.draining) {
+    lane.draining = true;
+    yield* Effect.forkDetach(drain(state, lane, key, closes, limit));
+  }
+  const settled = yield* Deferred.await(outcome).pipe(
+    Effect.onInterrupt(() =>
+      Effect.sync(() => {
+        if (!job.started) lane.queue.splice(lane.queue.indexOf(job), 1);
+      }),
+    ),
+  );
+  return settled._tag === "Unavailable" ? yield* reportUnavailable : settled;
 });
 
 const laneOf = (state: UserPathReadState, key: string) => {
@@ -231,41 +231,39 @@ const drain = Effect.fn("UserPathReads.drain")(function* (
   closes: UserPathLane["closes"],
   limit: number,
 ) {
-    for (let job = lane.queue.shift(); job !== undefined; job = lane.queue.shift()) {
-      const { target } = job;
-      if (lane.closed || isClosedPath(state, target) || state.stuckReads >= limit) {
-        job.giveUp();
-        continue;
-      }
-      job.started = true;
-      const reading = yield* Effect.forkDetach(job.run);
-      // The deadline starts here, so time spent queued behind other reads never counts.
-      const finished = yield* Fiber.join(reading).pipe(
-        Effect.timeoutOption(USER_PATH_READ_DEADLINE),
-      );
-      if (Option.isSome(finished)) continue;
+  for (let job = lane.queue.shift(); job !== undefined; job = lane.queue.shift()) {
+    const { target } = job;
+    if (lane.closed || isClosedPath(state, target) || state.stuckReads >= limit) {
       job.giveUp();
-      state.stuckReads += 1;
-      const folder = closes === "lane" ? key : target;
-      if (closes === "lane") {
-        lane.closed = true;
-        for (const queued of lane.queue.splice(0)) queued.giveUp();
-      } else {
-        state.closedPaths.add(target);
-      }
-      yield* Effect.logWarning("A folder read did not return; skipping the folder until it does", {
-        folder,
-        deadline: USER_PATH_READ_DEADLINE,
-      });
-      yield* Effect.forkDetach(
-        Effect.gen(function* () {
-          yield* Fiber.await(reading);
-          state.stuckReads -= 1;
-          if (closes === "lane") lane.closed = false;
-          else state.closedPaths.delete(target);
-          yield* Effect.logInfo("A folder read returned; reading the folder again", { folder });
-        }),
-      );
+      continue;
     }
-    lane.draining = false;
+    job.started = true;
+    const reading = yield* Effect.forkDetach(job.run);
+    // The deadline starts here, so time spent queued behind other reads never counts.
+    const finished = yield* Fiber.join(reading).pipe(Effect.timeoutOption(USER_PATH_READ_DEADLINE));
+    if (Option.isSome(finished)) continue;
+    job.giveUp();
+    state.stuckReads += 1;
+    const folder = closes === "lane" ? key : target;
+    if (closes === "lane") {
+      lane.closed = true;
+      for (const queued of lane.queue.splice(0)) queued.giveUp();
+    } else {
+      state.closedPaths.add(target);
+    }
+    yield* Effect.logWarning("A folder read did not return; skipping the folder until it does", {
+      folder,
+      deadline: USER_PATH_READ_DEADLINE,
+    });
+    yield* Effect.forkDetach(
+      Effect.gen(function* () {
+        yield* Fiber.await(reading);
+        state.stuckReads -= 1;
+        if (closes === "lane") lane.closed = false;
+        else state.closedPaths.delete(target);
+        yield* Effect.logInfo("A folder read returned; reading the folder again", { folder });
+      }),
+    );
+  }
+  lane.draining = false;
 });
