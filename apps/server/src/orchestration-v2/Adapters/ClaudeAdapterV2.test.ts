@@ -1273,6 +1273,7 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -1402,6 +1403,7 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -1532,6 +1534,7 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
               mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
               mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
               reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+              accountInfo: Effect.die("unexpected account read"),
               listPermissionRules: Effect.die("unexpected permission rules read"),
               stopTask: () => Effect.void,
               interrupt: Effect.void,
@@ -1825,6 +1828,7 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -1898,6 +1902,139 @@ describe("ClaudeAdapterV2 provider installation gate", () => {
         ),
       ),
     ),
+  );
+});
+
+describe("ClaudeAdapterV2 account check", () => {
+  const run = (refuse: boolean) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const log: Array<string> = [];
+      // A real process ends its message stream once closed.
+      const exited = yield* Deferred.make<void>();
+      const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        settings: DEFAULT_CLAUDE_SETTINGS,
+        environment: {},
+        attachmentsDir: yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-account-" }),
+        fileSystem,
+        path: yield* Path.Path,
+        random: yield* SecureRandom.SecureRandom,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        checkQueryAccount: ({ account }) =>
+          Effect.sync(() => log.push(`check ${account.email}`)).pipe(
+            Effect.andThen(
+              refuse
+                ? Effect.fail(new ClaudeAdapterV2.ClaudeQueryAccountRefusal({ cause: "changed" }))
+                : Effect.void,
+            ),
+          ),
+        queryRunner: {
+          allocateSessionId: Effect.succeed("native-thread-claude-account"),
+          open: () =>
+            Effect.sync(() => {
+              log.push("open query");
+              return {
+                messages: Stream.fromEffect(Deferred.await(exited)).pipe(Stream.drain),
+                offer: () => Effect.sync(() => void log.push("prompt")),
+                setModel: () => Effect.void,
+                applyFlagSettings: () => Effect.void,
+                setPermissionMode: () => Effect.void,
+                renameSession: () => Effect.void,
+                backgroundTasks: () => Effect.succeed(false),
+                mcpServerStatus: Effect.succeed([]),
+                readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
+                mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
+                reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.sync(() => {
+                  log.push("read account");
+                  return { email: "work@example.com" };
+                }),
+                listPermissionRules: Effect.die("unexpected permission rules read"),
+                stopTask: () => Effect.void,
+                interrupt: Effect.void,
+                close: Effect.sync(() => void log.push("close")).pipe(
+                  Effect.andThen(Deferred.succeed(exited, undefined)),
+                  Effect.asVoid,
+                ),
+              } satisfies ClaudeAdapterV2.ClaudeAgentSdkQuerySession;
+            }),
+          forkSession: () => Effect.die("unused"),
+          subagentLaunchToolUseId: () => Effect.succeed(null),
+          subagentModel: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        },
+      });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-account-cwd-" }),
+      });
+      const threadId = ThreadId.make("thread-claude-account");
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-claude-account"),
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy,
+      });
+      const started = yield* runtime
+        .startTurn(
+          makeClaudeTestTurnInput({
+            threadId,
+            providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-account"),
+            text: "Hello",
+            attachments: [],
+            runtimePolicy,
+          }),
+        )
+        .pipe(Effect.result);
+      return { log, started };
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    );
+
+  it.effect("reads the account from the process that sends, before its first prompt", () =>
+    Effect.gen(function* () {
+      const { log, started } = yield* run(false);
+      assert.strictEqual(started._tag, "Success");
+      assert.deepStrictEqual(log.slice(0, 4), [
+        "open query",
+        "read account",
+        "check work@example.com",
+        "prompt",
+      ]);
+    }),
+  );
+
+  it.effect("refuses before any prompt and closes the process when the check fails", () =>
+    Effect.gen(function* () {
+      const { log, started } = yield* run(true);
+      assert.strictEqual(started._tag, "Failure");
+      if (started._tag !== "Failure") return;
+      assert.strictEqual(started.failure._tag, "ProviderAdapterTurnStartError");
+      assert.isTrue(
+        started.failure._tag === "ProviderAdapterTurnStartError" &&
+          started.failure.refusedBeforePrompt === true,
+      );
+      assert.notInclude(log, "prompt");
+      assert.include(log, "close");
+    }),
   );
 });
 
@@ -2035,6 +2172,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
             mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
             mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
             reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+            accountInfo: Effect.die("unexpected account read"),
             listPermissionRules: Effect.die("unexpected permission rules read"),
             stopTask: () => Effect.void,
             interrupt: Effect.void,
@@ -2241,6 +2379,7 @@ describe("ClaudeAdapterV2 resume compaction", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -2634,6 +2773,7 @@ describe("ClaudeAdapterV2 attachments", () => {
                   mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                   mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                   reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                  accountInfo: Effect.die("unexpected account read"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
@@ -3179,6 +3319,7 @@ describe("ClaudeAdapterV2 native fork", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -3531,6 +3672,7 @@ describe("ClaudeAdapterV2 native session identity", () => {
                   mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                   mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                   reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                  accountInfo: Effect.die("unexpected account read"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
@@ -4018,6 +4160,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                   mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                   reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                  accountInfo: Effect.die("unexpected account read"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
                   stopTask: options?.stopTask ?? (() => Effect.void),
                   interrupt: Effect.void,
@@ -4064,6 +4207,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: options?.mcp?.listPermissionRules ?? Effect.succeed([]),
                 stopTask: options?.stopTask ?? (() => Effect.void),
                 interrupt: options?.interrupt ?? Effect.void,
@@ -16224,6 +16368,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -16429,6 +16574,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
               mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
               reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+              accountInfo: Effect.die("unexpected account read"),
               listPermissionRules: Effect.die("unexpected permission rules read"),
               stopTask: () => Effect.void,
               interrupt: Effect.void,
@@ -16644,6 +16790,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                   mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                   reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                  accountInfo: Effect.die("unexpected account read"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
@@ -20116,6 +20263,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 interrupt: Effect.void,
                 close:
@@ -23954,6 +24102,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -24135,6 +24284,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                   mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                   reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                  accountInfo: Effect.die("unexpected account read"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
@@ -24316,6 +24466,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -24518,6 +24669,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                 mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                 reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                accountInfo: Effect.die("unexpected account read"),
                 listPermissionRules: Effect.die("unexpected permission rules read"),
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -24668,6 +24820,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
                   mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
                   reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+                  accountInfo: Effect.die("unexpected account read"),
                   listPermissionRules: Effect.die("unexpected permission rules read"),
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
@@ -24793,6 +24946,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               mcpAuthenticate: () => Effect.die("unexpected MCP sign-in"),
               mcpSubmitOAuthCallbackUrl: () => Effect.die("unexpected MCP sign-in"),
               reconnectMcpServer: () => Effect.die("unexpected MCP reconnect"),
+              accountInfo: Effect.die("unexpected account read"),
               listPermissionRules: Effect.die("unexpected permission rules read"),
               stopTask: () => Effect.void,
               interrupt: Effect.void,
