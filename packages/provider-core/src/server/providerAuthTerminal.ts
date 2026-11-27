@@ -33,13 +33,30 @@ const TOKEN_LIKE = /[\w#~.+/=-]{24,}/gu;
 export const redactSignInSecrets = (text: string): string =>
   text.replace(LINK, "[link]").replace(TOKEN_LIKE, "[redacted]").replace(LINK_PART, "[redacted]");
 
+const endsInLink = (line: string) => /(?:^|\s)\S*(?::\/\/|[/?&=%#])\S*$/u.test(line);
+
+/**
+ * Joins a link the terminal wrapped back into one line: a line with no spaces that follows a line
+ * ending in a link is its continuation, even when that piece carries no URL punctuation.
+ */
+const unwrapLinks = (lines: ReadonlyArray<string>) =>
+  lines.reduce<Array<string>>((joined, line) => {
+    const previous = joined.at(-1);
+    if (previous !== undefined && line.length > 0 && !/\s/u.test(line) && endsInLink(previous))
+      joined[joined.length - 1] = previous + line;
+    else joined.push(line);
+    return joined;
+  }, []);
+
 /** The last lines a login command printed, with links and code-like runs replaced. */
 export const lastPrintedLines = (output: string): string => {
-  const lines = redactSignInSecrets(NodeUtil.stripVTControlCharacters(output))
+  const visible = NodeUtil.stripVTControlCharacters(output)
     .split("\n")
     .map((line) => line.trimEnd())
     // A carriage return inside a line redraws it, so only the text after the last one is visible.
-    .map((line) => line.slice(line.lastIndexOf("\r") + 1).trim())
+    .map((line) => line.slice(line.lastIndexOf("\r") + 1).trim());
+  const lines = unwrapLinks(visible)
+    .map(redactSignInSecrets)
     .filter((line) => line.length > 0)
     .slice(-MAX_LOGIN_OUTPUT_LINES)
     .join(" ");

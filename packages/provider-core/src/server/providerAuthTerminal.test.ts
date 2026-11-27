@@ -32,3 +32,16 @@ it("redacts a sign-in link the terminal wrapped across lines", () => {
     assert.notInclude(printed, fragment);
   assert.include(printed, "Login failed: token exchange returned 400.");
 });
+
+it("redacts a wrapped link piece that carries no URL punctuation", () => {
+  const printed = lastPrintedLines(
+    [
+      "Use the url below to sign in:",
+      "https://claude.ai/oauth/authorize?code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbu",
+      "GFAzF1x6aQ",
+      "Login failed: try again.",
+    ].join("\n"),
+  );
+  assert.notInclude(printed, "GFAzF1x6aQ");
+  assert.include(printed, "Login failed: try again.");
+});
