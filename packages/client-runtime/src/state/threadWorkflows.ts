@@ -10,6 +10,7 @@ import {
 import {
   isHeldRefusalCode,
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+  CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE,
 } from "@t3tools/provider-core/client";
 import {
   latestRootProviderFailure,
@@ -279,6 +280,20 @@ export function canForkProjectedAssistantItem(input: {
  */
 export function isHeldSessionFailure(failure: Pick<OrchestrationV2ProviderFailure, "code">) {
   return isHeldRefusalCode(failure.code);
+}
+
+/**
+ * Whether an error row offers to confirm a changed Claude account: only on the thread's own row,
+ * since a confirmation applies to this thread.
+ */
+export function offersThreadAccountConfirm(row: {
+  readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
+  readonly item: { readonly failure: Pick<OrchestrationV2ProviderFailure, "code"> };
+}) {
+  return (
+    row.visibility === "local" &&
+    row.item.failure.code === CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE
+  );
 }
 
 /**
