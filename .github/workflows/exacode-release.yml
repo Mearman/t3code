@@ -2,8 +2,9 @@ name: ExaCode Release
 
 # Fork-only nightly release for Mearman/t3code on GitHub-hosted runners. release.yml stays as
 # upstream's and skips outside pingdotgg/t3code. See docs/operations/03_release.md#fork-releases.
-# A publish needs the self-signed macOS certificate in CSC_LINK and CSC_KEY_PASSWORD, so every
-# macOS release keeps the signature installed apps accept; only runs from main receive it.
+# A publish needs the self-signed macOS certificate in CSC_LINK and CSC_KEY_PASSWORD and the
+# Android release key in ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD, so every release
+# keeps the signatures installed apps accept; only runs from main receive them.
 
 on:
   # Ships only commits whose CI passed on a push to main.
@@ -62,6 +63,7 @@ jobs:
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           DRY_RUN: ${{ inputs.dry_run }}
           SIGNING_CONFIGURED: ${{ secrets.CSC_LINK != '' && secrets.CSC_KEY_PASSWORD != '' }}
+          ANDROID_SIGNING_CONFIGURED: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' }}
         run: |
           set -euo pipefail
           if [[ "$EVENT" == "workflow_dispatch" && "$DRY_RUN" == "true" ]]; then
@@ -101,6 +103,10 @@ jobs:
           fi
           if [[ "$SIGNING_CONFIGURED" != "true" ]]; then
             echo "::error::CSC_LINK and CSC_KEY_PASSWORD must hold the macOS signing certificate to publish."
+            exit 1
+          fi
+          if [[ "$ANDROID_SIGNING_CONFIGURED" != "true" ]]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD must hold the Android release key to publish."
             exit 1
           fi
           echo "build=true" >> "$GITHUB_OUTPUT"
@@ -354,9 +360,33 @@ jobs:
       cli_archive: true
       timeout_minutes: 60
 
+  # A dry run signs with Android's public debug key, so the release key reaches only main's runs.
+  android:
+    name: Android APK
+    needs: [preflight]
+    if: needs.preflight.outputs.build == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/exacode-android.yml
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ github.ref == 'refs/heads/main' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      ref: ${{ needs.preflight.outputs.ref }}
+      debug_signed: ${{ needs.preflight.outputs.publish != 'true' }}
+
   release:
     name: Publish GitHub Release
-    needs: [preflight, desktop_mac_arm64, desktop_mac_x64, desktop_linux_x64, desktop_linux_arm64]
+    needs:
+      [
+        preflight,
+        desktop_mac_arm64,
+        desktop_mac_x64,
+        desktop_linux_x64,
+        desktop_linux_arm64,
+        android,
+      ]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -393,6 +423,12 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      - name: Download the Android APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: exacode-android-apk
+          path: release-assets
+
       - name: Merge desktop updater manifests
         run: node scripts/merge-release-update-manifests.ts release-assets --platform mac
 
@@ -402,12 +438,15 @@ jobs:
           set -euo pipefail
           rm -f release-assets/builder-debug.yml
           version="${{ needs.preflight.outputs.version }}"
+          # A dry run's APK carries Android's public debug key and says so in its name.
+          apk="ExaCode-$version${{ needs.preflight.outputs.publish != 'true' && '-debug-signed' || '' }}.apk"
           for asset in \
             "t3-$version-darwin-arm64.tar.gz" \
             "t3-$version-linux-x64.tar.gz" \
             "t3-$version-linux-arm64.tar.gz" \
             "ExaCode-$version-arm64.zip" "ExaCode-$version-arm64.dmg" \
             "ExaCode-$version-x64.zip" "ExaCode-$version-x64.dmg" \
+            "$apk" "$apk.sha256" \
             nightly-mac.yml nightly-linux.yml nightly-linux-arm64.yml; do
             [[ -f "release-assets/$asset" ]] || { echo "::error::Missing release asset $asset."; exit 1; }
           done

@@ -1,0 +1,252 @@
+name: ExaCode Android
+
+# The fork's Android APK, built on GitHub-hosted runners with Expo prebuild and Gradle (no EAS).
+# exacode-release.yml calls it for each nightly; a dispatch from main builds one on its own. See
+# docs/operations/03_release.md#fork-releases. The release key reaches only the signing job, which
+# runs no repository code, and only on runs from main.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The nightly version, such as 1.2.3-nightly.20260101.42.
+        required: true
+        type: string
+      ref:
+        description: The commit to build.
+        required: true
+        type: string
+      debug_signed:
+        description: Sign with Android's public debug key instead of the release key.
+        required: true
+        type: boolean
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+  workflow_dispatch:
+    inputs:
+      debug_signed:
+        description: "Sign with Android's public debug key, for sideloading before the release key exists."
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: exacode-android-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  # The fork's own application id, distinct from upstream's com.t3tools.t3code. Changing it makes
+  # a new app that cannot update installs of this one.
+  ANDROID_PACKAGE: io.exadev.exacode
+  PRODUCT_NAME: ExaCode
+  # The SHA-256 of the release certificate, so a wrong keystore in the secrets fails the run.
+  RELEASE_CERT_SHA256: c142a04ac08eabfcae3b03e28fe4babd37e1b218a7b7b9b648cc346fa7af8300
+
+jobs:
+  build:
+    name: Build APK
+    # A pull request never reaches this workflow; a dispatch builds only main.
+    if: github.repository != 'pingdotgg/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+    steps:
+      # A call passes its version; only exacode-release.yml's dry run builds off main.
+      - name: Require main for a dispatch
+        if: inputs.version == '' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::The APK builds only from main; dispatch it on main."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          # The nightly version counts main's commits: every commit, no file history.
+          fetch-depth: 0
+          filter: tree:0
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Drop checkout credentials
+        uses: ./.github/actions/drop-checkout-credentials
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+
+      - name: Setup Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # A dispatch takes the version the next nightly of this commit would have.
+      - id: version
+        name: Resolve version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$VERSION" ]]; then
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select(.draft | not) | .tag_name' > "$RUNNER_TEMP/published-tags"
+            node scripts/resolve-fork-nightly-release.ts --date "$(date -u +%Y%m%d)" \
+              --sha "$(git rev-parse HEAD)" --published-tags "$RUNNER_TEMP/published-tags" \
+              > "$RUNNER_TEMP/nightly"
+            VERSION="$(sed -nE 's/^version=(.*)$/\1/p' "$RUNNER_TEMP/nightly")"
+          fi
+          # versionCode orders nightlies by day, then by build within the day.
+          if [[ ! "$VERSION" =~ -nightly\.([0-9]{8})\.([0-9]+)$ ]]; then
+            echo "::error::$VERSION is not a nightly version."
+            exit 1
+          fi
+          day="${BASH_REMATCH[1]}"
+          build="${BASH_REMATCH[2]}"
+          if (( 10#$build >= 100000 )); then
+            echo "::error::Build $build no longer fits the versionCode's five build digits."
+            exit 1
+          fi
+          days=$(( ($(date -ud "$day" +%s) - $(date -ud 20260101 +%s)) / 86400 ))
+          {
+            echo "version=$VERSION"
+            echo "version_code=$(( days * 100000 + 10#$build ))"
+          } >> "$GITHUB_OUTPUT"
+
+      # Prebuild writes the native project from app.config.ts; nothing it writes is committed.
+      - name: Generate the native project
+        working-directory: apps/mobile
+        env:
+          APP_VARIANT: production
+          EXPO_NO_GIT_STATUS: "1"
+          T3CODE_DESKTOP_PRODUCT_NAME: ${{ env.PRODUCT_NAME }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          T3CODE_ANDROID_PACKAGE: ${{ env.ANDROID_PACKAGE }}
+          T3CODE_ANDROID_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          T3CODE_MOBILE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          pnpm exec expo prebuild --clean --platform android --no-install
+          {
+            echo "APP_VARIANT=$APP_VARIANT"
+            echo "T3CODE_DESKTOP_PRODUCT_NAME=$T3CODE_DESKTOP_PRODUCT_NAME"
+            echo "T3CODE_DESKTOP_UPDATE_REPOSITORY=$T3CODE_DESKTOP_UPDATE_REPOSITORY"
+            echo "T3CODE_ANDROID_PACKAGE=$T3CODE_ANDROID_PACKAGE"
+            echo "T3CODE_ANDROID_VERSION_CODE=$T3CODE_ANDROID_VERSION_CODE"
+            echo "T3CODE_MOBILE_VERSION=$T3CODE_MOBILE_VERSION"
+          } >> "$GITHUB_ENV"
+
+      # arm64 only: every phone that runs the app's minimum Android has a 64-bit ARM build.
+      - name: Build the APK
+        working-directory: apps/mobile/android
+        env:
+          ORG_GRADLE_PROJECT_reactNativeArchitectures: arm64-v8a
+        run: ./gradlew :app:assembleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease --no-daemon
+
+      # The built app must carry the fork's identity and update its servers from this repository.
+      - name: Check the APK
+        env:
+          APK: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          "$tools/aapt" dump badging "$APK" | tee "$RUNNER_TEMP/badging"
+          grep -q "^package: name='$ANDROID_PACKAGE' versionCode='$T3CODE_ANDROID_VERSION_CODE' versionName='$T3CODE_MOBILE_VERSION'" "$RUNNER_TEMP/badging"
+          grep -q "^application-label:'$PRODUCT_NAME'" "$RUNNER_TEMP/badging"
+          unzip -p "$APK" assets/app.config > "$RUNNER_TEMP/app.config.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg name "$PRODUCT_NAME" \
+            '.extra.releaseRepository == $repo and .extra.productName == $name and .updates.enabled == false' \
+            "$RUNNER_TEMP/app.config.json"
+          mkdir -p "$RUNNER_TEMP/apk"
+          cp "$APK" "$RUNNER_TEMP/apk/app-release.apk"
+
+      - name: Upload the unsigned build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exacode-android-build
+          path: ${{ runner.temp }}/apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  # Runs no repository code, so the release key never meets the build's dependencies.
+  sign:
+    name: Sign APK
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      DEBUG_SIGNED: ${{ inputs.debug_signed }}
+    steps:
+      - name: Download the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: exacode-android-build
+          path: ${{ runner.temp }}/build
+
+      # Gradle signs a release build with the generated project's debug key; the release key
+      # replaces that signature. No silent fallback: without the key, a release build fails.
+      - name: Sign
+        env:
+          KEYSTORE_BASE64: ${{ github.ref == 'refs/heads/main' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          KEYSTORE_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          mkdir -p apk
+          if [[ "$DEBUG_SIGNED" == "true" ]]; then
+            name="$PRODUCT_NAME-$VERSION-debug-signed.apk"
+            cp "$RUNNER_TEMP/build/app-release.apk" "apk/$name"
+          else
+            if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "::error::Only runs from main sign with the release key; this run is on $GITHUB_REF."
+              exit 1
+            fi
+            if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ]]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD must hold the release key; dispatch with debug_signed for a sideload build."
+              exit 1
+            fi
+            name="$PRODUCT_NAME-$VERSION.apk"
+            keystore="$RUNNER_TEMP/release.p12"
+            base64 --decode > "$keystore" <<< "$KEYSTORE_BASE64"
+            "$tools/apksigner" sign --ks "$keystore" --ks-type PKCS12 --ks-key-alias exacode \
+              --ks-pass env:KEYSTORE_PASSWORD --out "apk/$name" "$RUNNER_TEMP/build/app-release.apk"
+            rm -f "$keystore"
+            "$tools/apksigner" verify --print-certs "apk/$name" | tee "$RUNNER_TEMP/certs"
+            if ! grep -qx "Signer #1 certificate SHA-256 digest: $RELEASE_CERT_SHA256" "$RUNNER_TEMP/certs"; then
+              echo "::error::The APK is not signed with the ExaCode release certificate."
+              exit 1
+            fi
+          fi
+          "$tools/apksigner" verify --verbose "apk/$name"
+          (cd apk && sha256sum "$name" > "$name.sha256")
+          {
+            echo "### $name"
+            echo '```'
+            cat "apk/$name.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exacode-android-apk
+          path: apk/
+          if-no-files-found: error
