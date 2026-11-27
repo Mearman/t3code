@@ -1,3 +1,4 @@
+import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
 import { useAuth } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
@@ -303,7 +304,9 @@ export function WelcomePage({
                 projectImport={projectImport}
                 isImporting={isImporting}
               />
-              {showPhone ? <PhoneSection environmentId={environmentId} /> : null}
+              {showPhone && !IS_FORK_PRODUCT ? (
+                <PhoneSection environmentId={environmentId} />
+              ) : null}
             </div>
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
               {agentReady ? (

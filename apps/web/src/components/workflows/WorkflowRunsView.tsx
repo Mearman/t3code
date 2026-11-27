@@ -7,6 +7,7 @@ import { useState, type ReactNode } from "react";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { cn } from "../../lib/utils";
 import { useEnvironmentQuery } from "../../state/query";
+import { PROJECT_REPOSITORY_URL } from "../../branding";
 import { serverEnvironment } from "../../state/server";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
@@ -40,7 +41,7 @@ import {
   workflowRunInvolves,
 } from "@t3tools/client-runtime/workflows";
 
-const WORKFLOWS_GUIDE_URL = "https://github.com/pingdotgg/t3code/blob/main/docs/user/workflows.md";
+const WORKFLOWS_GUIDE_URL = `${PROJECT_REPOSITORY_URL}/blob/main/docs/user/workflows.md`;
 const EVERY_WORKFLOW = "";
 // Never a kind: the questions of no kind are filtered by the empty kind.
 const EVERY_KIND = "*";

@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-import { IS_FORK_BRAND } from "../branding";
+import { IS_FORK_PRODUCT } from "@t3tools/shared/productName";
 import { T3Wordmark } from "./T3Wordmark";
 
 /** The "E" of the ExaCode monogram, as a glyph that takes the surrounding text colour. */
@@ -14,5 +14,5 @@ function ExaCodeMark(props: SVGProps<SVGSVGElement>) {
 
 /** The product's glyph: T3's wordmark upstream, ExaCode's monogram in a fork build. */
 export function AppWordmark(props: SVGProps<SVGSVGElement>) {
-  return IS_FORK_BRAND ? <ExaCodeMark {...props} /> : <T3Wordmark {...props} />;
+  return IS_FORK_PRODUCT ? <ExaCodeMark {...props} /> : <T3Wordmark {...props} />;
 }
