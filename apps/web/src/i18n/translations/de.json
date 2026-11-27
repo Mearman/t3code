@@ -13040,5 +13040,9 @@
   "d7bd140afc367aef": "claude code sitzungen speicher platz datenträger grenze",
   "e2ba25992774347f": "Weitere Claude-Verzeichnisse",
   "f04c3d73e1bc1bb1": "claude code sitzungen verlauf nachladen füllen leerlauf",
-  "f7a1136e93716b32": "Jede Claude-Code-Sitzung aus den Claude-Verzeichnissen dieses Rechners als Thread anzeigen und Sitzungen folgen, die ein Terminal ausführt."
+  "f7a1136e93716b32": "Jede Claude-Code-Sitzung aus den Claude-Verzeichnissen dieses Rechners als Thread anzeigen und Sitzungen folgen, die ein Terminal ausführt.",
+  "5d7f6f4f7a7719ed": "Verlauf dieser Sitzung wird geladen",
+  "d25e309d89bcf285": "Verlauf geladen",
+  "669d9a6e03b3e6f2": "Die letzte Aktivität in diesem Thread kam von Claude Code in einem Terminal.",
+  "b0e84e35de44a0c3": "Terminal"
 }

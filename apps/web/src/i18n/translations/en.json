@@ -13049,5 +13049,9 @@
   "d7bd140afc367aef": "claude code sessions disk space storage floor",
   "e2ba25992774347f": "Additional Claude homes",
   "f04c3d73e1bc1bb1": "claude code sessions history backfill fill idle",
-  "f7a1136e93716b32": "Show every Claude Code session from this machine's Claude homes as a thread, and follow sessions a terminal is running."
+  "f7a1136e93716b32": "Show every Claude Code session from this machine's Claude homes as a thread, and follow sessions a terminal is running.",
+  "5d7f6f4f7a7719ed": "Loading this session's history",
+  "d25e309d89bcf285": "History loaded",
+  "669d9a6e03b3e6f2": "The latest activity in this thread came from Claude Code in a terminal.",
+  "b0e84e35de44a0c3": "Terminal"
 }

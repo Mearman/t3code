@@ -13047,5 +13047,9 @@
   "d7bd140afc367aef": "claude code sessioner diskutrymme lagring gräns",
   "e2ba25992774347f": "Ytterligare Claude-mappar",
   "f04c3d73e1bc1bb1": "claude code sessioner historik fyll inaktiv",
-  "f7a1136e93716b32": "Visa varje Claude Code-session från den här datorns Claude-mappar som en tråd och följ sessioner som en terminal kör."
+  "f7a1136e93716b32": "Visa varje Claude Code-session från den här datorns Claude-mappar som en tråd och följ sessioner som en terminal kör.",
+  "5d7f6f4f7a7719ed": "Läser in den här sessionens historik",
+  "d25e309d89bcf285": "Historiken har lästs in",
+  "669d9a6e03b3e6f2": "Senaste aktiviteten i den här tråden kom från Claude Code i en terminal.",
+  "b0e84e35de44a0c3": "Terminal"
 }

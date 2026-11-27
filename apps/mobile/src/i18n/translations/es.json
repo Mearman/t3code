@@ -5716,5 +5716,9 @@
   "a2925da227d38e1b": "Espacio libre mínimo en disco (GB)",
   "a863c1fb1edfc155": "Leer en segundo plano las sesiones no abiertas",
   "e2ba25992774347f": "Carpetas de Claude adicionales",
-  "f7a1136e93716b32": "Mostrar cada sesión de Claude Code de las carpetas de Claude de este equipo como un hilo y seguir las sesiones que ejecuta una terminal."
+  "f7a1136e93716b32": "Mostrar cada sesión de Claude Code de las carpetas de Claude de este equipo como un hilo y seguir las sesiones que ejecuta una terminal.",
+  "5d7f6f4f7a7719ed": "Cargando el historial de esta sesión",
+  "d25e309d89bcf285": "Historial cargado",
+  "68d2385c8448c944": "Terminal",
+  "adaeea93edfcc632": "desde una terminal"
 }

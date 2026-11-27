@@ -13040,5 +13040,9 @@
   "d7bd140afc367aef": "claude code sessions espace disque stockage seuil",
   "e2ba25992774347f": "Dossiers Claude supplémentaires",
   "f04c3d73e1bc1bb1": "claude code sessions historique remplissage inactif",
-  "f7a1136e93716b32": "Afficher chaque session Claude Code des dossiers Claude de cette machine comme un fil, et suivre les sessions qu’un terminal exécute."
+  "f7a1136e93716b32": "Afficher chaque session Claude Code des dossiers Claude de cette machine comme un fil, et suivre les sessions qu’un terminal exécute.",
+  "5d7f6f4f7a7719ed": "Chargement de l'historique de cette session",
+  "d25e309d89bcf285": "Historique chargé",
+  "669d9a6e03b3e6f2": "La dernière activité de ce fil provient de Claude Code dans un terminal.",
+  "b0e84e35de44a0c3": "Terminal"
 }
