@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -30,6 +31,8 @@ import {
   parseWslRuntimeArchiveMembers,
   readWorkspaceConfig,
   createBuildConfig,
+  renderLinuxMetainfo,
+  resolveDesktopListing,
   createStageWorkspaceConfig,
   DESKTOP_FILE_EXCLUSIONS,
   InvalidMacPasskeyRpDomainError,
@@ -2111,3 +2114,33 @@ it.effect.skipIf(!symlinksSupported)("preserves relative links when replacing di
     assert.equal(yield* fs.readFileString(path.join(output, app, "Current")), "rebuilt-app");
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
+
+it("lists a fork build as unofficial under its own name and repository", () => {
+  const listing = resolveDesktopListing({ productName: "ExaCode", repository: "owner/fork" });
+  assert.equal(listing.appName, "ExaCode");
+  assert.equal(listing.homepage, "https://github.com/owner/fork");
+  assert.equal(listing.author, "ExaCode");
+  assert.notInclude(listing.maintainer, "t3.codes");
+  assert.include(listing.description, "unofficial fork");
+  assert.equal(
+    resolveDesktopListing({ productName: undefined, repository: "" }).maintainer,
+    "T3 Tools <hello@t3.codes>",
+  );
+});
+
+it("renders the Linux metainfo under the fork's name and links", () => {
+  const template = NodeFS.readFileSync(
+    NodePath.join(import.meta.dirname, "../apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml"),
+    "utf8",
+  );
+  const rendered = renderLinuxMetainfo(
+    template,
+    resolveDesktopListing({ productName: "ExaCode", repository: "owner/fork" }),
+  );
+  assert.include(rendered, "<name>ExaCode</name>");
+  assert.include(rendered, '<url type="vcs-browser">https://github.com/owner/fork</url>');
+  assert.notInclude(rendered, "T3 Tools");
+  assert.notInclude(rendered, "t3.codes");
+  assert.notInclude(rendered, "pingdotgg");
+  assert.include(rendered, "<id>com.t3tools.t3code</id>");
+});

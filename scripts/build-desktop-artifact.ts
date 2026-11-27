@@ -2754,18 +2754,22 @@ export function resolveDesktopRuntimeDependencies(
   );
 }
 
-export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
-  updateChannel: "latest" | "nightly",
-) {
+const readReleaseRepository = Effect.gen(function* () {
   const env = yield* Config.all({
     updateRepository: Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
     githubRepository: Config.String("GITHUB_REPOSITORY").pipe(Config.option),
   });
-  const rawRepo = (
+  return (
     Option.getOrUndefined(env.updateRepository)?.trim() ||
     Option.getOrUndefined(env.githubRepository)?.trim() ||
     ""
   ).trim();
+});
+
+export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
+  updateChannel: "latest" | "nightly",
+) {
+  const rawRepo = yield* readReleaseRepository;
   if (!rawRepo) return undefined;
 
   const [owner, repo, ...rest] = rawRepo.split("/");
@@ -2823,6 +2827,73 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
+const UPSTREAM_PRODUCT_NAME = "T3 Code";
+
+interface DesktopListing {
+  readonly appName: string;
+  readonly description: string;
+  readonly homepage: string;
+  readonly author: string;
+  readonly maintainer: string;
+  readonly bugTracker: string;
+  readonly sourceUrl: string;
+}
+
+/**
+ * The user-visible product text of a build. A fork build (its own product name) states that it
+ * is unofficial and points at its own repository, so no T3 Tools contact or page is shown.
+ */
+export function resolveDesktopListing(input: {
+  readonly productName: string | undefined;
+  readonly repository: string;
+}): DesktopListing {
+  const upstreamDescription =
+    "T3 Code is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.";
+  if (input.productName === undefined) {
+    return {
+      appName: UPSTREAM_PRODUCT_NAME,
+      description: upstreamDescription,
+      homepage: "https://t3.codes",
+      author: "T3 Tools",
+      maintainer: listing.maintainer,
+      bugTracker: "https://github.com/pingdotgg/t3code/issues",
+      sourceUrl: "https://github.com/pingdotgg/t3code",
+    };
+  }
+  const sourceUrl = `https://github.com/${input.repository}`;
+  return {
+    appName: input.productName,
+    description: `${input.productName} is an unofficial fork based on the T3 Code source code, not affiliated with, endorsed by or maintained by T3 Tools, Inc. ${upstreamDescription.replace("T3 Code is", "It is")}`,
+    homepage: sourceUrl,
+    author: input.productName,
+    maintainer: `${input.productName} <noreply@users.noreply.github.com>`,
+    bugTracker: `${sourceUrl}/issues`,
+    sourceUrl,
+  };
+}
+
+export function renderLinuxMetainfo(template: string, listing: DesktopListing): string {
+  return template
+    .replace("<name>T3 Code</name>", `<name>${listing.appName}</name>`)
+    .replace(
+      /<developer id="com\.t3tools">\s*<name>T3 Tools Inc\.<\/name>\s*<\/developer>/,
+      `<developer id="com.t3tools">\n    <name>${listing.author}</name>\n  </developer>`,
+    )
+    .replace(
+      /<p>\s*T3 Code is an open-source desktop app for coding agents\. Work with your\s+existing agent subscriptions, review code changes, and run commands in\s+your projects\.\s*<\/p>/,
+      `<p>${listing.description}</p>`,
+    )
+    .replace('<url type="homepage">https://t3.codes</url>', `<url type="homepage">${listing.homepage}</url>`)
+    .replace(
+      '<url type="bugtracker">https://github.com/pingdotgg/t3code/issues</url>',
+      `<url type="bugtracker">${listing.bugTracker}</url>`,
+    )
+    .replace(
+      '<url type="vcs-browser">https://github.com/pingdotgg/t3code</url>',
+      `<url type="vcs-browser">${listing.sourceUrl}</url>`,
+    );
+}
+
 // A fork's release build names its own app and bundle id (exacode-release.yml); unset keeps these.
 const DesktopIdentityConfig = Config.all({
   productName: Config.String("T3CODE_DESKTOP_PRODUCT_NAME").pipe(Config.option),
@@ -2859,6 +2930,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const artifactPrefix = Option.match(identity.productName, {
     onNone: () => "T3-Code",
     onSome: (name) => name.replaceAll(" ", "-"),
+  });
+  const listing = resolveDesktopListing({
+    productName: Option.getOrUndefined(identity.productName),
+    repository: Option.isSome(identity.productName) ? yield* readReleaseRepository : "",
   });
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
@@ -2925,23 +3000,23 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         NSLocalNetworkUsageDescription:
-          "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+          `${listing.appName} connects to devices on your local network for remote environments and commands run by terminals and coding agents.`,
         NSCalendarsUsageDescription:
-          "Commands you run in T3 Code may need access to your calendars.",
+          `Commands you run in ${listing.appName} may need access to your calendars.`,
         NSCalendarsFullAccessUsageDescription:
-          "Commands you run in T3 Code may need to read and write your calendar events.",
+          `Commands you run in ${listing.appName} may need to read and write your calendar events.`,
         NSCalendarsWriteOnlyAccessUsageDescription:
-          "Commands you run in T3 Code may need to add events to your calendars.",
+          `Commands you run in ${listing.appName} may need to add events to your calendars.`,
         NSScreenCaptureUsageDescription:
-          "T3 Code captures the active window when you use the window capture shortcut.",
+          `${listing.appName} captures the active window when you use the window capture shortcut.`,
         NSCameraUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the camera.",
+          `${listing.appName} lets commands run by terminals and coding agents use the camera.`,
         NSMicrophoneUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the microphone.",
+          `${listing.appName} lets commands run by terminals and coding agents use the microphone.`,
         NSAppleEventsUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents control other apps.",
+          `${listing.appName} lets commands run by terminals and coding agents control other apps.`,
         NSSpeechRecognitionUsageDescription:
-          "T3 Code transcribes your dictation on this Mac when you choose Apple Speech.",
+          `${listing.appName} transcribes your dictation on this Mac when you choose Apple Speech.`,
         // macOS lists an app under Default web browser only when it opens web
         // pages as documents as well as http and https links (see protocols).
         CFBundleDocumentTypes: [
@@ -2955,7 +3030,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       },
       protocols: [
         {
-          name: "T3 Code",
+          name: listing.appName,
           schemes: ["t3code", "t3code-dev"],
         },
         {
@@ -3003,10 +3078,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       icon: "icons",
       category: "Development",
       synopsis: "Desktop GUI for coding agents",
-      maintainer: "T3 Tools <hello@t3.codes>",
+      maintainer: listing.maintainer,
       protocols: [
         {
-          name: "T3 Code",
+          name: listing.appName,
           schemes: ["t3code", "t3code-dev"],
         },
       ],
@@ -3026,10 +3101,27 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
             : `${artifactPrefix}-\${arch}.\${ext}`,
       };
     }
+    const upstreamMetainfoPath = path.join(
+      repoRoot,
+      "apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml",
+    );
+    // A fork's package carries its own name and links in the software centre's listing.
+    const metainfoPath = Option.isSome(identity.productName)
+      ? yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const renderedDir = yield* fs.makeTempDirectory({ prefix: "t3code-metainfo-" });
+          const renderedPath = path.join(renderedDir, "com.t3tools.t3code.metainfo.xml");
+          yield* fs.writeFileString(
+            renderedPath,
+            renderLinuxMetainfo(yield* fs.readFileString(upstreamMetainfoPath), listing),
+          );
+          return renderedPath;
+        })
+      : upstreamMetainfoPath;
     buildConfig.deb = {
       // FPM runs outside the staged app directory, so source paths must be absolute.
       fpm: [
-        `${path.join(repoRoot, "apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml")}=/usr/share/metainfo/com.t3tools.t3code.metainfo.xml`,
+        `${metainfoPath}=/usr/share/metainfo/com.t3tools.t3code.metainfo.xml`,
         `${path.join(repoRoot, "LICENSE")}=/usr/share/doc/t3code/copyright`,
       ],
       // Debian 13 and Ubuntu 24.04 use 64-bit-time names; retain old-name fallbacks.
@@ -4013,6 +4105,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
+  const stageIdentity = yield* DesktopIdentityConfig;
+  const stageListing = resolveDesktopListing({
+    productName: Option.getOrUndefined(stageIdentity.productName),
+    repository: Option.isSome(stageIdentity.productName) ? yield* readReleaseRepository : "",
+  });
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     version: appVersion,
@@ -4022,11 +4119,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
-    description:
-      "T3 Code is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
+    description: stageListing.description,
     license: "MIT",
-    homepage: "https://t3.codes",
-    author: "T3 Tools",
+    homepage: stageListing.homepage,
+    author: stageListing.author,
     main: "apps/desktop/dist-electron/boot.cjs",
     build: yield* createBuildConfig(
       options.platform,

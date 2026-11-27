@@ -13,6 +13,7 @@ import {
   publishedNightlyNotOlderThan,
 } from "./lib/fork-nightly-version.ts";
 import { resolveForkNightlyRelease } from "./resolve-fork-nightly-release.ts";
+import { resolveNightlyReleaseMetadata } from "./resolve-nightly-release.ts";
 
 const DAY = "20261127";
 
@@ -103,5 +104,16 @@ it.layer(NodeServices.layer)("fork nightly version after main is rewritten", (it
       }).pipe(Effect.flip);
       assert.equal(refused._tag, "ForkNightlyVersionNotNewerError");
     }),
+  );
+});
+
+it("titles a release with the given product name", () => {
+  assert.equal(
+    resolveNightlyReleaseMetadata("0.1.13", DAY, 41, "a".repeat(40), "nightly", "ExaCode").name,
+    `ExaCode Nightly 0.1.13-nightly.${DAY}.41 (${"a".repeat(12)})`,
+  );
+  assert.equal(
+    resolveNightlyReleaseMetadata("0.1.13", DAY, 41, "a".repeat(40)).name,
+    `T3 Code Nightly 0.1.13-nightly.${DAY}.41 (${"a".repeat(12)})`,
   );
 });
