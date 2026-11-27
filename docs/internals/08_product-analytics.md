@@ -45,7 +45,8 @@ count as product use.
 - The collector is resolved by `resolveIngestEndpoint`: run-time `T3CODE_TELEMETRY_KEY` and
   `T3CODE_TELEMETRY_HOST`, else the pair baked in at build time (`telemetryEndpointDefine`), else
   T3's ingest, and the last only when `IS_PROVABLY_UPSTREAM_BUILD` is true. That fact is defined by
-  every bundler config (`buildKindDefine`) and is true only for upstream's release repository with
+  the server and web bundler configs (`buildKindDefine`; the desktop and mobile configs read
+  neither it nor a collector) and is true only for upstream's release repository with
   no product name; a bundle with no such define reads false, so the default fails closed. The web
   client reads the same fact for its usage-data notice. An invalid pair is `Invalid`, logged once
   at start; none is `None`; neither records anything, and `T3CODE_TELEMETRY_ENABLED=true` cannot
