@@ -1,13 +1,19 @@
+import { claudeHeldSessionSendLabel } from "@t3tools/client-runtime/contract-labels";
+import { ClaudeHeldSessionSend } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
-import { useGT } from "gt-react";
+import * as Schema from "effect/Schema";
+import { useGT, useMessages } from "gt-react";
 
 import { DraftInput } from "../ui/draft-input";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 
 const DEFAULTS = DEFAULT_SERVER_SETTINGS.claudeSessionSync;
+const HELD_SESSION_SEND_CHOICES = ClaudeHeldSessionSend.literals;
+const isHeldSessionSend = Schema.is(ClaudeHeldSessionSend);
 
 /** Entries are separated by commas or new lines; blanks are dropped. */
 function parseSettingList(text: string): ReadonlyArray<string> {
@@ -27,6 +33,7 @@ function parseNonNegativeInt(text: string): number | undefined {
 
 export function ClaudeSessionSyncSettings() {
   const gt = useGT();
+  const m = useMessages();
   const setting = useSearchableSetting();
   const options = useScopedSettings((settings) => settings.claudeSessionSync);
   const updateSettings = useUpdateScopedSettings();
@@ -89,6 +96,49 @@ export function ClaudeSessionSyncSettings() {
               }
             />
           ) : null}
+          <SettingsRow
+            serverScoped
+            settingKeys={["claudeSessionSync"]}
+            {...setting("claude-session-held-send")}
+            description={gt(
+              "What a message you send does when another Claude Code process, such as a terminal, has the session open. Ask each time offers the choices on the refused message.",
+            )}
+            resetAction={
+              options.heldSessionSend !== DEFAULTS.heldSessionSend ? (
+                <SettingResetButton
+                  ariaLabel={gt("Reset sending to an open session to default")}
+                  onClick={() => update({ heldSessionSend: DEFAULTS.heldSessionSend })}
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={options.heldSessionSend ?? "default"}
+                onValueChange={(value) => {
+                  if (value === "default") update({ heldSessionSend: null });
+                  else if (isHeldSessionSend(value)) update({ heldSessionSend: value });
+                }}
+              >
+                <SelectTrigger size="sm" aria-label={gt("Sending to an open session")}>
+                  <SelectValue>
+                    {(value: string | null) =>
+                      isHeldSessionSend(value)
+                        ? claudeHeldSessionSendLabel(value, m)
+                        : claudeHeldSessionSendLabel("default", m)
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem value="default">{claudeHeldSessionSendLabel("default", m)}</SelectItem>
+                  {HELD_SESSION_SEND_CHOICES.map((choice) => (
+                    <SelectItem key={choice} value={choice}>
+                      {claudeHeldSessionSendLabel(choice, m)}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
           <SettingsRow
             serverScoped
             settingKeys={["claudeSessionSync"]}

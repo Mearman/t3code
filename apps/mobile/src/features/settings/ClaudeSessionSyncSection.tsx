@@ -1,9 +1,15 @@
-import type { ClaudeSessionSyncSettings, ServerSettingsPatch } from "@t3tools/contracts";
-import { useGT } from "gt-react-native";
+import { claudeHeldSessionSendLabel } from "@t3tools/client-runtime/contract-labels";
+import {
+  ClaudeHeldSessionSend,
+  type ClaudeSessionSyncSettings,
+  type ServerSettingsPatch,
+} from "@t3tools/contracts";
+import { useGT, useMessages } from "gt-react-native";
 import { useState } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { NumberField } from "../../components/ui/NumberField";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
@@ -61,6 +67,7 @@ export function ClaudeSessionSyncSection(props: {
   readonly write: (patch: ServerSettingsPatch) => void;
 }) {
   const gt = useGT();
+  const m = useMessages();
   const { options, disabled } = props;
   const update = (patch: NonNullable<ServerSettingsPatch["claudeSessionSync"]>) =>
     props.write({ claudeSessionSync: patch });
@@ -101,6 +108,26 @@ export function ClaudeSessionSyncSection(props: {
               />
             </View>
           ) : null}
+          <View className="gap-1 px-4 pt-3">
+            <Text textRole="body">{gt("Sending to an open session")}</Text>
+            <Text textRole="footnote" className="text-foreground-muted">
+              {gt(
+                "What a message you send does when another Claude Code process, such as a terminal, has the session open. Ask each time offers the choices on the refused message.",
+              )}
+            </Text>
+          </View>
+          {(["default", ...ClaudeHeldSessionSend.literals] as const).map((choice, index) => (
+            <ListChoiceRow
+              key={choice}
+              label={claudeHeldSessionSendLabel(choice, m)}
+              selected={(options.heldSessionSend ?? "default") === choice}
+              separated={index > 0}
+              disabled={disabled}
+              onPress={() =>
+                update({ heldSessionSend: choice === "default" ? null : choice })
+              }
+            />
+          ))}
           <View className="px-4 py-3">
             <NumberField
               label={gt("Minimum free disk (GB)")}

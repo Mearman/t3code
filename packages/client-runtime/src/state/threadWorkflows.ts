@@ -6,7 +6,10 @@ import {
   type OrchestrationV2ProviderFailure,
   type RunId,
 } from "@t3tools/contracts";
-import { PROVIDER_THREAD_IN_USE_FAILURE_CODE } from "@t3tools/provider-core/client";
+import {
+  PROVIDER_THREAD_IN_USE_FAILURE_CODE,
+  PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
+} from "@t3tools/provider-core/client";
 import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
 import { copySorted } from "@t3tools/shared/Array";
 import { mFallback, msg } from "gt-i18n";
@@ -265,9 +268,15 @@ export function canForkProjectedAssistantItem(input: {
   return canForkNatively || capabilities.context.supportsFullThreadHandoff;
 }
 
-/** Whether a failure is a refusal because another process was seen holding the session. */
+/**
+ * Whether a failure is a refusal because another process was seen holding the session, including
+ * one the server continues in a fork, whose button stays a way to fork again.
+ */
 export function isHeldSessionFailure(failure: Pick<OrchestrationV2ProviderFailure, "code">) {
-  return failure.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE;
+  return (
+    failure.code === PROVIDER_THREAD_IN_USE_FAILURE_CODE ||
+    failure.code === PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE
+  );
 }
 
 /**
