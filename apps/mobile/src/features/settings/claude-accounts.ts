@@ -11,6 +11,7 @@ import {
   type ManagedPolicySummary,
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
+  type ServerProvider,
   type ServerSettings,
 } from "@t3tools/contracts";
 
@@ -83,4 +84,28 @@ export function planClaudeAccountSave(input: {
   return {
     mutation: { operation: adding ? "create" : "upsert", instanceId, instance },
   };
+}
+
+/** Whether a provider signs in from the app rather than only through its own CLI. */
+export function signsInInApp(provider: ServerProvider): boolean {
+  return Boolean(
+    provider.setup?.canAuthenticate || (provider.driver === "acpRegistry" && provider.installed),
+  );
+}
+
+export interface ProviderAccountRow {
+  readonly provider: ServerProvider;
+  readonly signIn: boolean;
+  /** Claude instances keep their name and config folder editable whether or not they sign in. */
+  readonly claudeFolder: boolean;
+}
+
+export function providerAccountRows(
+  providers: ReadonlyArray<ServerProvider>,
+): ReadonlyArray<ProviderAccountRow> {
+  return providers.flatMap((provider) => {
+    const signIn = signsInInApp(provider);
+    const claudeFolder = provider.driver === CLAUDE_DRIVER;
+    return signIn || claudeFolder ? [{ provider, signIn, claudeFolder }] : [];
+  });
 }

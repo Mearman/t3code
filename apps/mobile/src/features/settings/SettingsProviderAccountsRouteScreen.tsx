@@ -35,8 +35,13 @@ import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActi
 import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
-import { AddClaudeAccount, ClaudeAccount } from "./ClaudeAccounts";
-import { CLAUDE_DRIVER } from "./claude-accounts";
+import {
+  AddClaudeAccount,
+  ClaudeAccount,
+  useClaudeAccountEditor,
+  type ClaudeAccountEditor,
+} from "./ClaudeAccounts";
+import { CLAUDE_DRIVER, providerAccountRows } from "./claude-accounts";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 
 export function SettingsProviderAccountsRouteScreen() {
@@ -94,36 +99,54 @@ function EnvironmentProviders({
   readonly environment: SettingsTarget;
   readonly providers: ReadonlyArray<ServerProvider>;
 }) {
-  const accounts = providers.filter(canManageProvider);
-  // Claude has no in-app sign-in; each account is its own instance on a signed-in config folder.
-  const claudeAccounts = providers.filter(
-    (provider) => provider.driver === CLAUDE_DRIVER && !canManageProvider(provider),
-  );
+  const rows = providerAccountRows(providers);
   const canAddClaude = isManagedDriverAllowed(
     environment.serverConfig.managedPolicy,
     CLAUDE_DRIVER,
   );
   return (
     <>
-      {accounts.map((provider, index) => (
-        <ProviderAccount
-          key={provider.instanceId}
-          environment={environment}
-          provider={provider}
-          divider={index > 0}
-        />
-      ))}
-      {accounts.length === 0 ? (
+      {rows.map(({ provider, signIn, claudeFolder }, index) =>
+        !signIn ? (
+          <ClaudeAccount key={provider.instanceId} environment={environment} provider={provider} />
+        ) : claudeFolder ? (
+          <ClaudeSignInAccount
+            key={provider.instanceId}
+            environment={environment}
+            provider={provider}
+            divider={index > 0}
+          />
+        ) : (
+          <ProviderAccount
+            key={provider.instanceId}
+            environment={environment}
+            provider={provider}
+            divider={index > 0}
+          />
+        ),
+      )}
+      {rows.every((row) => !row.signIn) ? (
         <Text className="p-4 text-foreground-muted">
           <T>Configure a provider with in-app sign-in in web or desktop Settings.</T>
         </Text>
       ) : null}
-      {claudeAccounts.map((provider) => (
-        <ClaudeAccount key={provider.instanceId} environment={environment} provider={provider} />
-      ))}
-      {canAddClaude ? <AddClaudeAccount environment={environment} /> : null}
+      {canAddClaude ? (
+        <AddClaudeAccount
+          environment={environment}
+          signsIn={rows.some((row) => row.claudeFolder && row.signIn)}
+        />
+      ) : null}
     </>
   );
+}
+
+function ClaudeSignInAccount(props: {
+  readonly environment: SettingsTarget;
+  readonly provider: ServerProvider;
+  readonly divider: boolean;
+}) {
+  const editor = useClaudeAccountEditor(props.environment, props.provider);
+  return <ProviderAccount {...props} editor={editor} />;
 }
 
 /** Providers the environment's managed policy allows; the rest cannot run or sign in. */
@@ -136,20 +159,16 @@ function managedProviders(
   );
 }
 
-function canManageProvider(provider: ServerProvider) {
-  return Boolean(
-    provider.setup?.canAuthenticate || (provider.driver === "acpRegistry" && provider.installed),
-  );
-}
-
 function ProviderAccount({
   environment,
   provider,
   divider,
+  editor,
 }: {
   readonly environment: SettingsTarget;
   readonly provider: ServerProvider;
   readonly divider: boolean;
+  readonly editor?: ClaudeAccountEditor;
 }) {
   const gt = useGT();
   const environmentId = environment.environmentId;
@@ -319,6 +338,7 @@ function ProviderAccount({
     );
   }
   function onMenuAction(id: string) {
+    if (editor?.onAction(id)) return;
     if (id === "signOut") signOut();
     // iOS keeps a disabled submenu's children selectable, so sign-in guards here too.
     else if (signInDisabled) return;
@@ -360,7 +380,25 @@ function ProviderAccount({
           },
         ]
       : []),
+    ...(editor?.actions ?? []),
   ];
+  const editorMenu =
+    editor && editor.actions.length > 0 && !(signedIn && !active) ? (
+      <Menu
+        accessible
+        accessibilityRole="button"
+        accessibilityLabel={gt("{provider} account options", { provider: name })}
+        title={name}
+        actions={[...editor.actions]}
+        onPressAction={({ nativeEvent }) => onMenuAction(nativeEvent.event)}
+      >
+        <ControlPill
+          icon="ellipsis"
+          accessibilityLabel={gt("{provider} account options", { provider: name })}
+          disabled={editor.pending}
+        />
+      </Menu>
+    ) : null;
   const trailing = pending ? (
     <View className="h-11 w-11 items-center justify-center">
       <AppActivityIndicator colorClassName="accent-icon" />
@@ -436,8 +474,16 @@ function ProviderAccount({
             : "min-h-16 flex-row items-center gap-3 px-4 py-3"
         }
       >
-        <ProviderAccountSummary key={email} name={name} status={status} email={email} />
-        {trailing}
+        <ProviderAccountSummary
+          key={email}
+          name={name}
+          status={editor ? [status, editor.detail].filter(Boolean).join(" · ") : status}
+          email={email}
+        />
+        <View className="flex-row items-center gap-2">
+          {trailing}
+          {editorMenu}
+        </View>
       </View>
       {interaction?.type === "deviceCode" ||
       interaction?.type === "terminal" ||
@@ -492,7 +538,13 @@ function ProviderAccount({
           ) : null}
           {showCallback ? (
             <>
-              {field("callback", gt("Final localhost URL"), false)}
+              {field(
+                "callback",
+                interaction?.type === "browser" && interaction.callbackInput === "code"
+                  ? gt("Code from the sign-in page")
+                  : gt("Final localhost URL"),
+                false,
+              )}
               <SettingsActionRow
                 icon="arrow.right"
                 label={gt("Continue")}
@@ -518,6 +570,7 @@ function ProviderAccount({
           ) : null}
         </View>
       ) : null}
+      {editor?.panel}
       {url ? (
         <SettingsActionRow
           icon="globe"

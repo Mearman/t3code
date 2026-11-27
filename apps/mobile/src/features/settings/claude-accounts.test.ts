@@ -2,11 +2,12 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ManagedPolicySummary,
+  type ServerProvider,
   type ServerSettings,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { planClaudeAccountSave } from "./claude-accounts";
+import { planClaudeAccountSave, providerAccountRows } from "./claude-accounts";
 
 const claude = ProviderDriverKind.make("claudeAgent");
 const work = ProviderInstanceId.make("claudeAgent_work");
@@ -113,5 +114,38 @@ describe("planClaudeAccountSave", () => {
         draft: { name: "Work", configDir: "~/.claude-other" },
       }),
     ).toEqual({ error: "Managed by Example Corp." });
+  });
+});
+
+describe("providerAccountRows", () => {
+  const provider = (driver: string, canAuthenticate: boolean): ServerProvider => ({
+    instanceId: ProviderInstanceId.make(`${driver}_test`),
+    driver: ProviderDriverKind.make(driver),
+    installed: true,
+    enabled: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-11-27T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    setup: { canAuthenticate, canInstall: false },
+  });
+
+  it("keeps a Claude account's name and folder editable once it signs in from the app", () => {
+    const rows = providerAccountRows([
+      provider("claudeAgent", true),
+      provider("claudeAgent", false),
+      provider("codex", true),
+      provider("cursor", false),
+    ]);
+    expect(
+      rows.map(({ provider: { driver }, signIn, claudeFolder }) => [driver, signIn, claudeFolder]),
+    ).toEqual([
+      ["claudeAgent", true, true],
+      ["claudeAgent", false, true],
+      ["codex", true, false],
+    ]);
   });
 });
