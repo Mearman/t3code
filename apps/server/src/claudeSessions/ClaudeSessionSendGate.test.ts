@@ -108,12 +108,16 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         "102.json": entry(102, "launched"),
         "103.json": entry(103, "integrated"),
       };
-      expect(yield* probeWith(files, "terminal")).toEqual({ _tag: "held", pid: 200, sdk: false });
+      expect(yield* probeWith(files, "terminal")).toEqual({
+        _tag: "held",
+        pid: 200,
+        source: "unknown",
+      });
       expect(yield* probeWith(files, "launched")).toBeUndefined();
       expect(yield* probeWith(files, "integrated")).toEqual({
         _tag: "held",
         pid: 103,
-        sdk: false,
+        source: "unknown",
       });
     }),
   );
@@ -127,7 +131,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       // The process started before it wrote the entry, so it is the one that wrote it.
       expect(
         yield* probeWith(written(START_SECONDS * 1000 + 500), "windows", always, false),
-      ).toEqual({ _tag: "held", pid: 200, sdk: false });
+      ).toEqual({ _tag: "held", pid: 200, source: "unknown" });
       // It started after the entry was written, so it reused the pid.
       expect(
         yield* probeWith(written(START_SECONDS * 1000 - 60_000), "windows", always, false),
@@ -136,7 +140,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       expect(yield* probeWith(written(START_SECONDS * 1000 + 500), "windows")).toEqual({
         _tag: "held",
         pid: 200,
-        sdk: false,
+        source: "unknown",
       });
       const pidOnly = { "200.json": entry(200, "windows", { procStart: "not a time" }) };
       expect(yield* probeWith(pidOnly, "windows", always, false)).toEqual({
@@ -159,7 +163,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       expect(yield* probeWith(behindLauncher, "nested")).toEqual({
         _tag: "held",
         pid: 104,
-        sdk: false,
+        source: "unknown",
       });
       expect(yield* probeWith(behindLauncher, "launched")).toBeUndefined();
       const spawnedDirectly = {
@@ -169,7 +173,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       expect(yield* probeWith(spawnedDirectly, "nested")).toEqual({
         _tag: "held",
         pid: 102,
-        sdk: false,
+        source: "unknown",
       });
       expect(yield* probeWith(spawnedDirectly, "spawned")).toBeUndefined();
       // The same rule decides an unreadable entry below the spawned CLI's own.
@@ -207,7 +211,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       expect(yield* lastWritten(START_SECONDS * 1000 + 500)).toEqual({
         _tag: "held",
         pid: 102,
-        sdk: false,
+        source: "unknown",
       });
     }),
   );
@@ -215,7 +219,11 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
   it.effect("counts an older process under a spawned CLI's pid as another writer", () =>
     Effect.gen(function* () {
       const files = { "105.json": entry(105, "orphaned", { procStart: EARLIER }) };
-      expect(yield* probeWith(files, "orphaned")).toEqual({ _tag: "held", pid: 105, sdk: false });
+      expect(yield* probeWith(files, "orphaned")).toEqual({
+        _tag: "held",
+        pid: 105,
+        source: "unknown",
+      });
     }),
   );
 
@@ -254,10 +262,39 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
       }),
   );
 
-  it.effect("marks an Agent SDK holder, which may be T3 Code's own from before a restart", () =>
+  it.effect("tells how a holder was started and only an orphaned SDK one may be T3 Code's", () =>
     Effect.gen(function* () {
-      const files = { "200.json": entry(200, "orphan", { entrypoint: "sdk-ts" }) };
-      expect(yield* probeWith(files, "orphan")).toEqual({ _tag: "held", pid: 200, sdk: true });
+      const files = {
+        "200.json": entry(200, "terminal", { entrypoint: "cli" }),
+        "201.json": entry(201, "print", { entrypoint: "sdk-cli" }),
+        "202.json": entry(202, "orphan", { entrypoint: "sdk-ts" }),
+        "203.json": entry(203, "attached", { entrypoint: "sdk-ts" }),
+        "204.json": entry(204, "gone-parent", { entrypoint: "sdk-py" }),
+        "205.json": entry(205, "desktop", { entrypoint: "claude-desktop" }),
+      };
+      const table = () =>
+        Effect.succeed([
+          ...processes,
+          ...parseClaudeProcessTable(
+            [
+              `  201   200 201 ${START}`,
+              `  202     1 202 ${START}`,
+              `  203   200 203 ${START}`,
+              `  204   999 204 ${START}`,
+              `  205   200 205 ${START}`,
+            ].join("\n"),
+          ),
+        ]);
+      const sourceOf = (sessionId: string) =>
+        probeWith(files, sessionId, table).pipe(
+          Effect.map((hold) => (hold?._tag === "held" ? hold.source : undefined)),
+        );
+      expect(yield* sourceOf("terminal")).toBe("terminal");
+      expect(yield* sourceOf("print")).toBe("non-interactive");
+      expect(yield* sourceOf("orphan")).toBe("possible-t3-leftover");
+      expect(yield* sourceOf("attached")).toBe("agent-sdk");
+      expect(yield* sourceOf("gone-parent")).toBe("possible-t3-leftover");
+      expect(yield* sourceOf("desktop")).toBe("unknown");
     }),
   );
 
@@ -303,7 +340,7 @@ it.layer(NodeServices.layer)("probeClaudeSessionHold", (it) => {
         {
           _tag: "held",
           pid: 200,
-          sdk: false,
+          source: "unknown",
         },
       );
     }),
@@ -532,7 +569,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
   it.effect("writes nothing to a held session and names the fork it offers", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls, probes } = makeGate({ hold: { _tag: "held", pid: 200, sdk: false } });
+      const { runtime, calls, probes } = makeGate({
+        hold: { _tag: "held", pid: 200, source: "unknown" },
+      });
       const operations = writes(runtime, providerThread(now), now);
 
       const refused = yield* refusals(operations);
@@ -561,24 +600,33 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 
-  it.effect("names an Agent SDK holder as possibly T3 Code's own from before a restart", () =>
-    Effect.gen(function* () {
-      const now = yield* DateTime.now;
-      const { runtime } = makeGate({ hold: { _tag: "held", pid: 200, sdk: true } });
+  it.effect.each([
+    ["terminal", "(pid 200, started from a terminal)", false],
+    ["non-interactive", "(pid 200, started non-interactively)", false],
+    ["agent-sdk", "(pid 200, started through the Agent SDK)", false],
+    ["possible-t3-leftover", "possibly by T3 Code before it restarted", true],
+    ["unknown", "(pid 200)", false],
+  ] as const)(
+    "words a %s holder without blaming T3 Code unless it may be its own",
+    (source, text, leftover) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime } = makeGate({ hold: { _tag: "held", pid: 200, source } });
 
-      const refusal = yield* Effect.flip(
-        runtime.resumeThread({ providerThread: providerThread(now) }),
-      );
+        const refusal = yield* Effect.flip(
+          runtime.resumeThread({ providerThread: providerThread(now) }),
+        );
 
-      expect(refusal.message).toContain("Agent SDK (pid 200)");
-      expect(refusal.message).toContain("before it restarted");
-    }),
+        expect(refusal.message).toContain("Another Claude Code process (pid 200");
+        expect(refusal.message).toContain(text);
+        expect(refusal.message.includes("T3 Code before it restarted")).toBe(leftover);
+      }),
   );
 
   it.effect("still forks a held session", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, sdk: false } });
+      const { runtime, calls } = makeGate({ hold: { _tag: "held", pid: 200, source: "unknown" } });
 
       yield* runtime.forkThread({
         sourceProviderThread: providerThread(now),
@@ -592,7 +640,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
   it.effect("still stops a task, which only makes T3 Code's own process write less", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const { runtime, calls, probes } = makeGate({ hold: { _tag: "held", pid: 200, sdk: false } });
+      const { runtime, calls, probes } = makeGate({
+        hold: { _tag: "held", pid: 200, source: "unknown" },
+      });
 
       yield* runtime.stopTask({ providerThread: providerThread(now), taskId: "task" });
 
@@ -606,7 +656,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
       const now = yield* DateTime.now;
       const title = { providerThread: providerThread(now), title: "Renamed" };
       const held = makeGate({
-        hold: { _tag: "held", pid: 200, sdk: false },
+        hold: { _tag: "held", pid: 200, source: "unknown" },
         liveNativeThreadId: "held-session",
       });
       yield* held.runtime.applyThreadTitle(title);
@@ -616,7 +666,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
       });
       yield* unchecked.runtime.applyThreadTitle(title);
       // With nothing live the adapter itself waits for the next turn, so the gate does not probe.
-      const idle = makeGate({ hold: { _tag: "held", pid: 200, sdk: false } });
+      const idle = makeGate({ hold: { _tag: "held", pid: 200, source: "unknown" } });
       yield* idle.runtime.applyThreadTitle(title);
       const free = makeGate({ liveNativeThreadId: "held-session" });
       yield* free.runtime.applyThreadTitle(title);
@@ -636,7 +686,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
       const now = yield* DateTime.now;
       const thread = providerThread(now);
       const { runtime, calls, probes, state } = makeGate({
-        hold: { _tag: "held", pid: 200, sdk: false },
+        hold: { _tag: "held", pid: 200, source: "unknown" },
       });
 
       yield* Effect.flip(runtime.startTurn(turnInput(thread, now)));
