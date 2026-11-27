@@ -1373,9 +1373,13 @@ function latestStartedRun(runs: ReadonlyArray<OrchestrationV2Run>): Orchestratio
 function latestStableRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | null {
+  // A run read back from a provider transcript has no checkpoint; the transcript is its stable point.
   return (
-    runsByOrigin(projection.runs, "t3")
-      .filter((run) => run.status === "completed" && run.checkpointId !== null)
+    runsByOrigin(projection.runs, "any")
+      .filter(
+        (run) =>
+          run.status === "completed" && (run.checkpointId !== null || isNativeOriginRun(run)),
+      )
       .toSorted((left, right) => right.ordinal - left.ordinal)[0] ?? null
   );
 }
@@ -16936,7 +16940,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
-    // The latest stable run is the one with a checkpoint. Wait for a just-completed run's capture,
+    // The latest stable run is the one with a checkpoint, or read from a transcript. Wait for a just-completed run's capture,
     // outside the locks its commit takes, so a fork right after a turn starts from that turn.
     if (
       (command.type === "thread.fork" || command.type === "thread.merge_back") &&
