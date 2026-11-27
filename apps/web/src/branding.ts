@@ -38,4 +38,4 @@ export const DESKTOP_DOWNLOAD_URL = IS_FORK_PRODUCT
   ? CLI_RELEASES_PAGE_URL
   : "https://t3.codes/download";
 // Redirects to the App Store or Google Play to match the phone that opens it.
-export const MOBILE_APP_URL = "https://t3.codes/mobile"; // product-name: keep
+export const MOBILE_APP_URL = "https://t3.codes/mobile";

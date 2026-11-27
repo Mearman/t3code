@@ -2927,6 +2927,15 @@ const DesktopIdentityConfig = Config.all({
   maintainer: Config.String("T3CODE_DESKTOP_MAINTAINER").pipe(Config.option),
 });
 
+export class DesktopRepositoryMissingError extends Schema.TaggedError<DesktopRepositoryMissingError>()(
+  "DesktopRepositoryMissingError",
+  {},
+) {
+  override get message(): string {
+    return "A build with its own product name needs T3CODE_DESKTOP_UPDATE_REPOSITORY or GITHUB_REPOSITORY.";
+  }
+}
+
 export class DesktopMaintainerMissingError extends Schema.TaggedError<DesktopMaintainerMissingError>()(
   "DesktopMaintainerMissingError",
   {},
@@ -2941,9 +2950,11 @@ const readDesktopListing = Effect.gen(function* () {
   if (Option.isNone(identity.productName)) {
     return resolveDesktopListing({ productName: undefined, repository: "", maintainer: undefined });
   }
+  const repository = yield* readReleaseRepository;
+  if (repository === "") return yield* new DesktopRepositoryMissingError();
   return resolveDesktopListing({
     productName: identity.productName.value,
-    repository: yield* readReleaseRepository,
+    repository,
     maintainer: Option.getOrUndefined(identity.maintainer),
   });
 });

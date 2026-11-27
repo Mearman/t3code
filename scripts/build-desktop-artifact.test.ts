@@ -520,6 +520,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       appId: "com.t3tools.t3code",
       artifactName: "T3-Code-${version}-${arch}.${ext}",
       appImageName: "T3-Code-Nightly-${arch}.${ext}",
+      maintainer: "T3 Tools <hello@t3.codes>",
     },
     {
       env: {
@@ -531,6 +532,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       appId: "io.exadev.exacode",
       artifactName: "ExaCode-${version}-${arch}.${ext}",
       appImageName: "ExaCode-Nightly-${arch}.${ext}",
+      maintainer: "Jo Maintainer <jo@example.com>",
     },
   ])("names the app $productName ($appId)", (expected) =>
     Effect.gen(function* () {
@@ -558,6 +560,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
       assert.nestedPropertyVal(linux, "appImage.artifactName", expected.appImageName);
+      assert.nestedPropertyVal(linux, "linux.maintainer", expected.maintainer);
     }).pipe(
       Effect.provide(
         ConfigProvider.layer(
@@ -2173,3 +2176,26 @@ it("ships the ExaCode icons exactly when the build has its own product name", ()
   assert.include(resolveDesktopBuildIconAssets(version, "ExaCode").macIconPng, "assets/exacode/");
   assert.include(resolveDesktopBuildIconAssets(version).macIconPng, "assets/nightly/");
 });
+
+const forkEnv = (env: Record<string, string>) =>
+  Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })));
+const NAMED = { T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode" };
+const VERSION = "0.1.13-nightly.20261127.14171";
+
+it.effect("refuses a Linux build with its own product name and no maintainer", () =>
+  Effect.gen(function* () {
+    const failure = yield* Effect.flip(
+      createBuildConfig("linux", "AppImage", VERSION, false, false, undefined, undefined),
+    );
+    assert.equal(failure._tag, "DesktopMaintainerMissingError");
+  }).pipe(forkEnv({ ...NAMED, GITHUB_REPOSITORY: "owner/fork" })),
+);
+
+it.effect("refuses a build with its own product name and no repository", () =>
+  Effect.gen(function* () {
+    const failure = yield* Effect.flip(
+      createBuildConfig("mac", "dmg", VERSION, false, false, undefined, undefined),
+    );
+    assert.equal(failure._tag, "DesktopRepositoryMissingError");
+  }).pipe(forkEnv({ ...NAMED, T3CODE_DESKTOP_MAINTAINER: "Jo <jo@example.com>" })),
+);

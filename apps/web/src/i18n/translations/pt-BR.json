@@ -13044,5 +13044,12 @@
   "5d7f6f4f7a7719ed": "Carregando o histórico desta sessão",
   "d25e309d89bcf285": "Histórico carregado",
   "669d9a6e03b3e6f2": "A atividade mais recente deste thread veio do Claude Code em um terminal.",
-  "b0e84e35de44a0c3": "Terminal"
+  "b0e84e35de44a0c3": "Terminal",
+  "ab9c53fd44bfd052": [
+    "O T3 Code não envia dados de uso, a menos que uma compilação seja configurada com seu próprio ponto de coleta. Consulte as",
+    " ",
+    { "t": "a", "i": 1, "c": "notas de telemetria" },
+    "."
+  ],
+  "7730df1de2817d26": "O que o T3 Code envia, se enviar algo, e como ativar ou desativar."
 }
