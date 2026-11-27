@@ -112,7 +112,7 @@ export function ClaudeSessionSyncSection(props: {
             <Text textRole="body">{gt("Sending to an open session")}</Text>
             <Text textRole="footnote" className="text-foreground-muted">
               {gt(
-                "What a message you send does when another Claude Code process, such as a terminal, has the session open. Ask each time offers the choices on the refused message; Send anyway writes beside an idle terminal, which branches the session.",
+                "What a message you send does when another Claude Code process, such as a terminal, has the session open. Use default hands it to the terminal where that claude runs the T3 bridge mod, and otherwise asks; Send anyway writes beside an idle terminal, which branches the session.",
               )}
             </Text>
           </View>
