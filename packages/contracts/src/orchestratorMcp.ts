@@ -571,7 +571,7 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
   heldSessionSend: Schema.optional(
     ClaudeHeldSessionSend.annotate({
       description:
-        "Only for a Claude thread a terminal has open: `fork` continues in a forked thread; `ask` (default) sends nothing.",
+        "For a Claude thread a terminal holds: `fork`, or `ask` (default) to send nothing.",
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
