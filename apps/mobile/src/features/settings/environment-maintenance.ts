@@ -6,9 +6,11 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import {
-  CLI_RELEASES_PAGE_URL,
+  cliChannelPointerUrl,
   cliReleaseChannelOf,
   cliReleaseIndexPageUrl,
+  cliReleasesPageUrl,
+  isUpstreamReleaseRepository,
   newestCliReleaseVersion,
 } from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
@@ -56,39 +58,57 @@ const Release = Schema.Struct({
 const decodeRelease = Schema.decodeUnknownSync(Release);
 const decodeReleases = Schema.decodeUnknownSync(Schema.Array(Release));
 
+const releaseCheckFailed = (status: number) =>
+  new Error(m(msg("Could not check releases ({status}). Try again.", { status })));
+
 async function fetchReleases(url: string, accept: string, signal: AbortSignal) {
   const response = await fetch(url, { signal, headers: { Accept: accept } });
-  if (!response.ok) {
-    throw new Error(
-      m(msg("Could not check releases ({status}). Try again.", { status: response.status })),
-    );
-  }
+  if (!response.ok) throw releaseCheckFailed(response.status);
   return response;
 }
 
-export async function findEnvironmentUpdate(currentVersion: string, signal: AbortSignal) {
+async function readChannelReleases(
+  channel: ReturnType<typeof cliReleaseChannelOf>,
+  repository: string,
+  signal: AbortSignal,
+): Promise<ReadonlyArray<typeof Release.Type>> {
+  const releasesPage = cliReleasesPageUrl(repository);
+  if (channel === "stable") {
+    const response = await fetchReleases(`${releasesPage}/latest`, "application/json", signal);
+    return [decodeRelease(await response.json())];
+  }
+  if (!isUpstreamReleaseRepository(repository)) {
+    // Another repository's feed can list upstream's tags, which have no release there.
+    const response = await fetch(cliChannelPointerUrl(channel, repository), {
+      signal,
+      headers: { Accept: "application/json" },
+    });
+    if (response.status === 404) return [];
+    if (!response.ok) throw releaseCheckFailed(response.status);
+    return [decodeRelease(await response.json())];
+  }
+  const response = await fetchReleases(`${releasesPage}.atom`, "application/atom+xml", signal);
+  return Array.from(
+    (await response.text()).matchAll(/<id>tag:github\.com,2008:Repository\/\d+\/([^<]+)<\/id>/g),
+    ([, tag_name = ""]) => ({ tag_name }),
+  );
+}
+
+/** The newest release of `repository` on `currentVersion`'s channel, when newer than it. */
+export async function findEnvironmentUpdate(
+  currentVersion: string,
+  repository: string,
+  signal: AbortSignal,
+) {
   const channel = cliReleaseChannelOf(currentVersion);
   // Public release pages avoid the anonymous API quota shared by devices on the same network.
-  const response = await fetchReleases(
-    channel === "stable" ? `${CLI_RELEASES_PAGE_URL}/latest` : `${CLI_RELEASES_PAGE_URL}.atom`,
-    channel === "stable" ? "application/json" : "application/atom+xml",
-    signal,
-  );
-  const releases =
-    channel === "stable"
-      ? [decodeRelease(await response.json())]
-      : Array.from(
-          (await response.text()).matchAll(
-            /<id>tag:github\.com,2008:Repository\/\d+\/([^<]+)<\/id>/g,
-          ),
-          ([, tag_name = ""]) => ({ tag_name }),
-        );
+  const releases = await readChannelReleases(channel, repository, signal);
   let version = newestCliReleaseVersion(releases, channel);
 
   // The feed only includes ten releases, so later nightlies can displace a published preview.
   for (let page = 1; version === undefined; page++) {
     const response = await fetchReleases(
-      cliReleaseIndexPageUrl(page),
+      cliReleaseIndexPageUrl(page, repository),
       "application/vnd.github+json",
       signal,
     );

@@ -55,6 +55,7 @@ describe("environment maintenance access", () => {
 });
 
 describe("environment release checks", () => {
+  const UPSTREAM = "pingdotgg/t3code";
   const signal = new AbortController().signal;
   const feed = (...tags: ReadonlyArray<string>) =>
     new Response(
@@ -78,14 +79,14 @@ describe("environment release checks", () => {
           : new Response(null, { status: 403 }),
       ),
     );
-    expect(await findEnvironmentUpdate("1.0.0-nightly.20260923.1", signal)).toBe(
+    expect(await findEnvironmentUpdate("1.0.0-nightly.20260923.1", UPSTREAM, signal)).toBe(
       "1.0.0-nightly.20260924.2",
     );
-    expect(await findEnvironmentUpdate("1.0.0-nightly.20260924.2", signal)).toBeNull();
-    expect(await findEnvironmentUpdate("1.0.0-preview.20260923.1", signal)).toBe(
+    expect(await findEnvironmentUpdate("1.0.0-nightly.20260924.2", UPSTREAM, signal)).toBeNull();
+    expect(await findEnvironmentUpdate("1.0.0-preview.20260923.1", UPSTREAM, signal)).toBe(
       "1.0.0-preview.20260924.3",
     );
-    expect(await findEnvironmentUpdate("1.0.0-preview.20260925.1", signal)).toBeNull();
+    expect(await findEnvironmentUpdate("1.0.0-preview.20260925.1", UPSTREAM, signal)).toBeNull();
   });
 
   it("finds a published preview beyond the ten-entry feed and first API page", async () => {
@@ -106,7 +107,7 @@ describe("environment release checks", () => {
         throw new Error(`Unexpected release request: ${url}`);
       }),
     );
-    expect(await findEnvironmentUpdate("1.0.0-preview.20260923.1", signal)).toBe(
+    expect(await findEnvironmentUpdate("1.0.0-preview.20260923.1", UPSTREAM, signal)).toBe(
       "1.0.0-preview.20260924.3",
     );
   });
@@ -114,7 +115,9 @@ describe("environment release checks", () => {
   it("reports failed checks instead of claiming the server is current", async () => {
     for (const status of [403, 429]) {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status })));
-      await expect(findEnvironmentUpdate("1.0.0", signal)).rejects.toThrow(String(status));
+      await expect(findEnvironmentUpdate("1.0.0", UPSTREAM, signal)).rejects.toThrow(
+        String(status),
+      );
     }
     vi.stubGlobal(
       "fetch",
@@ -122,10 +125,60 @@ describe("environment release checks", () => {
         url.endsWith(".atom") ? feed("v1.0.0") : Response.json([{ tag_name: "v1.0.0" }]),
       ),
     );
-    await expect(findEnvironmentUpdate("1.0.0-nightly.20260923.1", signal)).rejects.toThrow(
-      "No nightly release",
-    );
+    await expect(
+      findEnvironmentUpdate("1.0.0-nightly.20260923.1", UPSTREAM, signal),
+    ).rejects.toThrow("No nightly release");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "invalid" })));
-    await expect(findEnvironmentUpdate("1.0.0", signal)).rejects.toThrow();
+    await expect(findEnvironmentUpdate("1.0.0", UPSTREAM, signal)).rejects.toThrow();
+  });
+
+  it("reads another repository's nightlies from its pointer, never its tag feed", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        requests.push(url);
+        if (url === "https://github.com/owner/fork/releases/download/update-feed/nightly.json") {
+          return Response.json({ tag_name: "v1.0.1-nightly.20260924.40" });
+        }
+        throw new Error(`Unexpected release request: ${url}`);
+      }),
+    );
+    expect(await findEnvironmentUpdate("1.0.1-nightly.20260923.31", "owner/fork", signal)).toBe(
+      "1.0.1-nightly.20260924.40",
+    );
+    expect(requests).toEqual([
+      "https://github.com/owner/fork/releases/download/update-feed/nightly.json",
+    ]);
+  });
+
+  it("lists another repository's releases when it has no pointer yet", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "https://github.com/owner/fork/releases/download/update-feed/nightly.json") {
+          return new Response(null, { status: 404 });
+        }
+        if (url === "https://api.github.com/repos/owner/fork/releases?per_page=100&page=1") {
+          return Response.json([{ tag_name: "v1.0.1-nightly.20260924.40" }]);
+        }
+        throw new Error(`Unexpected release request: ${url}`);
+      }),
+    );
+    expect(await findEnvironmentUpdate("1.0.1-nightly.20260923.31", "owner/fork", signal)).toBe(
+      "1.0.1-nightly.20260924.40",
+    );
+  });
+
+  it("reads another repository's stable release from that repository", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url === "https://github.com/owner/fork/releases/latest"
+          ? Response.json({ tag_name: "v1.0.2" })
+          : new Response(null, { status: 404 }),
+      ),
+    );
+    expect(await findEnvironmentUpdate("1.0.1", "owner/fork", signal)).toBe("1.0.2");
   });
 });

@@ -4,15 +4,21 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { environmentReleaseCheckAtom, releaseCheckError } from "./environmentUpdateCheck";
 
+vi.mock("expo-constants", () => ({
+  default: { expoConfig: { extra: { releaseRepository: "owner/fork" } } },
+}));
+
 function stubHangingFetch() {
   const { promise: called, resolve } = Promise.withResolvers<AbortSignal>();
-  vi.stubGlobal("fetch", (_url: string, init: { signal: AbortSignal }) => {
+  const urls: string[] = [];
+  vi.stubGlobal("fetch", (url: string, init: { signal: AbortSignal }) => {
+    urls.push(url);
     resolve(init.signal);
     return new Promise((_resolve, reject) => {
       init.signal.addEventListener("abort", () => reject(init.signal.reason));
     });
   });
-  return { called, [Symbol.dispose]: () => vi.unstubAllGlobals() };
+  return { called, urls, [Symbol.dispose]: () => vi.unstubAllGlobals() };
 }
 
 function makeRegistry() {
@@ -39,6 +45,7 @@ describe("environmentReleaseCheckAtom", () => {
     registry.set(atom, async () => "0.0.40");
     const signal = await fetchStub.called;
     expect(signal.aborted).toBe(false);
+    expect(fetchStub.urls).toEqual(["https://github.com/owner/fork/releases/latest"]);
 
     unmount();
     flush();
