@@ -135,5 +135,6 @@
   "c5079de7e1299c60": "Auf Port {port}, wo der T3-Code-Server dieses T3-Homes (PID {pid}) sein sollte, hat eine andere Umgebung geantwortet. Stoppe, was sonst auf diesem Port lauscht, und öffne T3 Code dann erneut.",
   "32112d61c684d3a7": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}, Version {version}), ist für diese App zu alt. Aktualisiere ihn mit `t3 update` und übergib dabei `--base-dir` mit diesem T3-Home. Öffne T3 Code dann erneut.",
   "c008ff68ac1804b7": "Der T3-Code-Server, der dieses T3-Home verwendet (PID {pid}, Version {version}), ist neuer als diese App. Aktualisiere T3 Code und öffne es dann erneut.",
-  "57dfe53533b8a2a0": "T3 Code konnte sich nicht beim T3-Code-Server anmelden, der dieses T3-Home verwendet (PID {pid}, Version {version}). Wenn diese Version von der dieser App abweicht, aktualisiere die ältere der beiden und öffne T3 Code dann erneut."
+  "57dfe53533b8a2a0": "T3 Code konnte sich nicht beim T3-Code-Server anmelden, der dieses T3-Home verwendet (PID {pid}, Version {version}). Wenn diese Version von der dieser App abweicht, aktualisiere die ältere der beiden und öffne T3 Code dann erneut.",
+  "23e843d174ea929c": "Ein inoffizieller Fork auf Basis des Quellcodes von {upstream}. Nicht mit T3 Tools, Inc. verbunden und weder von T3 Tools, Inc. unterstützt noch gepflegt."
 }

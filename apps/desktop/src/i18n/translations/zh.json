@@ -135,5 +135,6 @@
   "c5079de7e1299c60": "在端口 {port} 上响应的是另一个环境，而使用此 T3 主目录的 T3 Code 服务器（PID {pid}）应在该端口上。请停止在该端口上监听的其他程序，然后重新打开 T3 Code。",
   "32112d61c684d3a7": "使用此 T3 主目录的 T3 Code 服务器（PID {pid}，版本 {version}）对此应用来说太旧了。请使用 `t3 update` 更新它，并通过 `--base-dir` 传入此 T3 主目录，然后重新打开 T3 Code。",
   "c008ff68ac1804b7": "使用此 T3 主目录的 T3 Code 服务器（PID {pid}，版本 {version}）比此应用更新。请更新 T3 Code，然后重新打开它。",
-  "57dfe53533b8a2a0": "T3 Code 无法登录使用此 T3 主目录的 T3 Code 服务器（PID {pid}，版本 {version}）。如果该版本与此应用的版本不同，请更新较旧的一方，然后重新打开 T3 Code。"
+  "57dfe53533b8a2a0": "T3 Code 无法登录使用此 T3 主目录的 T3 Code 服务器（PID {pid}，版本 {version}）。如果该版本与此应用的版本不同，请更新较旧的一方，然后重新打开 T3 Code。",
+  "23e843d174ea929c": "基于 {upstream} 源代码的非官方分支。与 T3 Tools, Inc. 无关联，也未获其认可或维护。"
 }
