@@ -83,7 +83,8 @@ on:
         required: false
         default: ""
         type: string
-      # Minutes the build job may take off Windows. GitHub-hosted runners have fewer cores than the runners this was sized on.
+      # Minutes the build job may take off Windows. GitHub-hosted runners have fewer cores
+      # than the runners this was sized on.
       timeout_minutes:
         required: false
         default: 30
@@ -403,8 +404,10 @@ jobs:
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && inputs.release_channel || 'dev' }}
         run: node apps/server/scripts/cli.ts build-exe --verbose ${{ inputs.platform == 'win' && format('--target win-{0}', inputs.arch) || '' }}
 
-      # A certificate with none of the App Store Connect keys is self-signed; "Build desktop artifact" and the CLI import read `enabled`.
-      # codesign offers only identities the system trusts, and `security import` cannot read OpenSSL 3's default .p12 encryption, so this trusts the certificate and re-encodes it to a file only those steps are given.
+      # A certificate with none of the App Store Connect keys is self-signed, decided here for
+      # the build and CLI import. codesign offers only trusted identities and `security import`
+      # cannot read OpenSSL 3's .p12 encryption, so this trusts the certificate and re-encodes
+      # it to a file under RUNNER_TEMP that only those two steps are given.
       - name: Trust a self-signed macOS signing certificate
         id: self_signed
         if: inputs.platform == 'mac'
@@ -712,7 +715,8 @@ jobs:
               echo "macOS signing enabled."
               args+=(--signed)
             elif [[ "$SELF_SIGNED" == "true" ]]; then
-              # No App Store Connect keys: sign with the certificate alone, without notarization, a provisioning profile or passkey entitlements.
+              # No App Store Connect keys: sign with the certificate alone, without
+              # notarization, a provisioning profile or passkey entitlements.
               export T3CODE_MACOS_SELF_SIGNED=true
               echo "macOS signing enabled (self-signed, not notarized)."
               args+=(--signed)
