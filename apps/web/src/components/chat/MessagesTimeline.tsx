@@ -11,7 +11,7 @@ import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock } from "./WorkLog";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
-import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
+import type { ClaudeHeldSessionSend, WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { deriveTimelineMinimapItems } from "./timelineMinimapItems";
 import {
   type AssistantCitation,
@@ -313,6 +313,11 @@ interface MessagesTimelineProps {
   onForkHeldSession:
     | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
     | null;
+  /** The refused run a send choice can resend, and how; see `heldSessionResendRunId`. */
+  heldSessionResendRunId: RunId | null;
+  onResendHeldSession:
+    | ((runId: RunId, choice: ClaudeHeldSessionSend) => Promise<void>)
+    | null;
   supportsConversationRollback: boolean;
   threadStartCheckpointAvailable?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
@@ -418,6 +423,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   onForkFromRun,
   heldSessionRefusedRuns,
   onForkHeldSession,
+  heldSessionResendRunId,
+  onResendHeldSession,
   supportsConversationRollback,
   threadStartCheckpointAvailable = false,
   availableRevertTurnCounts,
@@ -1170,6 +1177,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
     onForkFromRun,
     heldSessionRefusedRuns,
     onForkHeldSession,
+    heldSessionResendRunId,
+    onResendHeldSession,
     onToggleTurnFold,
     onToggleAttemptFold,
     onToggleWorkGroup,

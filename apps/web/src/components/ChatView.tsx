@@ -113,6 +113,7 @@ import {
 import {
   getUserQueuedThreadRuns,
   heldSessionRefusedRunIds,
+  heldSessionResendRunId,
   threadCanSteer,
   threadSupportsProviderHandoff,
 } from "@t3tools/client-runtime/state/thread-workflows";
@@ -3119,7 +3120,7 @@ export default function ChatView(props: ChatViewProps) {
     setPendingServerThreadStartFromOriginByThreadId,
     scheduleComposerFocus: scheduleComposerFocusStable,
   });
-  const { onResume, isResuming } = useComposerResume({
+  const { onResume, isResuming, onResendHeldSession } = useComposerResume({
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -3139,6 +3140,7 @@ export default function ChatView(props: ChatViewProps) {
     scrollToEnd,
     setThreadError,
   });
+  const onResendHeldSessionStable = useStableCallback(onResendHeldSession);
   const { onSend, captureDetachedSend } = useComposerSend({
     environmentId,
     routeThreadKey,
@@ -3742,6 +3744,12 @@ export default function ChatView(props: ChatViewProps) {
                   // Promoting is the way forward when another process holds the session.
                   heldSessionRefusedRuns={heldSessionRefusedRuns}
                   onForkHeldSession={onForkFromRunStable}
+                  heldSessionResendRunId={
+                    serverProjection === null
+                      ? null
+                      : (heldSessionResendRunId(serverProjection) ?? null)
+                  }
+                  onResendHeldSession={onResendHeldSessionStable}
                   onOpenThread={onOpenRelatedThreadStable}
                   parentThreadLink={parentThreadLink}
                   workflowOpening={workflowOpening}

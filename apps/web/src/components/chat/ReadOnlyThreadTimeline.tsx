@@ -111,6 +111,8 @@ export function ReadOnlyThreadTimeline(props: {
             supportsConversationRollback={false}
             heldSessionRefusedRuns={NO_REFUSED_RUNS}
             onForkHeldSession={null}
+            heldSessionResendRunId={null}
+            onResendHeldSession={null}
             onRevertToTurnCount={ignore}
             isRevertingCheckpoint={false}
             onImageExpand={props.onImageExpand}

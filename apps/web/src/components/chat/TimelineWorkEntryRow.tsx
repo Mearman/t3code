@@ -7,6 +7,7 @@ import {
   hasQuestionAnswer,
 } from "@t3tools/client-runtime/work-log/user-input";
 import {
+  type ClaudeHeldSessionSend,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type EnvironmentId,
   type RunId,
@@ -15,6 +16,7 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { Link } from "@tanstack/react-router";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
+import { claudeHeldSessionSendLabel } from "@t3tools/client-runtime/contract-labels";
 import { heldSessionForkRunId } from "@t3tools/client-runtime/state/thread-workflows";
 import {
   resolveViewedImageAsset,
@@ -293,15 +295,38 @@ export function ViewedImagesTimelineRow({
   );
 }
 
+// Choices that resend the refused message itself; a fork is offered beside them.
+const HELD_SESSION_RESEND_CHOICES = ["takeOver"] as const satisfies ReadonlyArray<ClaudeHeldSessionSend>;
+
 // Offered where another process holds the session: the fork continues in a session of its own.
 function HeldSessionForkAction(props: {
   readonly onFork: NonNullable<TimelineRowSharedState["onForkHeldSession"]>;
+  readonly onResend: TimelineRowSharedState["onResendHeldSession"];
   readonly sourceThreadId: ThreadId;
   readonly runId: RunId;
 }) {
   const [busy, setBusy] = useState(false);
+  const m = useMessages();
+  const { onResend } = props;
   return (
-    <div className="ms-7 pb-1">
+    <div className="ms-7 flex flex-wrap gap-2 pb-1">
+      {onResend === null
+        ? null
+        : HELD_SESSION_RESEND_CHOICES.map((choice) => (
+            <Button
+              key={choice}
+              type="button"
+              size="xs"
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void onResend(props.runId, choice).finally(() => setBusy(false));
+              }}
+            >
+              {claudeHeldSessionSendLabel(choice, m)}
+            </Button>
+          ))}
       <Button
         type="button"
         size="xs"
@@ -454,6 +479,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         {forkRunId !== undefined && ctx.onForkHeldSession ? (
           <HeldSessionForkAction
             onFork={ctx.onForkHeldSession}
+            onResend={forkRunId === ctx.heldSessionResendRunId ? ctx.onResendHeldSession : null}
             sourceThreadId={sourceThreadId}
             runId={forkRunId}
           />

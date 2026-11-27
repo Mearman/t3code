@@ -11,6 +11,7 @@ import {
   OrchestrationV2CheckpointUnavailableError,
   WS_METHODS,
   type ChatAttachment,
+  type ClaudeHeldSessionSend,
   MessageId,
   type ModelSelection,
   type NodeId,
@@ -210,6 +211,8 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly dispatchMode?: "auto" | "queue" | "steer" | "restart" | "start";
   /** Start a new provider session; needs the server's `freshContext` capability. */
   readonly freshContext?: boolean;
+  /** What the send does if another Claude Code process holds the thread's session. */
+  readonly heldSessionSend?: ClaudeHeldSessionSend;
   /** Defaults to true. Callers with their own retry queue opt out so a dead socket fails fast. */
   readonly resendAfterSocketLoss?: boolean;
 }
@@ -877,6 +880,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
           ? {}
           : { sourcePlanRef: input.sourceProposedPlan }),
         ...(input.freshContext ? { freshContext: true } : {}),
+        ...(input.heldSessionSend === undefined ? {} : { heldSessionSend: input.heldSessionSend }),
         dispatchMode: { type: "start_immediately" },
       },
       resend,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import {
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
@@ -11,6 +12,7 @@ import {
   getUserQueuedThreadRuns,
   heldSessionForkRunId,
   heldSessionRefusedRunIds,
+  heldSessionResendRunId,
   resolveLatestMergeBackRun,
   threadCanSteer,
   threadSupportsProviderHandoff,
@@ -462,6 +464,42 @@ describe("thread workflows", () => {
       expect(resolveLatestMergeBackRun(projection)).toBeNull();
     },
   );
+});
+
+describe("heldSessionResendRunId", () => {
+  const run = (id: string, ordinal: number, status: string) => ({
+    id,
+    ordinal,
+    status,
+    rootNodeId: `node:${id}`,
+    requestedAt: "2026-11-27T12:00:00.000Z",
+  });
+  const refusalOf = (runId: string, code: string) => ({
+    id: `item:${runId}`,
+    type: "error",
+    status: "failed",
+    runId,
+    nodeId: `node:${runId}`,
+    ordinal: 1,
+    updatedAt: DateTime.makeUnsafe("2026-11-27T12:00:00.000Z"),
+    failure: { code },
+  });
+  const resendable = (runs: ReadonlyArray<unknown>, turnItems: ReadonlyArray<unknown>) =>
+    heldSessionResendRunId({ runs, turnItems } as never);
+
+  it("offers only the latest run, and only one refused because a holder was seen", () => {
+    const refused = [run("a", 1, "completed"), run("b", 2, "failed")];
+    expect(resendable(refused, [refusalOf("b", PROVIDER_THREAD_IN_USE_FAILURE_CODE)])).toBe("b");
+    // The server already continues a fork-coded refusal, and other failures are not refusals.
+    expect(resendable(refused, [refusalOf("b", PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE)])).toBe(
+      undefined,
+    );
+    expect(resendable(refused, [refusalOf("b", "provider_error")])).toBe(undefined);
+    const later = [...refused, run("c", 3, "completed")];
+    expect(resendable(later, [refusalOf("b", PROVIDER_THREAD_IN_USE_FAILURE_CODE)])).toBe(
+      undefined,
+    );
+  });
 });
 
 describe("heldSessionRefusedRunIds", () => {

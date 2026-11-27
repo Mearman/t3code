@@ -8,6 +8,7 @@ import type {
   WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import {
+  type ClaudeHeldSessionSend,
   type EnvironmentId,
   type MessageId,
   type OrchestrationV2TurnItem,
@@ -98,6 +99,11 @@ export interface TimelineRowSharedState {
   /** Offered on those rows even where response forks are hidden, as it is the way forward. */
   onForkHeldSession:
     | ((input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => Promise<void>)
+    | null;
+  /** The refused run a send choice can resend; its row offers the choices besides a fork. */
+  heldSessionResendRunId: RunId | null;
+  onResendHeldSession:
+    | ((runId: RunId, choice: ClaudeHeldSessionSend) => Promise<void>)
     | null;
   onToggleTurnFold: (runId: RunId) => void;
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;

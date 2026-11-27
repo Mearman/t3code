@@ -2,6 +2,7 @@ import { msg } from "gt-react";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
 import {
+  type ClaudeHeldSessionSend,
   type EnvironmentId,
   type ProviderInteractionMode,
   type RunId,
@@ -166,5 +167,33 @@ export function useComposerResume(input: ComposerResumeInput) {
     });
   };
 
-  return { onResume, isResuming };
+  // Resends a send refused for a held session with the choice the person made on its row.
+  const onResendHeldSession = async (runId: RunId, choice: ClaudeHeldSessionSend) => {
+    if (!activeThread || sendInFlightRef.current) return;
+    const threadId = activeThread.id;
+    sendInFlightRef.current = true;
+    setThreadError(threadId, null);
+    const result = await startThreadTurn({
+      environmentId,
+      input: {
+        threadId,
+        manualContinuationOfRunId: runId,
+        heldSessionSend: choice,
+        message: { messageId: newMessageId(), role: "user", text: "", attachments: [] },
+        runtimeMode,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        dispatchMode: "start",
+      },
+    });
+    sendInFlightRef.current = false;
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      setThreadError(
+        threadId,
+        thrownErrorMessage(squashAtomCommandFailure(result), m) ??
+          m(msg("Could not send the message.")),
+      );
+    }
+  };
+
+  return { onResume, isResuming, onResendHeldSession };
 }

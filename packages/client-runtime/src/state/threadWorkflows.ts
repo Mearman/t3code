@@ -10,7 +10,11 @@ import {
   PROVIDER_THREAD_IN_USE_FAILURE_CODE,
   PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE,
 } from "@t3tools/provider-core/client";
-import { runsByOrigin } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  latestRootProviderFailure,
+  latestT3ExecutedRun,
+  runsByOrigin,
+} from "@t3tools/shared/orchestrationV2ThreadError";
 import { copySorted } from "@t3tools/shared/Array";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
@@ -317,6 +321,21 @@ export function heldSessionRefusedRunIds(
     }
   }
   return [...refused].sort();
+}
+
+/**
+ * The refused run a send choice can resend: the thread's latest run of its own, refused because a
+ * holder was seen. The server resends only that run, and only once a choice is named.
+ */
+export function heldSessionResendRunId(
+  projection: Pick<Projection, "runs" | "turnItems">,
+): RunId | undefined {
+  const run = latestT3ExecutedRun(projection.runs);
+  return run !== null &&
+    latestRootProviderFailure(run, projection.turnItems)?.code ===
+      PROVIDER_THREAD_IN_USE_FAILURE_CODE
+    ? run.id
+    : undefined;
 }
 
 export function canDetachThreadProviderSession(projection: Projection): boolean {
