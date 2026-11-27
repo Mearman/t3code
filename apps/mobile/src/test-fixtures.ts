@@ -49,7 +49,8 @@ export function makeRawThreadShell(
     settledOverride: null,
     settledAt: null,
     deletedAt: null,
-    ...input,
+    // `makeThreadShellFixture` forwards each override, so an absent one must keep the default.
+    ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)),
   };
 }
 

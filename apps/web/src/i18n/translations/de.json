@@ -2845,6 +2845,7 @@
   "6dd1f458bcd6a2ea": "Wird neu erzeugt…",
   "de30fdae5b3fea98": "Titel neu erzeugen",
   "dffd2e20f7ff5aa1": "Als ungelesen markieren",
+  "91d5ee9565acad31": "In ein anderes Claude-Konto verschieben…",
   "3364346f40934e88": "Alle Projekte anzeigen",
   "666f3ac177c116b6": "Nach {project} filtern",
   "1385e2d8bd696370": "In Projekt umwandeln",
@@ -7950,6 +7951,8 @@
       "v": "v"
     }
   ],
+  "2a8bfa5dc1d47b52": "Beim Verschieben eines Threads in ein anderes Claude-Konto wird er zuerst unter dem alten Konto komprimiert, sodass das neue Konto mit einer Zusammenfassung beginnt. Du kannst das für einzelne Verschiebungen überspringen.",
+  "b9de0ff4d25ab4a6": "Vor dem Verschieben in ein anderes Konto komprimieren",
   "d0e747ae0c4f68a5": "t3 konnte nicht installiert werden",
   "ba3ac338f36cba74": "t3 konnte nicht entfernt werden",
   "9c942b53b58119b8": "t3 konnte nicht zu PATH hinzugefügt werden",
@@ -9109,6 +9112,28 @@
   "d797c9687a256a50": "Verbinde dich von deinem Smartphone oder Tablet mit deinem Server.",
   "c21858dee1b62639": "{store}-Link",
   "cdcdc54a444a3636": "Mit der Kamera deines Smartphones scannen.",
+  "37ac32051d57adde": "Das Verschieben ist fehlgeschlagen.",
+  "0af95d4a293f7986": "{count, plural, =0 {Keine Threads zu verschieben} one {{count} Thread nach {account} verschoben} other {{count} Threads nach {account} verschoben}}",
+  "2c9d60eb35301140": "{count, plural, =0 {Keine Threads verschoben.} one {{count} Thread verschoben.} other {{count} Threads verschoben.}}",
+  "2585c754d7c2c172": "{count, plural, one {{from} konnte {count} Thread nicht komprimieren, daher blieb er.} other {{from} konnte {count} Threads nicht komprimieren, daher blieben sie.}} Verschiebe sie ohne Komprimieren, um ihren gesamten Verlauf an {to} zu senden.",
+  "ce3c335e78652ff3": "Ein Thread konnte nicht verschoben werden.",
+  "871158f9c4d8779f": "Verschieben nach",
+  "63739f23d55fa6a9": "Wird verschoben…",
+  "c61bf21b6f3af6fd": "Nach {account} verschieben",
+  "ce33d64df8173ae6": ["Alle Threads verschieben von ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
+  "d6f42a0ed4f1a486": "Thread in ein anderes Claude-Konto verschieben",
+  "2b39bfab4f4db652": [
+    "Der Gesprächsverlauf geht an ",
+    { "i": 1, "k": "_gt_value_1", "v": "v" },
+    ", und der Thread wird dort statt auf ",
+    { "i": 2, "k": "_gt_value_2", "v": "v" },
+    " fortgesetzt."
+  ],
+  "7b53f2312a513da0": "Füge zuerst ein weiteres Claude-Konto in dieser Umgebung hinzu.",
+  "78253300f9f94d2b": "Verschieben nach",
+  "20adc4ec3fea0253": ["Zuerst unter ", { "i": 1, "k": "_gt_value_1", "v": "v" }, " komprimieren"],
+  "65eced1f62b31ac8": "Das neue Konto beginnt mit einer Zusammenfassung. Der gesamte Verlauf bleibt in der Sitzung.",
+  "6bd44a7b22513151": "Ohne Komprimieren verschieben",
   "73da41e93823fd71": [
     "Wir raten davon ab, mehrere ",
     {
@@ -9421,6 +9446,8 @@
   "cf69675106e4bf46": "Einrichtung",
   "22078dd501ba3102": "Laufzeit",
   "288c2d92df27a68c": "Modelle",
+  "cb0fabd5a0449368": "Alle Threads in ein anderes Konto verschieben",
+  "3099bad27927b3ab": "Sendet den Verlauf jedes Threads an ein anderes Claude-Konto, das ihn fortsetzt. Threads, die gerade arbeiten oder in einem Terminal geöffnet sind, bleiben.",
   "68a76cecbc1e0b6d": "Variable hinzufügen",
   "e141c49816ed7a1f": "Für dieses Projekt überschrieben",
   "ab4e8ccc69c28a8c": [
@@ -9449,6 +9476,7 @@
     ", das in diesem Build nicht verfügbar ist. Die Konfiguration bleibt erhalten."
   ],
   "b534d4cd528ede39": "Modelleinstellungen und benutzerdefinierte Modelle werden in der ausgewählten Umgebung gespeichert und mit verbundenen Geräten geteilt.",
+  "a33b32ee882e152a": "Threads verschieben…",
   "caaef21e8722857d": "Schnellmodus",
   "a860db2b1bb3aa31": "Kein Reasoning",
   "3b67fce5df949e14": "Gib einen Modell-Slug ein.",
@@ -13072,6 +13100,7 @@
   "a863c1fb1edfc155": "Nicht geöffnete Sitzungen im Hintergrund lesen",
   "ac9f7d647fde336a": "claude code terminal sitzungen transkripte import synchronisieren verlauf",
   "c6ca82dcbd99e23b": "claude code sitzungen wiederherstellen gelöscht thread",
+  "5a333d503f60ef80": "claude konto verschieben wechseln komprimieren zusammenfassung",
   "d7bd140afc367aef": "claude code sitzungen speicher platz datenträger grenze",
   "e2ba25992774347f": "Weitere Claude-Verzeichnisse",
   "f04c3d73e1bc1bb1": "claude code sitzungen verlauf nachladen füllen leerlauf",

@@ -18,6 +18,11 @@ import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { Fragment, useState, type ReactElement, type ReactNode } from "react";
 import { T, useGT, useMessages, Var } from "gt-react";
+import { useAtomValue } from "@effect/atom-react";
+import { serverEnvironment } from "../../state/server";
+import { useServerConfigs } from "../../state/entities";
+import { claudeMoveTargets } from "@t3tools/client-runtime/claudeAccountMove";
+import { openClaudeMoveDialog } from "./claudeMoveDialogState";
 import {
   isProviderDriverKind,
   resolveProviderInstanceEnabled,
@@ -1461,6 +1466,13 @@ export function ProviderInstanceCard({
           />
         </div>
       </SettingsSection>
+      {environmentId !== undefined && liveProvider?.driver === "claudeAgent" ? (
+        <MoveClaudeThreadsRow
+          environmentId={environmentId}
+          instanceId={instanceId}
+          readOnly={readOnly}
+        />
+      ) : null}
       {environmentId !== undefined && liveProvider?.driver === "acpRegistry" ? (
         <AcpSessionManagementSection
           environmentId={environmentId}
@@ -1500,5 +1512,47 @@ export function ProviderInstanceCard({
         </SettingsSection>
       ) : null}
     </>
+  );
+}
+
+/** Moves every thread on one Claude account to another, where the server can. */
+function MoveClaudeThreadsRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ProviderInstanceId;
+  readonly readOnly: boolean;
+}) {
+  const gt = useGT();
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(props.environmentId)) ?? [];
+  const supported =
+    useServerConfigs().get(props.environmentId)?.environment.capabilities.claudeAccountMoves ===
+    true;
+  const permitted = useAtomValue(
+    serverEnvironment.moveClaudeThreads.permissionAtom(props.environmentId),
+  );
+  if (!supported || claudeMoveTargets(providers, props.instanceId).length === 0) return null;
+  return (
+    <SettingsSection title={gt("Threads")}>
+      <SettingsRow
+        title={gt("Move every thread to another account")}
+        description={gt(
+          "Sends each thread's history to another Claude account, which continues it. Threads that are working or open in a terminal stay.",
+        )}
+        control={
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={props.readOnly || !permitted}
+            onClick={() =>
+              openClaudeMoveDialog({
+                environmentId: props.environmentId,
+                sourceInstanceId: props.instanceId,
+              })
+            }
+          >
+            <T>Move threads…</T>
+          </Button>
+        }
+      />
+    </SettingsSection>
   );
 }

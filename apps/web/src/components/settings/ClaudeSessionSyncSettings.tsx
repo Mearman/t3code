@@ -230,6 +230,22 @@ export function ClaudeSessionSyncSettings() {
           />
         </>
       ) : null}
+      <SettingsRow
+        serverScoped
+        settingKeys={["claudeSessionSync"]}
+        {...setting("claude-compact-before-account-move")}
+        description={gt(
+          "Moving a thread to another Claude account compacts it under the old account first, so the new account starts from a summary. You can skip this for a single move.",
+        )}
+        control={
+          <ScopedSwitch
+            settingKeys={["claudeSessionSync"]}
+            checked={options.compactBeforeAccountMove}
+            onCheckedChange={(checked) => update({ compactBeforeAccountMove: Boolean(checked) })}
+            aria-label={gt("Compact before moving to another account")}
+          />
+        }
+      />
     </SettingsSection>
   );
 }

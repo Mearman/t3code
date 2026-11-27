@@ -67,6 +67,10 @@
       "types": "./src/diffFileOrder.ts",
       "default": "./src/diffFileOrder.ts"
     },
+    "./claudeAccountMove": {
+      "types": "./src/claudeAccountMove.ts",
+      "default": "./src/claudeAccountMove.ts"
+    },
     "./claudeAccounts": {
       "types": "./src/claudeAccounts.ts",
       "default": "./src/claudeAccounts.ts"
