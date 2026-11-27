@@ -1041,9 +1041,9 @@ const make = Effect.gen(function* () {
       structure.derivedFrom.find((session) => session.via === "fork")?.sessionId;
     if (forkedFrom !== undefined && isSyncThread(thread)) {
       const noticeId = TurnItemId.make(`x:${target.idScope}:forked-from`);
-      if (
-        (yield* projections.getTurnItem({ threadId: target.threadId, itemId: noticeId })) === null
-      ) {
+      const shown = yield* projections.getTurnItem({ threadId: target.threadId, itemId: noticeId });
+      // A note written before it carried a level reads as a warning, so it is written again once.
+      if (shown === null || (shown.type === "system_notice" && shown.level !== "info")) {
         const message = `Forked from Claude session ${forkedFrom}.`;
         events.push({
           id: yield* idAllocator.allocate.event({ threadId: target.threadId }),
@@ -1067,6 +1067,7 @@ const make = Effect.gen(function* () {
             updatedAt: thread.createdAt,
             type: "system_notice",
             message,
+            level: "info",
           },
         });
       }
@@ -1085,7 +1086,7 @@ const make = Effect.gen(function* () {
     state: { readonly status: "running" | "completed" | "failed"; readonly message: string },
   ) {
     const id = TurnItemId.make(`x:${target.idScope}:${kind}`);
-    // A notice without a level reads as a warning, so only a failed load leaves the level to that default.
+    // Clients read a notice without a level as a warning, so every notice written here sets its level.
     const level = state.status === "failed" ? "warning" : "info";
     const existing = yield* projections.getTurnItem({ threadId: target.threadId, itemId: id });
     if (

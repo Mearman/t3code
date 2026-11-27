@@ -1109,6 +1109,41 @@ describe("ClaudeSessionSync", () => {
     ),
   );
 
+  it.effect("writes a history notice stored without a level again once, and then nothing", () =>
+    withTempRoot((root) =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(root, "home");
+        yield* append(home, firstTurn);
+        const nearlyFull = capacityOf({ freeDiskBytes: Effect.succeed(5 * 1024 ** 3) });
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const noticeId = TurnItemId.make(`x:${SESSION}:history`);
+          const level = () =>
+            projections
+              .getTurnItem({ threadId: claudeThreadId, itemId: noticeId })
+              .pipe(Effect.map((item) => (item?.type === "system_notice" ? item.level : "absent")));
+          yield* syncAll({ full: true });
+          yield* openThread(claudeThreadId);
+          expect(yield* level()).toBe("warning");
+          // A notice written before notices carried a level has the same status and message.
+          yield* sql`
+            UPDATE orchestration_v2_projection_turn_items
+            SET payload_json = json_remove(payload_json, '$.level')
+            WHERE turn_item_id = ${noticeId}
+          `;
+          expect(yield* level()).toBeUndefined();
+          const before = yield* itemWrites(claudeThreadId);
+          yield* syncAll({ full: true });
+          expect(yield* level()).toBe("warning");
+          expect(yield* itemWrites(claudeThreadId)).toBe(before + 1);
+          yield* syncAll({ full: true });
+          expect(yield* itemWrites(claudeThreadId)).toBe(before + 1);
+        }).pipe(Effect.provide(syncLayer(settingsFor([home], { minFreeDiskGiB: 10 }), nearlyFull)));
+      }),
+    ),
+  );
+
   it.effect("brings no old session in as a thread auto-settle would act on", () =>
     withTempRoot((root) =>
       Effect.gen(function* () {
