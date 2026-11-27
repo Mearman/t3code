@@ -522,7 +522,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       appImageName: "T3-Code-Nightly-${arch}.${ext}",
     },
     {
-      env: { T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode", T3CODE_DESKTOP_APP_ID: "io.exadev.exacode" },
+      env: {
+        T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode",
+        T3CODE_DESKTOP_APP_ID: "io.exadev.exacode",
+        T3CODE_DESKTOP_MAINTAINER: "Jo Maintainer <jo@example.com>",
+      },
       productName: "ExaCode",
       appId: "io.exadev.exacode",
       artifactName: "ExaCode-${version}-${arch}.${ext}",
@@ -2118,14 +2122,20 @@ it.effect.skipIf(!symlinksSupported)("preserves relative links when replacing di
 );
 
 it("lists a fork build as unofficial under its own name and repository", () => {
-  const listing = resolveDesktopListing({ productName: "ExaCode", repository: "owner/fork" });
+  const listing = resolveDesktopListing({
+    productName: "ExaCode",
+    repository: "Owner/fork",
+    maintainer: "Jo Maintainer <jo@example.com>",
+  });
   assert.equal(listing.appName, "ExaCode");
-  assert.equal(listing.homepage, "https://github.com/owner/fork");
+  assert.equal(listing.homepage, "https://github.com/Owner/fork");
+  assert.equal(listing.developerId, "io.github.owner");
+  assert.equal(listing.maintainer, "Jo Maintainer <jo@example.com>");
   assert.equal(listing.author, "ExaCode");
-  assert.notInclude(listing.maintainer, "t3.codes");
   assert.include(listing.description, "unofficial fork");
   assert.equal(
-    resolveDesktopListing({ productName: undefined, repository: "" }).maintainer,
+    resolveDesktopListing({ productName: undefined, repository: "", maintainer: undefined })
+      .maintainer,
     "T3 Tools <hello@t3.codes>",
   );
 });
@@ -2140,11 +2150,17 @@ it("renders the Linux metainfo under the fork's name and links", () => {
   );
   const rendered = renderLinuxMetainfo(
     template,
-    resolveDesktopListing({ productName: "ExaCode", repository: "owner/fork" }),
+    resolveDesktopListing({
+      productName: "ExaCode",
+      repository: "owner/fork",
+      maintainer: "Jo Maintainer <jo@example.com>",
+    }),
   );
   assert.include(rendered, "<name>ExaCode</name>");
   assert.include(rendered, '<url type="vcs-browser">https://github.com/owner/fork</url>');
   assert.notInclude(rendered, "<name>T3 Tools");
+  assert.include(rendered, '<developer id="io.github.owner">');
+  assert.notInclude(rendered, 'id="com.t3tools"');
   assert.notInclude(rendered, "t3.codes");
   assert.notInclude(rendered, "pingdotgg");
   assert.include(rendered, "<id>com.t3tools.t3code</id>");

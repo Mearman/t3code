@@ -85,8 +85,13 @@ on:
         type: string
       # The app's product name (a self-signed macOS or a Linux build) and macOS bundle id (a
       # self-signed macOS build only): the Apple-provisioned and Windows paths still use
-      # upstream's names, so the job refuses them there. Empty keeps scripts/build-desktop-artifact.ts's names.
+      # upstream's names, so the job refuses them there. Empty keeps the build script's names.
       product_name:
+        required: false
+        default: ""
+        type: string
+      # The Linux package's contact, required with product_name on a Linux build.
+      maintainer:
         required: false
         default: ""
         type: string
@@ -691,6 +696,7 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           SELF_SIGNED: ${{ steps.self_signed.outputs.enabled }}
           T3CODE_DESKTOP_PRODUCT_NAME: ${{ inputs.product_name }}
+          T3CODE_DESKTOP_MAINTAINER: ${{ inputs.maintainer }}
           T3CODE_DESKTOP_APP_ID: ${{ inputs.app_id }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -708,6 +714,7 @@ jobs:
         run: |
           # The build reads an empty value as a name; unset keeps the default names.
           [[ -n "$T3CODE_DESKTOP_PRODUCT_NAME" ]] || unset T3CODE_DESKTOP_PRODUCT_NAME
+          [[ -n "$T3CODE_DESKTOP_MAINTAINER" ]] || unset T3CODE_DESKTOP_MAINTAINER
           [[ -n "$T3CODE_DESKTOP_APP_ID" ]] || unset T3CODE_DESKTOP_APP_ID
           args=(
             --platform "${{ inputs.platform }}"

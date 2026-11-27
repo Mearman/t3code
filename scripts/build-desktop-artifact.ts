@@ -2848,7 +2848,8 @@ interface DesktopListing {
   readonly description: string;
   readonly homepage: string;
   readonly author: string;
-  readonly maintainer: string;
+  readonly maintainer: string | undefined;
+  readonly developerId: string;
   readonly bugTracker: string;
   readonly sourceUrl: string;
   readonly unofficialStatement: string | undefined;
@@ -2861,6 +2862,7 @@ interface DesktopListing {
 export function resolveDesktopListing(input: {
   readonly productName: string | undefined;
   readonly repository: string;
+  readonly maintainer: string | undefined;
 }): DesktopListing {
   const upstreamDescription =
     "T3 Code is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.";
@@ -2871,6 +2873,7 @@ export function resolveDesktopListing(input: {
       homepage: "https://t3.codes",
       author: "T3 Tools",
       maintainer: "T3 Tools <hello@t3.codes>",
+      developerId: "com.t3tools",
       bugTracker: "https://github.com/pingdotgg/t3code/issues",
       sourceUrl: "https://github.com/pingdotgg/t3code",
       unofficialStatement: undefined,
@@ -2883,7 +2886,8 @@ export function resolveDesktopListing(input: {
     description: `${unofficialStatement} ${upstreamDescription.replace("T3 Code is", "It is")}`,
     homepage: sourceUrl,
     author: input.productName,
-    maintainer: `${input.productName} <noreply@users.noreply.github.com>`,
+    maintainer: input.maintainer,
+    developerId: `io.github.${(input.repository.split("/")[0] ?? "").toLowerCase()}`,
     bugTracker: `${sourceUrl}/issues`,
     sourceUrl,
     unofficialStatement,
@@ -2895,7 +2899,7 @@ export function renderLinuxMetainfo(template: string, listing: DesktopListing): 
     .replace("<name>T3 Code</name>", `<name>${listing.appName}</name>`)
     .replace(
       /<developer id="com\.t3tools">\s*<name>T3 Tools Inc\.<\/name>\s*<\/developer>/,
-      `<developer id="com.t3tools">\n    <name>${listing.author}</name>\n  </developer>`,
+      `<developer id="${listing.developerId}">\n    <name>${listing.author}</name>\n  </developer>`,
     )
     .replace(
       /<p>\s*T3 Code is an open-source desktop app for coding agents\. Work with your\s+existing agent subscriptions, review code changes, and run commands in\s+your projects\.\s*<\/p>/,
@@ -2919,6 +2923,29 @@ export function renderLinuxMetainfo(template: string, listing: DesktopListing): 
 const DesktopIdentityConfig = Config.all({
   productName: Config.String("T3CODE_DESKTOP_PRODUCT_NAME").pipe(Config.option),
   appId: Config.String("T3CODE_DESKTOP_APP_ID").pipe(Config.option),
+  // The Linux package's contact; a Linux build with its own product name must name a real one.
+  maintainer: Config.String("T3CODE_DESKTOP_MAINTAINER").pipe(Config.option),
+});
+
+export class DesktopMaintainerMissingError extends Schema.TaggedError<DesktopMaintainerMissingError>()(
+  "DesktopMaintainerMissingError",
+  {},
+) {
+  override get message(): string {
+    return "A Linux build with its own product name needs T3CODE_DESKTOP_MAINTAINER, the package's contact.";
+  }
+}
+
+const readDesktopListing = Effect.gen(function* () {
+  const identity = yield* DesktopIdentityConfig;
+  if (Option.isNone(identity.productName)) {
+    return resolveDesktopListing({ productName: undefined, repository: "", maintainer: undefined });
+  }
+  return resolveDesktopListing({
+    productName: identity.productName.value,
+    repository: yield* readReleaseRepository,
+    maintainer: Option.getOrUndefined(identity.maintainer),
+  });
 });
 
 export function resolveDesktopProductName(version: string): string {
@@ -2952,10 +2979,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     onNone: () => "T3-Code",
     onSome: (name) => name.replaceAll(" ", "-"),
   });
-  const listing = resolveDesktopListing({
-    productName: Option.getOrUndefined(identity.productName),
-    repository: Option.isSome(identity.productName) ? yield* readReleaseRepository : "",
-  });
+  const listing = yield* readDesktopListing;
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
     appId: Option.getOrElse(identity.appId, () => DESKTOP_APP_ID),
@@ -3090,7 +3114,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       icon: "icons",
       category: "Development",
       synopsis: "Desktop GUI for coding agents",
-      maintainer: listing.maintainer,
+      maintainer: listing.maintainer ?? (yield* new DesktopMaintainerMissingError()),
       protocols: [
         {
           name: listing.appName,
@@ -4122,11 +4146,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
-  const stageIdentity = yield* DesktopIdentityConfig;
-  const stageListing = resolveDesktopListing({
-    productName: Option.getOrUndefined(stageIdentity.productName),
-    repository: Option.isSome(stageIdentity.productName) ? yield* readReleaseRepository : "",
-  });
+  const stageListing = yield* readDesktopListing;
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     version: appVersion,

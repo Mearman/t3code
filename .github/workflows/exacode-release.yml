@@ -197,8 +197,9 @@ jobs:
             fi
           done
 
-      # The desktop bundle and the web client name the app ExaCode (scripts/lib/desktop-product-name.ts).
-      - name: Check the desktop bundle's product name
+      # The desktop bundle, the web client and the server name the app ExaCode
+      # (scripts/lib/product-name-define.ts), and the server and web client name upstream nowhere.
+      - name: Check the bundles' product name
         run: |
           for dir in apps/desktop/dist-electron apps/server/dist/client; do
             if ! grep -rqE --include='*.js' --include='*.cjs' --include='*.mjs' "[\"'\`]ExaCode[\"'\`]" "$dir"; then
@@ -206,6 +207,7 @@ jobs:
               exit 1
             fi
           done
+          node scripts/check-fork-product-name.ts apps/server/dist
 
       - name: Stage web asset manifest
         run: |
@@ -310,6 +312,7 @@ jobs:
       relay_url: ""
       label: Linux x64
       product_name: ExaCode
+      maintainer: Joseph Mearman <joseph@mearman.co.uk>
       runner: ubuntu-24.04
       platform: linux
       target: AppImage
@@ -339,6 +342,7 @@ jobs:
       relay_url: ""
       label: Linux arm64
       product_name: ExaCode
+      maintainer: Joseph Mearman <joseph@mearman.co.uk>
       runner: ubuntu-24.04-arm
       platform: linux
       target: AppImage
