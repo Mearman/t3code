@@ -1,12 +1,12 @@
 <p align="center">
-  <a href="https://t3.codes">
-    <img src="./assets/prod/t3-black-web-icon-192x192.png" width="80" height="80" alt="T3 Code logo" />
-  </a>
+  <img src="./assets/exacode/exacode-web-icon-192x192.png" width="80" height="80" alt="ExaCode logo" />
 </p>
 
-<h1 align="center">T3 Code</h1>
+<h1 align="center">ExaCode</h1>
 
 <p align="center">The open-source control plane for coding agents.</p>
+
+<p align="center">ExaCode is an unofficial fork based on the T3 Code source code. It is not affiliated with, endorsed by or maintained by T3 Tools, Inc.</p>
 
 <p align="center">
   <a href="https://t3.codes/download"><strong>Download</strong></a> ·
