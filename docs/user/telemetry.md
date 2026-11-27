@@ -24,7 +24,7 @@ In T3 Code's own builds, T3 Connect sends connection timings, request paths, env
 Only a build that is provably T3 Code's own (built with T3's release repository and no product name of its own) defaults to T3's collector. Any other build, including one built outside CI where nothing says which it is, records and sends nothing, and `T3CODE_TELEMETRY_ENABLED=true` cannot change that. It sends usage events only to a collector of its own, set up in one of two ways:
 
 - At build time, with both `T3CODE_TELEMETRY_KEY` and `T3CODE_TELEMETRY_HOST` set for the build. The pair is baked into the server, which the desktop app and its WSL backend run, so they need no run-time setting.
-- At run time, with both variables in the environment of a server or CLI you start yourself. They override a baked pair.
+- At run time, with both variables in the environment of a server or CLI you start yourself. Each variable overrides the baked half it names, so setting both replaces a baked pair.
 
 A key that is empty, or a host that is not an `http(s)` URL, is not a collector: the server logs a warning at start and sends nothing. The opt-outs in [Disable telemetry](#disable-telemetry) still apply.
 

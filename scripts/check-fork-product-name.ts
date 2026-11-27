@@ -24,7 +24,7 @@ const SHARED_ADDRESSES: ReadonlySet<string> = new Set([
   "https://t3.codes/privacy-policy",
   "https://t3.codes/schema/t3.json",
   "noreply@t3.codes",
-  // The telemetry collector, until a fork build has none by default.
+  // The collector is a quoted literal in every bundle, though only upstream's builds default to it.
   "https://ingest.t3.codes",
 ]);
 // T3's hosted web app is a connection surface any server can use, so its hostnames stay.
