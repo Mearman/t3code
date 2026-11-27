@@ -267,7 +267,7 @@ export const ChatHeader = memo(function ChatHeader({
       >
         {activeProject ? (
           <>
-            <WorkspaceBreadcrumbItem className="shrink">
+            <WorkspaceBreadcrumbItem className="shrink max-sm:max-w-[30%]">
               <SharedTooltipTrigger
                 render={
                   <button
@@ -333,7 +333,7 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
-        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1 gap-2">
+        <WorkspaceBreadcrumbItem current className="min-w-10 flex-1 gap-2 pe-2">
           {renamingTitle !== null ? (
             <input
               autoFocus

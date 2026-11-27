@@ -1,6 +1,6 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 const persisted = vi.hoisted(() => ({ title: "" }));
 const openMenu = vi.hoisted(() => vi.fn());
@@ -112,11 +112,49 @@ it("marks a thread whose latest run came from a terminal, and no other", async (
   await expect.element(screen.getByText("Terminal", { exact: true })).not.toBeInTheDocument();
 });
 
-it("keeps a gap between the title and the terminal badge", async () => {
+function terminalBadge(screen: Awaited<ReturnType<typeof render>>) {
+  const label = screen.getByText("Terminal", { exact: true }).element();
+  const badge = label.parentElement;
+  if (!(badge instanceof HTMLElement)) throw new Error("The terminal label has no badge.");
+  return { label, badge, icon: badge.querySelector("svg") };
+}
+
+it("keeps space around the terminal badge on both sides", async () => {
   await using screen = await render(header("Refactor the config parser", true));
   const title = screen.getByRole("heading", { name: "Refactor the config parser" }).element();
-  const badge = screen.getByText("Terminal", { exact: true }).element().parentElement;
-  expect(badge).toBeInstanceOf(HTMLElement);
-  const gap = (badge?.getBoundingClientRect().left ?? 0) - title.getBoundingClientRect().right;
-  expect(gap).toBeGreaterThanOrEqual(8);
+  const { badge } = terminalBadge(screen);
+  const item = badge.parentElement;
+  expect(badge.getBoundingClientRect().left - title.getBoundingClientRect().right).toBeGreaterThan(
+    0,
+  );
+  expect(
+    (item?.getBoundingClientRect().right ?? 0) - badge.getBoundingClientRect().right,
+  ).toBeGreaterThan(0);
+});
+
+it("shows the terminal badge as an icon on a narrow screen, with its label for screen readers", async () => {
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  await page.viewport(390, 800);
+  await using _viewport = {
+    [Symbol.asyncDispose]: () => page.viewport(viewport.width, viewport.height),
+  };
+  await using screen = await render(header("Refactor the config parser", true));
+  const { label, icon } = terminalBadge(screen);
+  expect(icon).not.toBeNull();
+  expect(icon?.getBoundingClientRect().width).toBeGreaterThan(0);
+  // Visually hidden, yet still the badge's accessible text.
+  expect(label.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+  expect(label.textContent).toBe("Terminal");
+});
+
+it("shows the terminal badge as its label on a wide screen", async () => {
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  await page.viewport(1280, 800);
+  await using _viewport = {
+    [Symbol.asyncDispose]: () => page.viewport(viewport.width, viewport.height),
+  };
+  await using screen = await render(header("Refactor the config parser", true));
+  const { label, icon } = terminalBadge(screen);
+  expect(label.getBoundingClientRect().width).toBeGreaterThan(1);
+  expect(icon === null || icon.getBoundingClientRect().width === 0).toBe(true);
 });
