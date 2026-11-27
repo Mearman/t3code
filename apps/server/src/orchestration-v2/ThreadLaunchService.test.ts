@@ -88,7 +88,7 @@ const otherProjectId = ProjectId.make("project:launch-other");
 const encodeThreadProjection = Schema.encodeEffect(OrchestrationV2ThreadProjectionJson);
 const dispatchIntakeCommand = (
   command: Parameters<typeof ThreadMessageIntake.dispatchCommand>[0],
-) => ThreadMessageIntake.dispatchCommand(command, { managesProviders: true });
+) => ThreadMessageIntake.dispatchCommand(command, { managesProviders: true, operatesTerminal: true });
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5.1-codex",

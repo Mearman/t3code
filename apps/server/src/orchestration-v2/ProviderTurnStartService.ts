@@ -2474,6 +2474,7 @@ export const layer: Layer.Layer<
       );
       const heldSessionSend = resolveClaudeHeldSessionSend({
         chosen: run.heldSessionSend,
+        terminalAccess: run.heldSessionTerminalAccess === true,
         sentByPerson: message.createdBy === "user",
         configured: configuredHeldSessionSend,
       });

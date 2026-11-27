@@ -878,6 +878,8 @@ export const OrchestrationV2Run = Schema.Struct({
    * build does not know decodes as absent, so an older client still reads the run.
    */
   heldSessionSend: ForwardCompatibleOptional(ClaudeHeldSessionSend),
+  /** The sender held `terminal:operate`, so the run may act on a terminal's claude. */
+  heldSessionTerminalAccess: Schema.optional(Schema.Literal(true)),
   /** The JSON Schema of the result this run was asked to return as data. */
   outputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
   /**
@@ -3658,6 +3660,8 @@ export const OrchestrationV2Command = Schema.Union([
      * A person's choice for a Claude session another process holds; see `ClaudeHeldSessionSend`.
      */
     heldSessionSend: Schema.optional(ClaudeHeldSessionSend),
+    /** Only the server sets this, when the sender holds `terminal:operate`. */
+    heldSessionTerminalAccess: Schema.optional(Schema.Literal(true)),
     /** Asks the run for a result as data matching this JSON Schema. Never steers. */
     outputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
     commandId: CommandId,
