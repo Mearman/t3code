@@ -496,7 +496,7 @@ function makeLocalCommandHarness(input: {
   readonly unsentResumeCreatedBy?: "user" | "agent" | "system";
   /** The earlier unsent message came from a scheduled task, or an agent edited it in the queue. */
   readonly unsentResumeScheduledTaskId?: ScheduledTaskId;
-  readonly unsentResumeEditedByAgent?: true;
+  readonly unsentResumeWrittenByAgent?: true;
   /** The run's held-session choice, and whether its sender could use terminals. */
   readonly heldSessionSend?: OrchestrationV2ThreadProjection["runs"][number]["heldSessionSend"];
   readonly heldSessionTerminalAccess?: true;
@@ -935,9 +935,9 @@ function makeLocalCommandHarness(input: {
           ...(input.unsentResumeScheduledTaskId === undefined
             ? {}
             : { scheduledTaskId: input.unsentResumeScheduledTaskId }),
-          ...(input.unsentResumeEditedByAgent === undefined
+          ...(input.unsentResumeWrittenByAgent === undefined
             ? {}
-            : { editedByAgent: input.unsentResumeEditedByAgent }),
+            : { writtenByAgent: input.unsentResumeWrittenByAgent }),
         },
         ...projection.messages,
       ],
@@ -2464,7 +2464,7 @@ effectIt.effect.each(["user", "agent", "system"] as const)(
 );
 
 effectIt.effect.each([
-  { source: "an agent edited in the queue", words: { unsentResumeEditedByAgent: true } },
+  { source: "an agent edited in the queue", words: { unsentResumeWrittenByAgent: true } },
   {
     source: "a person's scheduled task sent",
     words: { unsentResumeScheduledTaskId: ScheduledTaskId.make("task-1") },

@@ -12084,6 +12084,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           dispatchMode,
         };
         yield* dispatchMessage(answer, events, effects);
+        // An agent answering through t3_pending_request wrote these words, not the person.
+        if (command.respondedByPerson !== true) {
+          yield* Ref.update(events, (pending) =>
+            pending.map((event) =>
+              event.type === "message.updated" && event.payload.id === answer.messageId
+                ? { ...event, payload: { ...event.payload, writtenByAgent: true as const } }
+                : event,
+            ),
+          );
+        }
         return yield* recordSubagentFollowup(answer, events).pipe(mapDispatchError(answer));
       }
       if (providerSessionId === null) return;
@@ -12814,7 +12824,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.attachments === undefined ? {} : { attachments: command.attachments };
     const { followsThreadSelection: _followsThreadSelection, ...pinnedMessage } = queuedMessage;
     // The editor's words replace the author's, so a person's message an agent edits is not theirs.
-    const { editedByAgent: _earlierEditor, ...edited } =
+    const { writtenByAgent: _earlierEditor, ...edited } =
       command.modelSelection === undefined ? queuedMessage : pinnedMessage;
     yield* emitEvent({
       type: "message.updated",
@@ -12825,7 +12835,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: withoutGuestAttribution({
         ...edited,
-        ...(command.editedByPerson === true ? {} : { editedByAgent: true as const }),
+        ...(command.editedByPerson === true ? {} : { writtenByAgent: true as const }),
         text: command.text,
         ...editedAttachments,
         ...(command.context ? { context: command.context } : {}),

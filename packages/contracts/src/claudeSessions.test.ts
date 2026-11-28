@@ -106,8 +106,8 @@ describe("claudeBridgeSubmitsAsPerson", () => {
       { createdBy: "system" },
       // A scheduled task's words go under the mod's name even when a person made the task.
       { createdBy: "user", scheduledTaskId: ScheduledTaskId.make("task-1") },
-      // An agent's edit of a person's queued message makes the words the agent's.
-      { createdBy: "user", editedByAgent: true },
+      // An agent's edit of a person's queued message, or an agent's answer to a question.
+      { createdBy: "user", writtenByAgent: true },
     ] as const) {
       expect(claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, words })).toBe(
         false,

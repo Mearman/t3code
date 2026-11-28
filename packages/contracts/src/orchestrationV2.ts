@@ -1564,8 +1564,11 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
-  /** Its words are an agent's: one edited it while queued, whoever `createdBy` names. */
-  editedByAgent: Schema.optional(Schema.Literal(true)),
+  /**
+   * Its words are an agent's, whoever `createdBy` names: an agent edited it while queued, or it is
+   * an agent's answer to a question, sent on as a message.
+   */
+  writtenByAgent: Schema.optional(Schema.Literal(true)),
   /** A message that named no model; it runs on the thread's selection at start. */
   followsThreadSelection: Schema.optional(Schema.Literal(true)),
   senderThreadId: Schema.optional(ThreadId),
@@ -3803,6 +3806,11 @@ export const OrchestrationV2Command = Schema.Union([
     feedback: Schema.optional(Schema.String),
     answers: Schema.optional(ProviderUserInputAnswers),
     attachmentsByQuestionId: Schema.optional(UserInputAttachments),
+    /**
+     * Only the server sets this, for an answer from a person's client. An answer sent on as a
+     * message is the person's words only then; otherwise its message is `writtenByAgent`.
+     */
+    respondedByPerson: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.user-input.dismiss"),
