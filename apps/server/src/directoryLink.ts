@@ -15,14 +15,16 @@ export class DirectoryLinkError extends Schema.TaggedError<DirectoryLinkError>()
   }
 }
 
-/**
- * Links the directory `link` to `target`, an absolute path to an existing directory. Windows gets a junction, which needs no elevation or Developer Mode, unlike a directory symlink.
- */
+/** How a directory is linked: a junction on Windows, which needs no elevation or Developer Mode. */
+export const directoryLinkType = (platform: NodeJS.Platform) =>
+  platform === "win32" ? "junction" : "dir";
+
+/** Links the directory `link` to `target`, an absolute path to an existing directory. */
 export const linkDirectory = Effect.fn("directoryLink.link")(function* (
   target: string,
   link: string,
 ) {
-  const type = (yield* HostProcess.isWindows) ? "junction" : "dir";
+  const type = directoryLinkType(yield* HostProcess.Platform);
   yield* Effect.tryPromise({
     try: () => NodeFSP.symlink(target, link, type),
     catch: (cause) => new DirectoryLinkError({ link, cause }),

@@ -43,7 +43,8 @@ export const createManagedClaudeHome = Effect.fn("ClaudeAccounts.createManagedHo
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  // Only what this call made is removed: an existing home may hold another account's login.
+  // The rollback removes the home's own folder or, if this call made it, its account folder, never
+  // an existing home (it may hold another account's login) nor the shared `providers` folders.
   let made: string | undefined;
   const madeInStore: Array<string> = [];
   // Removing the home removes its links, never what they point at.
