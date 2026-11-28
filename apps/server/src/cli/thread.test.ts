@@ -278,6 +278,66 @@ it.effect("does not sign in to whatever took over a dead server's port", () =>
   ),
 );
 
+it.effect("send asks the server to fork a held Claude session only for --held-session fork", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-thread-held-session-" });
+    yield* persistServerRuntimeState({
+      path: path.join(baseDir, "userdata", "server-runtime.json"),
+      state: yield* makePersistedServerRuntimeState({
+        config: { host: "127.0.0.1", devUrl: undefined },
+        port: 3_773,
+      }),
+    });
+    const sent: Array<Readonly<Record<string, unknown>>> = [];
+    using _session = vi.spyOn(McpBridge, "mcpToolSession").mockReturnValue(
+      Effect.succeed({
+        call: (tool, args) => {
+          if (tool !== "t3_thread_send") return Effect.die(`unexpected ${tool} call`);
+          sent.push(args);
+          return Effect.succeed({
+            structuredContent: {
+              threadId,
+              messageId: "message-1",
+              runId,
+              status: "running",
+              delivery: "started",
+            },
+          });
+        },
+      }),
+    );
+
+    for (const flag of [["--held-session", "fork"], ["--held-session", "ask"], []]) {
+      yield* Command.runWith(threadCommand, { version: "0.0.0" })([
+        "send",
+        threadId,
+        "Carry on",
+        ...flag,
+        "--base-dir",
+        baseDir,
+      ]);
+    }
+
+    // The server ignores a key it does not know, so a renamed field would fork nothing.
+    assert.deepStrictEqual(
+      sent.map((args) => args.forkIfHeld),
+      [true, undefined, undefined],
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        NetService.layer,
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_PORT: "3773" } })),
+      ),
+    ),
+  ),
+);
+
 /** Answers each tool call with the next scripted response for that tool. */
 const scriptedTools = (script: Record<string, Array<unknown>>) => {
   const calls: Array<{ readonly tool: string; readonly args: unknown }> = [];
