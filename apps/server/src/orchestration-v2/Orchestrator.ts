@@ -12773,6 +12773,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.modelSelection === undefined
         ? queuedRun
         : { ...queuedRun, modelSelection, providerInstanceId: modelSelection.instanceId };
+    // The run's terminal access belongs to whoever wrote its words, so the editor's replaces it.
+    if ((updatedRun.heldSessionTerminalAccess === true) !== (command.heldSessionTerminalAccess === true)) {
+      const { heldSessionTerminalAccess: _sender, ...withoutAccess } = updatedRun;
+      updatedRun =
+        command.heldSessionTerminalAccess === true
+          ? { ...withoutAccess, heldSessionTerminalAccess: true }
+          : withoutAccess;
+    }
     if (
       updatedRun.steerWhenReadyRunId !== undefined &&
       (isSlashCommand({

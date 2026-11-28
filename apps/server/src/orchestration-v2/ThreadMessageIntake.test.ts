@@ -534,6 +534,37 @@ it.effect(
     }).pipe(Effect.provide(layerIntakeTest)),
 );
 
+it.effect("records terminal access on a queued edit from the editor's scopes alone", () =>
+  Effect.gen(function* () {
+    const captured: OrchestrationV2ServerCommand[] = [];
+    const layerCapture = Layer.mock(ThreadManagementService.ThreadManagementService)({
+      dispatch: layerFailingDispatchHandler(captured),
+    });
+    const editAs = (operatesTerminal: boolean, claimed: boolean) =>
+      dispatchCommand(
+        {
+          type: "queued-run.edit",
+          commandId: CommandId.make(`edit-access-${operatesTerminal}-${claimed}`),
+          threadId: ThreadId.make("thread-edit-access"),
+          runId: RunId.make("run-edit-access"),
+          text: "edited",
+          attachments: [],
+          ...(claimed ? { heldSessionTerminalAccess: true as const } : {}),
+        },
+        { managesProviders: true, operatesTerminal },
+      ).pipe(Effect.provide(layerCapture), Effect.result);
+
+    yield* editAs(true, false);
+    yield* editAs(false, true);
+
+    expect(
+      captured.map((command) =>
+        command.type === "queued-run.edit" ? command.heldSessionTerminalAccess : "other",
+      ),
+    ).toEqual([true, undefined]);
+  }).pipe(Effect.provide(layerIntakeTest)),
+);
+
 it.effect("refuses a queued edit that keeps a file another edit already deleted", () =>
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;

@@ -137,6 +137,15 @@ function withTerminalAccess(
   return operatesTerminal ? { ...rest, heldSessionTerminalAccess: true } : rest;
 }
 
+// An edit puts the editor's words in the run, so the editor's own scopes decide its access.
+function editWithTerminalAccess(
+  command: Extract<OrchestrationV2Command, { readonly type: "queued-run.edit" }>,
+  operatesTerminal: boolean,
+): typeof command {
+  const { heldSessionTerminalAccess: _claimed, ...rest } = command;
+  return operatesTerminal ? { ...rest, heldSessionTerminalAccess: true } : rest;
+}
+
 export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
   incoming: OrchestrationV2Command,
   sender: { readonly managesProviders: boolean; readonly operatesTerminal: boolean },
@@ -144,8 +153,11 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   const command =
     incoming.type === "message.dispatch"
       ? yield* withGuestAttachments(withTerminalAccess(incoming, sender.operatesTerminal))
-      : incoming.type === "queued-run.edit" && !sender.managesProviders
-        ? yield* withQueuedAttachmentsOnSignOutText(incoming)
+      : incoming.type === "queued-run.edit"
+        ? editWithTerminalAccess(
+            sender.managesProviders ? incoming : yield* withQueuedAttachmentsOnSignOutText(incoming),
+            sender.operatesTerminal,
+          )
         : incoming;
   const threads = yield* ThreadManagement.ThreadManagementService;
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {

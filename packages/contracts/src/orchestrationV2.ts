@@ -3787,6 +3787,8 @@ export const OrchestrationV2Command = Schema.Union([
     text: Schema.String,
     // Replaces all attachments; absent preserves them for older clients editing text.
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
+    /** Only the server sets this, when the editor holds `terminal:operate`; see the run's field. */
+    heldSessionTerminalAccess: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     type: Schema.Literal("runtime-request.respond"),
