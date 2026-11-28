@@ -15,11 +15,9 @@ import { ClaudeBridge, layer as bridgeLayer } from "./ClaudeBridge.ts";
 import { answerClaudeBridgePoll, handleClaudeBridgePoll } from "./ClaudeBridgeHttp.ts";
 
 const bridge = bridgeLayer.pipe(Layer.provide(SecureRandom.layerWebCrypto));
-const body = Effect.succeed({
-  schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
-  sessionId: "a",
-  acks: [],
-});
+const body = Effect.succeed(
+  Option.some<unknown>({ schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION, sessionId: "a", acks: [] }),
+);
 
 it.layer(NodeServices.layer)("ClaudeBridgeHttp", (it) => {
   it.effect("answers with the proof only a same-host caller holding the token", () =>
