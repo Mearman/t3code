@@ -100,9 +100,9 @@ describe("claudeBridgeSubmitsAsPerson", () => {
       claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, submittedBy: "user" }),
     ).toBe(true);
     for (const submittedBy of ["agent", "system"] as const) {
-      expect(claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, submittedBy })).toBe(
-        false,
-      );
+      expect(
+        claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, submittedBy }),
+      ).toBe(false);
     }
     expect(
       claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: false, submittedBy: "user" }),

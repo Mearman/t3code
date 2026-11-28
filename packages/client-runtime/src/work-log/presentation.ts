@@ -107,9 +107,12 @@ export function systemNoticeLabel(
 ): string {
   if (isClaudeBridgeFailureNoticeId(item.id) && item.title) {
     return resolve(
-      msg("The message handed to the terminal's claude did not reach it: {reason}. Send it again, or fork.", {
-        reason: item.title,
-      }),
+      msg(
+        "The message handed to the terminal's claude did not reach it: {reason}. Send it again, or fork.",
+        {
+          reason: item.title,
+        },
+      ),
     );
   }
   if (isClaudeSecondWriterNoticeId(item.id)) {
