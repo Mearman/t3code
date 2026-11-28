@@ -111,6 +111,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.claudeSessionsReplicationReport]: AuthOrchestrationReadScope,
   // Payload-dependent scopes come from clientRpcRequiredScopes; this is the floor.
   [WS_METHODS.claudeSessionsMove]: AuthOrchestrationOperateScope,
+  // Listing targets asks every linked environment, so only those who may move a session do.
+  [WS_METHODS.claudeSessionsMoveTargets]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
   [WS_METHODS.serverSearchAcpRegistry]: AuthOrchestrationReadScope,
   [WS_METHODS.serverPrepareAcpRegistryAgent]: AuthProvidersManageScope,

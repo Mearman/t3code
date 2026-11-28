@@ -8,6 +8,7 @@ const reactTests = [
   "src/features/threads/LinkedThreadSheet.test.tsx",
   "src/features/threads/thread-list-v2-terminal-badge.test.tsx",
   "src/features/settings/ClaudeReplicationSection.test.tsx",
+  "src/features/threads/ClaudeSessionMoveSheet.test.tsx",
   "src/features/workflows/WorkflowStepCard.test.tsx",
   "src/features/threads/ThreadGuestShareSheet.test.tsx",
   "src/features/threads/useSubmitAfterNativeImages.test.tsx",

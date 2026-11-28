@@ -82,6 +82,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.claudeSessionsReplicationReport]: "claudeSessions",
   [WS_METHODS.claudeSessionsReplicateNow]: "claudeSessions",
   [WS_METHODS.claudeSessionsMove]: "claudeSessions",
+
+  [WS_METHODS.claudeSessionsMoveTargets]: "claudeSessions",
   [WS_METHODS.serverGetSettings]: "server",
   [WS_METHODS.serverUpdateSettings]: "server",
   [WS_METHODS.serverSearchAcpRegistry]: "server",

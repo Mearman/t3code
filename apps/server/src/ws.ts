@@ -2857,6 +2857,9 @@ export const layerWsRpc = (
         [WS_METHODS.claudeSessionsReplicationReport]: () => claudeReplication.report,
         [WS_METHODS.claudeSessionsReplicateNow]: () => claudeReplication.replicateNow,
         [WS_METHODS.claudeSessionsMove]: (input) => claudeMove.move(input),
+
+        [WS_METHODS.claudeSessionsMoveTargets]: () =>
+          claudeMove.targets.pipe(Effect.map((targets) => ({ targets }))),
         [WS_METHODS.peerLinksThreadHistoryPage]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(peerThreadRelay.historyPage(input)),

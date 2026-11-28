@@ -20,7 +20,6 @@ import { SheetHeader } from "../../components/ui/SheetHeader";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { claudeReplicationEnvironment } from "../../state/claudeReplication";
-import { peerLinkEnvironment } from "../../state/peerLinks";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 
@@ -45,7 +44,9 @@ export function ClaudeSessionMoveSheet({ route }: StaticScreenProps<MoveTarget>)
   const insets = useSafeAreaInsets();
   const { environmentId, threadId } = route.params;
   const sessionId = claudeSessionIdOfThread(threadId);
-  const links = useEnvironmentQuery(peerLinkEnvironment.names({ environmentId, input: {} }));
+  const links = useEnvironmentQuery(
+    claudeReplicationEnvironment.moveTargets({ environmentId, input: {} }),
+  );
   const canMove = useAtomValue(claudeReplicationEnvironment.move.permissionAtom(environmentId));
   const move = useAtomCommand(claudeReplicationEnvironment.move, { reportFailure: false });
   const [target, setTarget] = useState<EnvironmentId | null>(null);
@@ -55,7 +56,7 @@ export function ClaudeSessionMoveSheet({ route }: StaticScreenProps<MoveTarget>)
   const close = () => navigation.goBack();
   // A move in flight keeps going on the server; the sheet stays so its result is shown.
   usePreventRemove(moving, () => {});
-  const choices = links.data?.links ?? [];
+  const choices = links.data?.targets ?? [];
   const chosen = target ?? choices[0]?.environmentId ?? null;
 
   const run = async () => {
@@ -131,7 +132,7 @@ export function ClaudeSessionMoveSheet({ route }: StaticScreenProps<MoveTarget>)
           </Text>
           {choices.length === 0 ? (
             <Text className="text-sm text-foreground-muted">
-              <T>No linked machine to move to. Link one in Settings.</T>
+              <T>No linked machine can take this session. Link one with full access in Settings.</T>
             </Text>
           ) : (
             <View className="gap-2">

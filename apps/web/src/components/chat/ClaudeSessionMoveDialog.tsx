@@ -12,7 +12,6 @@ import { useState } from "react";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { claudeReplicationEnvironment } from "~/state/claudeReplication";
-import { peerLinkEnvironment } from "~/state/peerLinks";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
@@ -64,7 +63,7 @@ function ClaudeSessionMoveDialog({
 }) {
   const gt = useGT();
   const links = useEnvironmentQuery(
-    peerLinkEnvironment.names({ environmentId: threadRef.environmentId, input: {} }),
+    claudeReplicationEnvironment.moveTargets({ environmentId: threadRef.environmentId, input: {} }),
   );
   const canMove = useAtomValue(
     claudeReplicationEnvironment.move.permissionAtom(threadRef.environmentId),
@@ -80,7 +79,7 @@ function ClaudeSessionMoveDialog({
       failureMessage: msg("Failed to copy the resume command to the clipboard."),
     },
   });
-  const choices = links.data?.links ?? [];
+  const choices = links.data?.targets ?? [];
   const chosen = target ?? choices[0]?.environmentId ?? null;
 
   const run = async () => {
@@ -161,7 +160,10 @@ function ClaudeSessionMoveDialog({
               </>
             ) : choices.length === 0 ? (
               <p className="text-muted-foreground">
-                <T>No linked machine to move to. Link one in Settings → Connections.</T>
+                <T>
+                  No linked machine can take this session. Link one with full access in Settings →
+                  Connections.
+                </T>
               </p>
             ) : (
               <>

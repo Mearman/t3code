@@ -632,6 +632,7 @@ export const WS_METHODS = {
   claudeSessionsReplicationReport: "claudeSessions.replicationReport",
   claudeSessionsReplicateNow: "claudeSessions.replicateNow",
   claudeSessionsMove: "claudeSessions.move",
+  claudeSessionsMoveTargets: "claudeSessions.moveTargets",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -1020,6 +1021,13 @@ const WsClaudeSessionsReplicateNowRpc = Rpc.make(WS_METHODS.claudeSessionsReplic
 const WsClaudeSessionsMoveRpc = Rpc.make(WS_METHODS.claudeSessionsMove, {
   payload: ClaudeSessionMoveInput,
   success: ClaudeSessionMoveResult,
+  error: Schema.Union([ClaudeSessionMoveError, EnvironmentAuthorizationError]),
+});
+
+/** The linked environments a session can move to: full-access links that take moves. */
+const WsClaudeSessionsMoveTargetsRpc = Rpc.make(WS_METHODS.claudeSessionsMoveTargets, {
+  payload: Schema.Struct({}),
+  success: Schema.Struct({ targets: Schema.Array(PeerLinkName) }),
   error: Schema.Union([ClaudeSessionMoveError, EnvironmentAuthorizationError]),
 });
 
@@ -2600,6 +2608,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsClaudeSessionsReplicationReportRpc,
   WsClaudeSessionsReplicateNowRpc,
   WsClaudeSessionsMoveRpc,
+  WsClaudeSessionsMoveTargetsRpc,
   WsPeerLinksNamesRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,
