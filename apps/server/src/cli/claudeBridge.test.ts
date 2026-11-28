@@ -78,9 +78,6 @@ it.layer(NodeServices.layer)("t3 claude bridge", (it) => {
       );
       assert.isFalse(yield* fileSystem.exists(marketplace(work)));
       assert.isTrue(yield* fileSystem.exists(marketplace(other)));
-    }).pipe(
-      Effect.scoped,
-      Effect.provideService(HostProcess.Environment, {}),
-    ),
+    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Environment, {})),
   );
 });

@@ -56,7 +56,11 @@ it.layer(NodeServices.layer)("ClaudeBridgeHttp", (it) => {
             "content-type": "application/json",
             ...headers,
           },
-          body: JSON.stringify({ schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION, sessionId: "a", acks: [] }),
+          body: JSON.stringify({
+            schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
+            sessionId: "a",
+            acks: [],
+          }),
         });
         // Node's server request carries its socket; a web request has none unless given one.
         if (peer !== undefined) {
@@ -65,7 +69,10 @@ it.layer(NodeServices.layer)("ClaudeBridgeHttp", (it) => {
           });
         }
         return handleClaudeBridgePoll.pipe(
-          Effect.provideService(HttpServerRequest.HttpServerRequest, HttpServerRequest.fromWeb(web)),
+          Effect.provideService(
+            HttpServerRequest.HttpServerRequest,
+            HttpServerRequest.fromWeb(web),
+          ),
           Effect.map((response) => HttpServerResponse.toWeb(response).status),
         );
       };
