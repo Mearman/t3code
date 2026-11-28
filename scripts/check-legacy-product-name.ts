@@ -13,9 +13,11 @@ const LEGACY_PATTERN = new RegExp(`${LEGACY_WORD}|exa[-_]code|${LEGACY_ID}`, "i"
 export const APP_ID = "uk.mearman.mearcode";
 
 // A line that keeps the old name because the thing it names is provisioned outside the repository:
-// the alias of the key inside the release keystore held in repository secrets.
+// the alias of the key inside the release keystore held in repository secrets, and the subject of
+// the Android signing certificate, which only a new certificate can change.
 const ALLOWED_LINES: ReadonlyArray<RegExp> = [
   new RegExp(`--ks-key-alias ${LEGACY_WORD}\\b`),
+  new RegExp(`CN=${LEGACY_WORD} Android`, "i"),
   new RegExp(`under the alias \`${LEGACY_WORD}\``),
 ];
 

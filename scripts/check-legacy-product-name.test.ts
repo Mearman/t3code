@@ -29,9 +29,11 @@ it("reports the legacy name and id in contents and in paths, but not in binary c
   ]);
 });
 
-it("allows only the provisioned keystore alias", () => {
+it("allows only the provisioned keystore alias and certificate subject", () => {
   const alias = `--ks-key-alias ${legacy.toLowerCase()} \\`;
   expect(findLegacyNames(withIds({ "c.yml": alias }))).toEqual([]);
+  const subject = `DN: CN=${legacy} Android, O=Org`;
+  expect(findLegacyNames(withIds({ "d.ts": subject }))).toEqual([]);
   const other = withIds({ "c.yml": `name: ${legacy.toLowerCase()}-build` });
   expect(findLegacyNames(other)).toHaveLength(1);
 });
