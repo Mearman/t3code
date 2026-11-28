@@ -114,7 +114,8 @@ function MoveClaudeAccountDialog({
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open) onClose();
+        // A move runs to the end on the server; closing now would only hide its result.
+        if (!open && !pending) onClose();
       }}
     >
       <DialogPopup className="max-w-md">
@@ -208,6 +209,14 @@ function MoveClaudeAccountDialog({
                   </Label>
                 </div>
               </>
+            ) : null}
+            {pending ? (
+              <p role="status" className="text-xs text-muted-foreground">
+                <T>
+                  Each thread compacts and moves in turn, which can take a few minutes. Keep this
+                  open to see what moved.
+                </T>
+              </p>
             ) : null}
             {error ? (
               <p role="alert" className="text-xs text-destructive">

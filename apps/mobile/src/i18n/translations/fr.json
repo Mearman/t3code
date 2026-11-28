@@ -4109,7 +4109,6 @@
   "72590e9a7906569f": "Compacter, puis déplacer",
   "40e9177a5aaff9da": "Déplacer vers {to} ?",
   "b790da0be82a37ad": "L’historique de la conversation va à {to}, et le fil s’y poursuit au lieu de {from}. Le compactage préalable s’exécute sous {from}, donc {to} part d’un résumé.",
-  "6c36e636372b44e6": "Déplacer vers quel compte ?",
   "f0297ec79e896a13": "{environment} : {error}",
   "a727c7a42018cc90": "Impossible d’enregistrer les paramètres",
   "9e7d6fc560d071f8": "Impossible d’importer le contenu partagé.",

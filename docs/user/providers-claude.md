@@ -26,6 +26,8 @@ To use a config folder you already have, such as `~/.claude_personal`, add a Cla
 - Between accounts that share history, the thread simply continues on the new account. Otherwise its session files are copied into the new account's folder, checked byte for byte, and the originals become links to the copies, so `claude --resume` works from either folder. Nothing changes if a copy fails its check.
 - A thread that is working, or open in a terminal, stays where it is. Close the terminal, or take the session over, then move it.
 - Moves only happen when you ask: T3 Code never rotates accounts by itself.
+- T3 Code stops its own Claude process for the thread before any file moves. The old account's copy of the session then links to the new one, so `claude --resume` works in either Claude folder and continues the same history, and moving a thread back to an account it came from keeps that history. If any step fails, every file is put back and the thread stays on its old account.
+- A move of every thread on an account compacts and moves them one at a time, which can take a few minutes; keep the dialog open to see what moved.
 
 ## Compact long conversations
 

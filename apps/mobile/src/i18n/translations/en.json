@@ -4116,7 +4116,6 @@
   "72590e9a7906569f": "Compact, then move",
   "40e9177a5aaff9da": "Move to {to}?",
   "b790da0be82a37ad": "The conversation history goes to {to}, and the thread continues there instead of on {from}. Compacting first runs under {from}, so {to} starts from a summary.",
-  "6c36e636372b44e6": "Move to which account?",
   "f0297ec79e896a13": "{environment}: {error}",
   "a727c7a42018cc90": "Could not save settings",
   "9e7d6fc560d071f8": "Could not import shared content.",

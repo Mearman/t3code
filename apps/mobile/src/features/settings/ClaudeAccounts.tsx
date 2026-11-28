@@ -94,20 +94,15 @@ export function useClaudeAccountEditor(
       `providerInstances.${provider.instanceId}`,
     );
   const accountMove = useClaudeAccountMove(environment.environmentId);
-  const canMoveThreads = accountMove.canMove(provider.instanceId);
+  const moveThreads = accountMove.menuAction(provider.instanceId, {
+    title: gt("Move threads to another account…"),
+    image: "arrow.left.arrow.right",
+  });
   const actions: MenuAction[] = editing
     ? []
     : [
         { id: "claude:edit", title: gt("Edit"), image: "pencil" },
-        ...(canMoveThreads
-          ? [
-              {
-                id: "claude:move-threads",
-                title: gt("Move threads to another account…"),
-                image: "arrow.left.arrow.right",
-              } satisfies MenuAction,
-            ]
-          : []),
+        ...(moveThreads === undefined ? [] : [moveThreads]),
         ...(removable
           ? [
               {
@@ -143,10 +138,7 @@ export function useClaudeAccountEditor(
     actions,
     pending,
     onAction: (id) => {
-      if (id === "claude:move-threads") {
-        accountMove.startMove(provider.instanceId);
-        return true;
-      }
+      if (accountMove.handleMenuAction(id, provider.instanceId)) return true;
       const action = claudeEditorAction(id, pending);
       if (action === "edit") setEditing(true);
       else if (action === "remove") remove();
