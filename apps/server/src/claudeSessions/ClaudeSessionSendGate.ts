@@ -222,6 +222,8 @@ export interface ClaudeSessionTakeOver {
   readonly terminate: (pid: number) => Effect.Effect<void, ClaudeTakeOverSignalError>;
   /** The wait between two checks while the holder is busy or exiting. */
   readonly pause: Effect.Effect<void>;
+  /** Whether `pid` is still in the process table, as a holder that removed its entry may be. */
+  readonly running: (pid: number) => Effect.Effect<boolean, ClaudeProcessTableError>;
 }
 
 // Claude Code ends within a few checks of SIGTERM; a holder still there after this many is stuck.
@@ -343,6 +345,25 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
       Effect.flatMap(Effect.result(probe(sessionId)), (probed) => {
         if (Result.isFailure(probed)) return refuseHeld(providerThread, "ask");
         const hold = probed.success;
+        // A signalled holder may drop its entry before it stops writing, so it must have exited.
+        if (hold === undefined && terminated !== undefined) {
+          return Effect.flatMap(Effect.result(takeOver.running(terminated.pid)), (running) =>
+            Result.isFailure(running)
+              ? refuseHeld(providerThread, "ask")
+              : !running.success
+                ? Effect.void
+                : terminated.checks >= TAKE_OVER_EXIT_CHECKS
+                  ? Effect.fail(
+                      inUse(
+                        providerThread,
+                        `T3 Code stopped the Claude Code process (pid ${terminated.pid}) holding this session, but it has not exited, so T3 Code sent nothing. Close it and send again.`,
+                      ),
+                    )
+                  : Effect.andThen(takeOver.pause, () =>
+                      step({ pid: terminated.pid, checks: terminated.checks + 1 }),
+                    ),
+          );
+        }
         if (hold === undefined) return Effect.void;
         if (hold._tag !== "held") return refuseHeld(providerThread, "ask");
         if (terminated !== undefined && hold.pid !== terminated.pid) {

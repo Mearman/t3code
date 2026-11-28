@@ -536,11 +536,14 @@ describe("gateHeldClaudeSessionRuntime", () => {
     /** Runs at each take-over wait, so a test can let the holder go idle or exit. */
     readonly onPause?: (state: { hold: ClaudeSessionHold | undefined }) => void;
     readonly terminateFails?: boolean;
+    /** How many process-table checks still find a signalled pid after its entry has gone. */
+    readonly lingeringChecks?: number;
     /** Runs before each probe answers, with how many probes came before it. */
     readonly onProbe?: (state: { hold: ClaudeSessionHold | undefined }, before: number) => void;
   }) => {
     const calls: Array<string> = [];
     const probes: Array<string> = [];
+    let lingering = input.lingeringChecks ?? 0;
     const state = { hold: input.hold };
     const recorded = (name: string) => {
       calls.push(name);
@@ -595,6 +598,11 @@ describe("gateHeldClaudeSessionRuntime", () => {
           calls.push("pause");
           input.onPause?.(state);
         }),
+        running: (pid) =>
+          Effect.sync(() => {
+            calls.push(`running:${pid}`);
+            return (lingering -= 1) >= 0;
+          }),
       },
     );
     return { runtime, calls, probes, state };
@@ -742,7 +750,33 @@ describe("gateHeldClaudeSessionRuntime", () => {
 
         yield* runtime.startTurn(takeOverTurn(now));
 
-        expect(calls).toEqual(["terminate:200", "pause", "pause", "startTurn"]);
+        expect(calls).toEqual(["terminate:200", "pause", "pause", "running:200", "startTurn"]);
+      }),
+    );
+
+    it.effect("sends only once the signalled process has left the table, not just its entry", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls } = makeGate({
+          hold: held(true),
+          lingeringChecks: 2,
+          onPause: (state) => {
+            state.hold = undefined;
+          },
+        });
+
+        yield* runtime.startTurn(takeOverTurn(now));
+
+        expect(calls).toEqual([
+          "terminate:200",
+          "pause",
+          "running:200",
+          "pause",
+          "running:200",
+          "pause",
+          "running:200",
+          "startTurn",
+        ]);
       }),
     );
 
@@ -761,7 +795,15 @@ describe("gateHeldClaudeSessionRuntime", () => {
 
         yield* runtime.startTurn(takeOverTurn(now));
 
-        expect(calls).toEqual(["pause", "pause", "pause", "terminate:200", "pause", "startTurn"]);
+        expect(calls).toEqual([
+          "pause",
+          "pause",
+          "pause",
+          "terminate:200",
+          "pause",
+          "running:200",
+          "startTurn",
+        ]);
       }),
     );
 
@@ -835,7 +877,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
 
         yield* runtime.startTurn(takeOverTurn(now));
 
-        expect(calls).toEqual(["pause", "terminate:200", "pause", "startTurn"]);
+        expect(calls).toEqual(["pause", "terminate:200", "pause", "running:200", "startTurn"]);
       }),
     );
 
