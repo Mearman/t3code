@@ -1,4 +1,6 @@
 import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -7,11 +9,7 @@ import { expect, it, vi } from "vite-plus/test";
 type Children = { children?: ReactNode };
 type ButtonProps = { label: string; disabled?: boolean; onPress: () => void };
 
-const forkFromRun = vi.hoisted(() =>
-  vi.fn(async (): Promise<{ readonly _tag: "Success"; readonly value?: unknown }> => ({
-    _tag: "Success",
-  })),
-);
+const forkFromRun = vi.hoisted(() => vi.fn(async (): Promise<unknown> => ({ _tag: "Success" })));
 
 vi.mock("react-native", () => ({
   Animated: {},
@@ -81,7 +79,8 @@ vi.mock("../../components/ui/Button", () => ({
     </button>
   ),
 }));
-vi.mock("../../components/ui/Dialog", () => ({ alert: vi.fn() }));
+const alert = vi.hoisted(() => vi.fn());
+vi.mock("../../components/ui/Dialog", () => ({ alert }));
 vi.mock("../../components/ui/FilePreviewGallery", () => ({ FilePreviewGallery: () => null }));
 vi.mock("../../lib/appState", () => ({
   useAppActive: () => true,
@@ -310,4 +309,51 @@ it("offers no confirmation on a refused row a later run has superseded", () => {
     ),
   );
   expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([]);
+});
+
+it.each([
+  [
+    "confirmed",
+    AsyncResult.success({ outcome: "confirmed" }),
+    ["Account confirmed", "Anything refused before was not sent, so send it again."],
+  ],
+  [
+    "stale",
+    AsyncResult.success({ outcome: "stale" }),
+    ["Claude is now signed in as another account. Send again to see which."],
+  ],
+  [
+    "none",
+    AsyncResult.success({ outcome: "none" }),
+    ["This thread has no account change to confirm."],
+  ],
+  [
+    "failed",
+    AsyncResult.failure(Cause.fail(new Error("The server is not reachable."))),
+    ["Could not confirm the account", "The server is not reachable."],
+  ],
+] as const)("tells the user what confirming did: %s", async (_name, result, shown) => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  alert.mockClear();
+  forkFromRun.mockClear();
+  forkFromRun.mockResolvedValueOnce(result);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  using _root = { [Symbol.dispose]: () => act(() => root.unmount()) };
+  act(() =>
+    root.render(
+      <ThreadWorkLog
+        {...({} as Parameters<typeof ThreadWorkLog>[0])}
+        activities={[failedRow("local", "claude_thread_account_changed", "Refused.")]}
+        anchorKey="row-1"
+        environmentId={"env-1" as EnvironmentId}
+        copiedRowId={null}
+        expandedRows={{}}
+      />,
+    ),
+  );
+  const button = container.querySelector("button");
+  await act(async () => button?.click());
+  expect(alert.mock.calls).toEqual([shown]);
+  expect(button?.disabled).toBe(false);
 });
