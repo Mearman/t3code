@@ -193,23 +193,71 @@ it.effect("replaces nothing when a copy does not match, and removes the copies i
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("puts every part back when replacing one fails part-way", () =>
+it.effect.each([0, 2])(
+  "puts every part back when linking part %i fails after it was set aside",
+  (failing) =>
+    Effect.gen(function* () {
+      const h = yield* homes;
+      const failure = yield* moveClaudeSessionParts({
+        source: h.source,
+        target: h.target,
+        parts: h.parts,
+        linkOriginals: true,
+        afterSetAside: (part) => (part === h.parts[failing] ? failWith("symlink") : Effect.void),
+      }).pipe(Effect.flip);
+      assert.strictEqual(failure._tag, "PlatformError");
+      for (const [relative, text] of Object.entries(h.sessionFiles)) {
+        assert.strictEqual(
+          yield* h.fileSystem.readFileString(h.path.join(h.source, relative)),
+          text,
+        );
+        assert.isFalse(yield* h.fileSystem.exists(h.path.join(h.target, relative)));
+      }
+      for (const part of h.parts) assert.isFalse(yield* h.isLink(h.path.join(h.source, part)));
+      assert.deepEqual(yield* h.leftovers(h.source), []);
+      assert.strictEqual(yield* locateClaudeTranscript(h.source, session), projectDir);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("compares files whose reads return less than was asked", () =>
   Effect.gen(function* () {
     const h = yield* homes;
-    const failure = yield* moveClaudeSessionParts({
+    const fileSystem = h.fileSystem;
+    // Each read returns at most a few bytes, as a network mount may.
+    const shortReads = FileSystem.make({
+      ...fileSystem,
+      open: (file, options) =>
+        fileSystem.open(file, options).pipe(
+          Effect.map(
+            (handle): FileSystem.File =>
+              new Proxy(handle, {
+                get: (target, key, receiver) =>
+                  key === "readAlloc"
+                    ? (size: number) => target.readAlloc(Math.min(size, 7))
+                    : Reflect.get(target, key, receiver),
+              }),
+          ),
+        ),
+    });
+    const moved = yield* moveClaudeSessionParts({
       source: h.source,
       target: h.target,
       parts: h.parts,
       linkOriginals: true,
-      beforeReplace: (part) => (part === h.parts[2] ? failWith("symlink") : Effect.void),
-    }).pipe(Effect.flip);
-    assert.strictEqual(failure._tag, "PlatformError");
-    for (const [relative, text] of Object.entries(h.sessionFiles)) {
-      assert.strictEqual(yield* h.fileSystem.readFileString(h.path.join(h.source, relative)), text);
-      assert.isFalse(yield* h.fileSystem.exists(h.path.join(h.target, relative)));
-    }
-    for (const part of h.parts) assert.isFalse(yield* h.isLink(h.path.join(h.source, part)));
-    assert.deepEqual(yield* h.leftovers(h.source), []);
+    }).pipe(Effect.provideService(FileSystem.FileSystem, shortReads));
+    assert.isTrue(moved.copied);
+    yield* moved.commit;
+    const file = h.path.join(h.source, "compacted.jsonl");
+    yield* fileSystem.writeFileString(
+      file,
+      line({ type: "system", subtype: "compact_boundary" }) +
+        line({ type: "user", isCompactSummary: true, message: "summary" }),
+    );
+    assert.isTrue(
+      yield* claudeTranscriptEndsCompacted(file).pipe(
+        Effect.provideService(FileSystem.FileSystem, shortReads),
+      ),
+    );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
