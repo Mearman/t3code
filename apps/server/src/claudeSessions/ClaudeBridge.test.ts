@@ -217,7 +217,8 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
           proof: "p",
           pid,
         });
-      // No process has the largest pid, so this server stopped without removing its file.
+      // 2^22 is above every pid Linux (below pid_max, at most 2^22) and macOS (at most 99999) hand
+      // out, so no process holds it: this server stopped without removing its file.
       yield* fileSystem.writeFileString(path.join(directory, "dead.json"), connectionOf(2 ** 22));
       yield* fileSystem.writeFileString(path.join(directory, "live.json"), connectionOf(1));
       const bridge = yield* ClaudeBridge;
