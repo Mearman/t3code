@@ -2469,26 +2469,24 @@ effectIt.effect.each([
     source: "a person's scheduled task sent",
     words: { unsentResumeScheduledTaskId: ScheduledTaskId.make("task-1") },
   },
-] as const)(
-  "hands a resent message $source to the terminal under the mod's name",
-  ({ words }) =>
-    Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({
-        text: "",
-        manualContinuation: true,
-        heldSessionSend: "adopt",
-        heldSessionTerminalAccess: true,
-        unsentResumeCreatedBy: "user",
-        ...words,
-        sideChat: { contextRun: "delivered", unsentResume: true },
-      });
+] as const)("hands a resent message $source to the terminal under the mod's name", ({ words }) =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "",
+      manualContinuation: true,
+      heldSessionSend: "adopt",
+      heldSessionTerminalAccess: true,
+      unsentResumeCreatedBy: "user",
+      ...words,
+      sideChat: { contextRun: "delivered", unsentResume: true },
+    });
 
-      yield* harness.start;
+    yield* harness.start;
 
-      const turn = harness.startTurn.mock.calls[0]?.[0];
-      expect(turn?.message.text).toContain("Original request");
-      expect(turn?.message.adoptAsUser).toBeUndefined();
-    }),
+    const turn = harness.startTurn.mock.calls[0]?.[0];
+    expect(turn?.message.text).toContain("Original request");
+    expect(turn?.message.adoptAsUser).toBeUndefined();
+  }),
 );
 
 effectIt.effect("sends new steering text when restarting a manual continuation", () =>
