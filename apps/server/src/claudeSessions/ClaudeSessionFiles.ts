@@ -13,6 +13,9 @@ import * as Schema from "effect/Schema";
  */
 export const CLAUDE_MOVE_LINKS_ORIGINALS = true;
 
+/** Whether a host can link a moved session's files: Windows grants links only with elevation. */
+export const canLinkClaudeSessionFiles = (platform: NodeJS.Platform) => platform !== "win32";
+
 /** Where a session's transcript lives in a Claude home: `projects/<projectDir>/<id>.jsonl`. */
 export const locateClaudeTranscript = Effect.fn("ClaudeSessionFiles.locateTranscript")(function* (
   home: string,

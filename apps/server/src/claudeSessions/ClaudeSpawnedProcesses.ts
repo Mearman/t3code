@@ -42,42 +42,42 @@ export interface ClaudeSessionMoveFence {
 // Any number of starts share a session's fence; a move takes every permit at once.
 const FENCE_PERMITS = 2 ** 30;
 
-export function makeClaudeSessionMoveFence(): ClaudeSessionMoveFence & {
-  /** Sessions with a fence in use, for tests that it is dropped once nothing holds it. */
-  readonly fencedSessions: () => number;
-} {
-  // A session's fence lives only while something holds or awaits it, so the map stays small.
-  const fences = new Map<string, { readonly semaphore: Semaphore.Semaphore; users: number }>();
+/** The fence over `fences`, which tests pass to see an idle session's entry dropped. */
+export function makeClaudeSessionMoveFenceOver(
+  fences: Map<string, { readonly semaphore: Semaphore.Semaphore; users: number }>,
+): ClaudeSessionMoveFence {
+  // A session's entry lives only while something holds the fence, so the map stays small. The
+  // count goes up and down as one acquire and release, so an interruption cannot strand it.
   const withFence = <A, E, R>(
     sessionId: string,
     permits: number,
     effect: Effect.Effect<A, E, R>,
   ): Effect.Effect<Option.Option<A>, E, R> =>
-    Effect.suspend(() => {
-      const entry = fences.get(sessionId) ?? {
-        semaphore: Semaphore.makeUnsafe(FENCE_PERMITS),
-        users: 0,
-      };
-      entry.users += 1;
-      fences.set(sessionId, entry);
-      return Semaphore.withPermitsIfAvailable(
-        entry.semaphore,
-        permits,
-      )(effect).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            entry.users -= 1;
-            if (entry.users === 0) fences.delete(sessionId);
-          }),
-        ),
-      );
-    });
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const entry = fences.get(sessionId) ?? {
+          semaphore: Semaphore.makeUnsafe(FENCE_PERMITS),
+          users: 0,
+        };
+        entry.users += 1;
+        fences.set(sessionId, entry);
+        return entry;
+      }),
+      (entry) => Semaphore.withPermitsIfAvailable(entry.semaphore, permits)(effect),
+      (entry) =>
+        Effect.sync(() => {
+          entry.users -= 1;
+          if (entry.users === 0) fences.delete(sessionId);
+        }),
+    );
   return {
     unlessMoving: (sessionId, effect) => withFence(sessionId, 1, effect),
     whileMoving: (sessionId, effect) => withFence(sessionId, FENCE_PERMITS, effect),
-    fencedSessions: () => fences.size,
   };
 }
+
+export const makeClaudeSessionMoveFence = (): ClaudeSessionMoveFence =>
+  makeClaudeSessionMoveFenceOver(new Map());
 
 export function makeClaudeSpawnedProcesses(
   readProcesses: ClaudeSpawnedProcesses["Service"]["readProcesses"],

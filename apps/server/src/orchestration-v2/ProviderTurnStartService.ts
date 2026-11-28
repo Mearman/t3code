@@ -1641,7 +1641,13 @@ export const layer: Layer.Layer<
               }),
             );
             if (forked._tag === "Success") return forked.success;
-            if (input.willRetry === true) return yield* forked.failure;
+            // A session in use (a move copying it) refuses the fork with its reason, which the
+            // user sees; a fresh fork would silently drop the native continuation instead.
+            if (
+              input.willRetry === true ||
+              forked.failure._tag === "ProviderAdapterThreadInUseError"
+            )
+              return yield* forked.failure;
             if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
             // Retries are spent (e.g. the source's native session is gone): start fresh with portable history.
             yield* Effect.logWarning("Starting a native fork in a fresh native session", {

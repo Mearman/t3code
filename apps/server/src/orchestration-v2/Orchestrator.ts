@@ -13214,14 +13214,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: "Another run is active on this thread.",
       });
     }
-    // A run starts on the instance it recorded; once the thread is on another (an account move),
-    // retrying would start it on the one the thread left, so the message is sent again instead.
+    // A run starts on the instance it recorded; once the thread is on another (an account move or a
+    // provider switch), retrying would start it on the one the thread left. Clients hide Retry then.
     if (projection.thread.modelSelection.instanceId !== state.run.providerInstanceId) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
         cause:
-          "This thread now uses another account, so this setup cannot be retried. Send the message again.",
+          "This thread now uses another provider or account, so this setup cannot be retried. " +
+          "Send the message again.",
       });
     }
     const now = yield* DateTime.now;

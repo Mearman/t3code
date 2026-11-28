@@ -26,6 +26,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import { isSpeechPlatformSupported } from "../speech/platform.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
 import { detectServerEnvironmentMachineKind } from "./ServerEnvironmentMachine.ts";
+import { canLinkClaudeSessionFiles } from "../claudeSessions/ClaudeSessionFiles.ts";
 
 export class ServerEnvironmentIdPersistenceError extends Schema.TaggedError<ServerEnvironmentIdPersistenceError>()(
   "ServerEnvironmentIdPersistenceError",
@@ -293,8 +294,9 @@ export const make = Effect.gen(function* () {
       claudeManagedAccounts: true,
       claudeThreadAccounts: true,
       claudeAccountMoves: true,
-      // Separate histories are linked, which Windows grants only with elevation.
-      ...(hostPlatform === "win32" ? { claudeAccountMovesSharedHistoryOnly: true } : {}),
+      ...(canLinkClaudeSessionFiles(hostPlatform)
+        ? {}
+        : { claudeAccountMovesSharedHistoryOnly: true }),
       ...(serverInstallation === null ? {} : { serverInstallation }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? { serverSelfUpdateProgress: true }

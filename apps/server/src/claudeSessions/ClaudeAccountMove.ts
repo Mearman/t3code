@@ -294,7 +294,8 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
   });
   const movedMeanwhile = outcome("busy", {
     detail:
-      "The thread changed account or session while this move waited. Move it again if you still want to.",
+      "The thread changed account or session while this move waited. " +
+      "Move it again if you still want to.",
   });
   const setSelection = Effect.fn("ClaudeAccountMove.setSelection")(function* (
     modelSelection: ClaudeAccountMoveThread["thread"]["modelSelection"],
@@ -420,19 +421,26 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
                 linkOriginals: CLAUDE_MOVE_LINKS_ORIGINALS,
               }),
             );
-            if (files._tag === "Failure") return files;
-            // A model chosen while the files copied is kept; the account cannot change meanwhile.
-            const latest = yield* currentSelection;
-            const selected = yield* Effect.result(setSelection(latest ?? selection));
+            if (files._tag === "Failure") return { files } as const;
+            // The selection can change while the files copy (the switch takes neither lock): a
+            // new model is kept, and a new account or session means this move puts the files back.
+            const latest = yield* Effect.result(currentSelection);
+            if (latest._tag === "Failure" || latest.success === undefined) {
+              yield* files.success.undo;
+              return latest._tag === "Failure"
+                ? yield* latest.failure
+                : ({ refused: movedMeanwhile } as const);
+            }
+            const selected = yield* Effect.result(setSelection(latest.success));
             if (selected._tag === "Success") {
               yield* files.success.commit;
-              return files;
+              return { files } as const;
             }
             yield* files.success.undo;
             return yield* selected.failure;
           }),
         );
-        return { files } as const;
+        return files;
       }),
     ),
   );

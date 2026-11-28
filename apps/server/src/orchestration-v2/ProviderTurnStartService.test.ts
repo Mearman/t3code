@@ -2826,6 +2826,28 @@ effectIt.effect.each(
     }),
 );
 
+effectIt.effect("refuses a native fork whose source session is in use, with its reason", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue from the selected turn",
+      sideChat: { contextRun: "current", nativeForkFrom: "idle" },
+    });
+    harness.forkThread.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapter.ProviderAdapterThreadInUseError({
+          driver: ProviderDriverKind.make("codex"),
+          providerThreadId: ProviderThreadId.make("side-chat-parent-provider-thread"),
+          detail: "This thread is moving to another Claude account.",
+          cause: "moving",
+        }),
+      ),
+    );
+    const error = yield* harness.start.pipe(Effect.flip);
+    expect(JSON.stringify(error)).toContain("moving to another Claude account");
+    expect(harness.startTurn).not.toHaveBeenCalled();
+  }),
+);
+
 effectIt.effect.each(["before-start", "during-fork"] as const)(
   "recovers a planned native fork after the parent rolls back %s",
   (rollback) =>
