@@ -101,15 +101,20 @@ it.effect("a send as the recorded account clears a stale refusal", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("a process naming no account sends only on a thread that has none", () =>
+it.effect("a process naming no account is a change the user can confirm on a thread with one", () =>
   Effect.gen(function* () {
     const h = yield* harness;
     yield* h.store.check(threadId, undefined);
+    assert.isUndefined(yield* h.store.read(threadId));
     yield* h.store.check(threadId, personal);
-    const unknown = yield* h.store.check(threadId, undefined).pipe(Effect.flip);
-    assert.strictEqual(unknown._tag, "ClaudeThreadAccountUnknownError");
-    assert.include(unknown.message, "personal@example.com");
-    assert.isUndefined(makeProviderFailure({ cause: unknown }).accountChange);
+    const unnamed = yield* h.store.check(threadId, undefined).pipe(Effect.flip);
+    assert.include(unnamed.message, "personal@example.com");
+    assert.include(unnamed.message, "an account it does not name");
+    const offered = makeProviderFailure({ cause: unnamed }).accountChange?.current;
+    assert.isDefined(offered);
+    assert.strictEqual(yield* h.store.confirm(threadId, offered!), "confirmed");
+    yield* h.store.check(threadId, undefined);
+    assert.deepEqual(yield* h.store.read(threadId), offered);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

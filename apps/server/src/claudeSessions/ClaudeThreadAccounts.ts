@@ -40,6 +40,17 @@ export const claudeAccountIdentity = (info: {
   };
 };
 
+/**
+ * What a process that names no account counts as on a thread that already has one, so the
+ * refusal can be confirmed like any other account change instead of leaving no way to send.
+ */
+const UNNAMED_CLAUDE_ACCOUNT: ClaudeAccountIdentity = {
+  apiProvider: "firstParty",
+  email: null,
+  organization: null,
+  credentialSource: null,
+};
+
 const sameClaudeAccount = (a: ClaudeAccountIdentity, b: ClaudeAccountIdentity) =>
   a.apiProvider === b.apiProvider &&
   a.email === b.email &&
@@ -47,7 +58,9 @@ const sameClaudeAccount = (a: ClaudeAccountIdentity, b: ClaudeAccountIdentity) =
   a.credentialSource === b.credentialSource;
 
 const describeClaudeAccount = (account: ClaudeAccountIdentity) =>
-  account.email ?? account.organization ?? account.credentialSource ?? account.apiProvider;
+  sameClaudeAccount(account, UNNAMED_CLAUDE_ACCOUNT)
+    ? "an account it does not name"
+    : (account.email ?? account.organization ?? account.credentialSource ?? account.apiProvider);
 
 /** The recorded account differs from the one this thread's Claude process now reports. */
 export class ClaudeThreadAccountChangedError extends Schema.TaggedError<ClaudeThreadAccountChangedError>()(
@@ -64,23 +77,10 @@ export class ClaudeThreadAccountChangedError extends Schema.TaggedError<ClaudeTh
   }
 }
 
-/** The thread has an account, but this thread's Claude process names none. */
-export class ClaudeThreadAccountUnknownError extends Schema.TaggedError<ClaudeThreadAccountUnknownError>()(
-  "ClaudeThreadAccountUnknownError",
-  { threadId: Schema.String, recorded: ClaudeAccountIdentity },
-) {
-  override get message(): string {
-    return (
-      `This thread was sent as ${describeClaudeAccount(this.recorded)}, but Claude reports no ` +
-      "account it can name, so nothing was sent. Sign Claude in, then send again."
-    );
-  }
-}
-
 const ThreadAccountsFile = Schema.Struct({
   /** The account each app thread sends as. */
   accounts: Schema.Record(Schema.String, ClaudeAccountIdentity),
-  /** The different account a refused send saw; only a confirmation naming it makes it the thread's. */
+  /** The different account a refused send saw; only confirming it makes it the thread's. */
   pending: Schema.Record(Schema.String, ClaudeAccountIdentity),
 });
 type ThreadAccountsFile = typeof ThreadAccountsFile.Type;
@@ -95,12 +95,13 @@ export interface ClaudeThreadAccountStore {
   /**
    * Decides, in one step under the store's lock, whether a process signed in as `current` may send
    * for `threadId`. It records a thread's first account and refuses any other account until the
-   * user confirms it; a process that names no account sends only on a thread with no account.
+   * user confirms it. A process that names no account records nothing on a new thread and is
+   * another account on a thread that has one.
    */
   readonly check: (
     threadId: ThreadId,
     current: ClaudeAccountIdentity | undefined,
-  ) => Effect.Effect<void, ClaudeThreadAccountChangedError | ClaudeThreadAccountUnknownError>;
+  ) => Effect.Effect<void, ClaudeThreadAccountChangedError>;
   /** Makes `account` the thread's own, but only while it is the account the last refusal found. */
   readonly confirm: (
     threadId: ThreadId,
@@ -170,13 +171,12 @@ export const makeClaudeThreadAccountStore = Effect.fn("ClaudeThreadAccounts.make
         ),
       ),
     ),
-    check: (threadId, current) =>
-      update<void, ClaudeThreadAccountChangedError | ClaudeThreadAccountUnknownError>((stored) => {
+    check: (threadId, named) =>
+      update<void, ClaudeThreadAccountChangedError>((stored) => {
         const recorded = stored.accounts[threadId];
-        if (current === undefined)
-          return recorded === undefined
-            ? Effect.succeed([stored, undefined] as const)
-            : Effect.fail(new ClaudeThreadAccountUnknownError({ threadId, recorded }));
+        if (named === undefined && recorded === undefined)
+          return Effect.succeed([stored, undefined] as const);
+        const current = named ?? UNNAMED_CLAUDE_ACCOUNT;
         const pending = stored.pending[threadId];
         if (recorded === undefined)
           return Effect.succeed([

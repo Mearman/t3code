@@ -172,8 +172,6 @@ function curatedCauseMessages(cause: unknown): {
             ...(Option.isSome(change) ? { accountChange: change.value } : {}),
           };
         }
-        case "ClaudeThreadAccountUnknownError":
-          return { known: stringField(cause, "message"), category: categoryMessage() };
         case "ProviderAdapterThreadInUseError": {
           const known = stringField(cause, "message");
           // Clients offer a fork only where a holder was seen, not where one is only possible.

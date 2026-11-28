@@ -6,6 +6,7 @@ export const PROVIDER_THREAD_IN_USE_FAILURE_CODE = "provider_thread_in_use";
 
 /** The same refusal where the send chose to continue in a fork, which the server then makes. */
 export const PROVIDER_THREAD_IN_USE_FORK_FAILURE_CODE = "provider_thread_in_use_fork";
+
 /** Failure code of a Claude turn refused because the thread's account changed. */
 export const CLAUDE_THREAD_ACCOUNT_CHANGED_FAILURE_CODE = "claude_thread_account_changed";
 
