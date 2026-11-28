@@ -96,6 +96,39 @@ type SystemNoticeItem = Extract<OrchestrationV2TurnItem, { type: "system_notice"
 type SystemNoticeLabelItem = Pick<SystemNoticeItem, "id" | "status" | "message"> &
   Partial<Pick<SystemNoticeItem, "title">>;
 
+// The title is the reason's code (`ClaudeBridgeFailureReason`); one this build does not know
+// keeps the server's English text.
+function bridgeFailureLabel(item: SystemNoticeLabelItem, resolve: MFunctionType): string {
+  switch (item.title) {
+    case "expired":
+      return resolve(
+        msg(
+          "The message handed to the terminal's claude did not reach it: the terminal's claude did not take it in time. Send it again, or fork.",
+        ),
+      );
+    case "released":
+      return resolve(
+        msg(
+          "The message handed to the terminal's claude did not reach it: the terminal released the session. Send it again, or fork.",
+        ),
+      );
+    case "anotherConversation":
+      return resolve(
+        msg(
+          "The message handed to the terminal's claude did not reach it: the terminal started another conversation. Send it again, or fork.",
+        ),
+      );
+    case "refused":
+      return resolve(
+        msg(
+          "The message handed to the terminal's claude did not reach it: the terminal's claude refused it. Send it again, or fork.",
+        ),
+      );
+    default:
+      return item.message;
+  }
+}
+
 /**
  * The text a system notice shows. The Claude session sync words its history notice in English
  * on the server, so clients show their own wording for the two states it reports; a failed load
@@ -105,16 +138,7 @@ export function systemNoticeLabel(
   item: SystemNoticeLabelItem,
   resolve: MFunctionType = mFallback,
 ): string {
-  if (isClaudeBridgeFailureNoticeId(item.id) && item.title) {
-    return resolve(
-      msg(
-        "The message handed to the terminal's claude did not reach it: {reason}. Send it again, or fork.",
-        {
-          reason: item.title,
-        },
-      ),
-    );
-  }
+  if (isClaudeBridgeFailureNoticeId(item.id)) return bridgeFailureLabel(item, resolve);
   if (isClaudeSecondWriterNoticeId(item.id)) {
     return resolve(
       msg(

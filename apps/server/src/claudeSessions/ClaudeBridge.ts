@@ -4,6 +4,7 @@ import {
   CLAUDE_BRIDGE_SCHEMA_VERSION,
   type ClaudeBridgeCommand,
   ClaudeBridgeConnection,
+  type ClaudeBridgeFailureReason,
   type ClaudeBridgePoll,
   claudeBridgePromptText,
 } from "@t3tools/contracts";
@@ -50,7 +51,7 @@ interface Session {
 export interface ClaudeBridgeFailure {
   readonly threadId: string;
   readonly runId: string;
-  readonly reason: string;
+  readonly reason: ClaudeBridgeFailureReason;
 }
 
 export class ClaudeBridgeSubmitError extends Schema.TaggedError<ClaudeBridgeSubmitError>()(
@@ -78,7 +79,7 @@ type PollOutcome =
   | (Extract<ClaudeBridgePollAnswer, { readonly _tag: "accepted" }> & {
       readonly refused: ReadonlyArray<{
         readonly item: Pending;
-        readonly reason: string | undefined;
+        readonly reason: ClaudeBridgeFailureReason | undefined;
       }>;
       readonly expired: ReadonlyArray<Pending>;
     })
@@ -156,7 +157,7 @@ const make = Effect.gen(function* () {
   const expiredFailure = (item: Pending): ClaudeBridgeFailure => ({
     threadId: item.threadId,
     runId: item.command.commandId,
-    reason: "the terminal's claude did not take it in time",
+    reason: "expired",
   });
 
   // Drops expired prompts, and sessions no mod polls that hold nothing, reporting each prompt.
@@ -284,7 +285,7 @@ const make = Effect.gen(function* () {
       ...outcome.refused.map(({ item, reason }) => ({
         threadId: item.threadId,
         runId: item.command.commandId,
-        reason: reason ?? "the terminal's claude refused it",
+        reason: reason ?? "refused",
       })),
       ...outcome.expired.map(expiredFailure),
     ]);

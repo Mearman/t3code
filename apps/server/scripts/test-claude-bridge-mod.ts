@@ -77,7 +77,7 @@ test("submits a prompt only into the session it names, and acknowledges each", a
   expect(state.submitted).toEqual([{ text: "hello c1", asUser: true }]);
   expect(state.polls[1].acks).toEqual([
     { commandId: "c1", submitted: true },
-    { commandId: "c0", submitted: false, reason: "the terminal started another conversation" },
+    { commandId: "c0", submitted: false, reason: "anotherConversation" },
   ]);
 });
 
@@ -125,7 +125,7 @@ test("refuses what it is handed once released, and takes it again on resume", as
   expect(state.polls[1].acks[0]).toEqual({
     commandId: "c1",
     submitted: false,
-    reason: "the terminal released the session",
+    reason: "released",
   });
   await $.command.run({ command: "t3-bridge", args: "resume" });
   await clock.advance(1000);

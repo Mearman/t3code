@@ -50,11 +50,24 @@ export const ClaudeBridgeCommand = Schema.Struct({
 });
 export type ClaudeBridgeCommand = typeof ClaudeBridgeCommand.Type;
 
+/**
+ * Why a prompt handed to a terminal never reached its `claude`: no mod took it in time, the
+ * terminal released the session or started another conversation, or its `claude` refused it.
+ * A code, so each client words it in its reader's language.
+ */
+export const ClaudeBridgeFailureReason = Schema.Literals([
+  "expired",
+  "released",
+  "anotherConversation",
+  "refused",
+]);
+export type ClaudeBridgeFailureReason = typeof ClaudeBridgeFailureReason.Type;
+
 /** The mod's report on a command it was handed: submitted, or why not. */
 export const ClaudeBridgeAck = Schema.Struct({
   commandId: Schema.String,
   submitted: Schema.Boolean,
-  reason: Schema.optional(Schema.String),
+  reason: Schema.optional(ClaudeBridgeFailureReason),
 });
 export type ClaudeBridgeAck = typeof ClaudeBridgeAck.Type;
 

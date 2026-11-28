@@ -30,7 +30,11 @@ const RETRY_MS = 30_000;
 const REMEMBERED = 256;
 
 type Connection = { url: string; token: string; proof: string };
-type Ack = { commandId: string; submitted: boolean; reason?: string };
+type Ack = {
+  commandId: string;
+  submitted: boolean;
+  reason?: "released" | "anotherConversation" | "refused";
+};
 type Command = { commandId: string; sessionId: string; text: string; asUser: boolean };
 type Server = { pollerKey?: string; acks: Ack[]; retryAt: number };
 
@@ -79,17 +83,21 @@ async function connections($: EngineInterface): Promise<Map<string, Connection>>
 async function take($: EngineInterface, command: Command): Promise<Ack> {
   const { commandId } = command;
   if (submitted.includes(commandId)) return { commandId, submitted: true };
-  if (released) return { commandId, submitted: false, reason: "the terminal released the session" };
+  if (released) return { commandId, submitted: false, reason: "released" };
   if (command.sessionId !== sessionId) {
-    return { commandId, submitted: false, reason: "the terminal started another conversation" };
+    return { commandId, submitted: false, reason: "anotherConversation" };
   }
   try {
     const result = await $.prompt.submit(
       command.asUser ? { text: command.text, asUser: true } : { text: command.text },
     );
-    if (result.drop !== undefined) return { commandId, submitted: false, reason: result.drop };
+    if (result.drop !== undefined) {
+      $.ui.log("T3 Code bridge: prompt dropped: " + result.drop, { to: "debug" });
+      return { commandId, submitted: false, reason: "refused" };
+    }
   } catch (error) {
-    return { commandId, submitted: false, reason: describe(error) };
+    $.ui.log("T3 Code bridge: prompt refused: " + describe(error), { to: "debug" });
+    return { commandId, submitted: false, reason: "refused" };
   }
   submitted.push(commandId);
   if (submitted.length > REMEMBERED) submitted.shift();
