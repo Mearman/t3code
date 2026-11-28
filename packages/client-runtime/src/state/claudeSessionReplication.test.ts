@@ -13,6 +13,7 @@ it("finds a thread's copy, reading the report's copies once for every row", () =
   let reads = 0;
   const replicas = ids.map((sessionId) => ({
     sessionId,
+    title: null,
     ownerEnvironmentId: EnvironmentId.make("environment-owner"),
     providerInstanceId: ProviderInstanceId.make("claudeAgent"),
     transcriptPath: `/home/projects/-work/${sessionId}.jsonl`,

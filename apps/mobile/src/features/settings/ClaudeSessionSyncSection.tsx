@@ -163,7 +163,7 @@ export function ClaudeSessionSyncSection(props: {
             icon="pin"
             label={gt("Keep pinned sessions from linked machines")}
             subtitle={gt(
-              "Keep a copy of every session whose thread or project is pinned on a machine linked here with full access. A copy holds the conversation and backups of the files it edited, ignored files such as .env included, and resumes with plain claude --resume on this machine.",
+              "Copy every session whose thread or project is pinned on a machine linked with full access. A copy includes backups of the files it edited, .env too, and resumes with plain claude --resume here.",
             )}
             value={options.replication.pinned}
             disabled={disabled}

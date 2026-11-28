@@ -1112,9 +1112,18 @@ const make = Effect.gen(function* () {
   const report = Effect.gen(function* () {
     const pass = yield* Ref.get(lastPass);
     const rows = yield* replicas.list.pipe(Effect.mapError(storage("Could not read replicas.")));
+    const titled = yield* sql<{ readonly sessionId: string; readonly title: string }>`
+      SELECT r.session_id AS "sessionId", t.title AS title
+      FROM fork_claude_session_replicas r
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = 'claude:' || r.session_id
+    `.pipe(Effect.mapError(storage("Could not read the copies' threads.")));
+    const titles = new Map(titled.map((row) => [row.sessionId, row.title]));
     return {
       ...pass,
-      replicas: rows.map(({ syncedSha256: _hash, keptSha256: _kept, ...replica }) => replica),
+      replicas: rows.map(({ syncedSha256: _hash, keptSha256: _kept, ...replica }) => ({
+        ...replica,
+        title: titles.get(replica.sessionId) ?? null,
+      })),
     } satisfies ClaudeReplicationReport;
   });
 

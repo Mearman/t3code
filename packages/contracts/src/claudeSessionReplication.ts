@@ -114,6 +114,8 @@ export type ClaudeSessionReplicaStatus = typeof ClaudeSessionReplicaStatus.Type;
 /** A session this environment holds a copy of, owned by a linked environment. */
 export const ClaudeSessionReplica = Schema.Struct({
   sessionId: TrimmedNonEmptyString,
+  /** The title of the copy's thread here, once the sync has shown it. */
+  title: Schema.NullOr(Schema.String),
   ownerEnvironmentId: EnvironmentId,
   /** The Claude instance whose home holds the copy. */
   providerInstanceId: ProviderInstanceId,

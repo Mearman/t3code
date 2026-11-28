@@ -4,14 +4,15 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
 import { PersistenceDecodeError, PersistenceSqlError } from "./Errors.ts";
 
-/** A replica as stored: what clients see, plus the hash its transcript had when it matched. */
+/** A replica as stored: what clients see but its thread's title, plus the hash its transcript had when it matched. */
 export const ClaudeSessionReplicaRow = Schema.Struct({
-  ...ClaudeSessionReplica.fields,
+  ...ClaudeSessionReplica.mapFields(Struct.omit(["title"])).fields,
   syncedAt: Schema.DateTimeUtcFromString,
   forkedSessionIds: Schema.fromJsonString(Schema.Array(Schema.String)),
   syncedSha256: Schema.String,

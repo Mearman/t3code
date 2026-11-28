@@ -268,6 +268,28 @@ it.layer(testLayer)("ClaudeSessionReplication between two environments", (it) =>
     }).pipe(Effect.scoped),
   );
 
+  it.effect("names a copy by its thread's title once the sync shows it", () =>
+    Effect.gen(function* () {
+      const env = yield* environments();
+      const { sessionId } = yield* env.ownSession({});
+      const untitled = yield* env.b.replication.replicateNow;
+      yield* env.b.sql`
+        INSERT INTO orchestration_v2_projection_threads (
+          thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+          created_at, updated_at, payload_json
+        ) VALUES (
+          ${`claude:${sessionId}`}, 'project', 'Fix the login flow', 'claudeAgent', 'full-access',
+          'default', '2026-11-27T00:00:00.000Z', '2026-11-27T00:00:00.000Z', '{}'
+        )
+      `;
+
+      const titled = yield* env.b.replication.report;
+
+      expect(untitled.replicas.map((r) => r.title)).toEqual([null]);
+      expect(titled.replicas.map((r) => r.title)).toEqual(["Fix the login flow"]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("skips a copy the reserve does not leave room for, and reports it", () =>
     Effect.gen(function* () {
       const env = yield* environments({ reserveGiB: 1024 ** 3 });

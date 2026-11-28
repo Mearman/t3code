@@ -58,9 +58,13 @@ export function ClaudeSessionReplicationSettings(props: {
         serverScoped
         settingKeys={["claudeSessionSync"]}
         {...setting("claude-session-replicate-pinned")}
-        description={gt(
-          "Keep a copy of every session whose thread or project is pinned on a machine linked here with full access. A copy holds the conversation and backups of the files it edited, ignored files such as .env included, and resumes with plain claude --resume on this machine.",
-        )}
+        description={
+          <T>
+            Copy every session whose thread or project is pinned on a machine linked with full
+            access. A copy includes backups of the files it edited, .env too, and resumes with plain{" "}
+            <code className="whitespace-nowrap">claude --resume</code> here.
+          </T>
+        }
         control={
           <ScopedSwitch
             settingKeys={["claudeSessionSync"]}
@@ -195,7 +199,11 @@ function ReplicationReport(props: { readonly report: ClaudeReplicationReport }) 
         <ul className="flex flex-col gap-1">
           {report.replicas.map((replica) => (
             <li key={replica.sessionId} className="flex flex-wrap items-baseline gap-x-2">
-              <code className="text-xs">{replica.sessionId}</code>
+              {replica.title === null ? (
+                <code className="text-xs">{replica.sessionId}</code>
+              ) : (
+                <span>{replica.title}</span>
+              )}
               <span
                 className={replica.status === "stale" ? "text-warning" : "text-muted-foreground"}
               >

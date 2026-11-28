@@ -70,12 +70,12 @@ export function ClaudeReplicationSection(props: {
           >
             {replica.status === "stale"
               ? gt("{session}: stale since {time}, owned by {owner}", {
-                  session: replica.sessionId,
+                  session: replica.title ?? replica.sessionId,
                   time: formatTime(replica.syncedAt),
                   owner: owners.get(replica.ownerEnvironmentId) ?? replica.ownerEnvironmentId,
                 })
               : gt("{session}: current at {time}, owned by {owner}", {
-                  session: replica.sessionId,
+                  session: replica.title ?? replica.sessionId,
                   time: formatTime(replica.syncedAt),
                   owner: owners.get(replica.ownerEnvironmentId) ?? replica.ownerEnvironmentId,
                 })}
