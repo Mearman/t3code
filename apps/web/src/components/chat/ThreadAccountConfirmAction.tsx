@@ -25,7 +25,8 @@ type FailureRow = Parameters<typeof threadAccountToConfirm>[0] & {
 };
 
 /**
- * Offered on the thread's latest turn when it was refused because the Claude account changed. It confirms the account that row names, which the server accepts only while still current.
+ * Offered on the thread's latest turn when it was refused because the Claude account changed.
+ * It confirms the account that row names, which the server accepts only while still current.
  */
 export function ThreadAccountConfirmAction(props: {
   readonly environmentId: EnvironmentId;
@@ -78,7 +79,11 @@ export function ThreadAccountConfirmAction(props: {
               const outcome = result.value.outcome;
               toastManager.add(
                 outcome === "confirmed"
-                  ? { type: "success", title: gt("Account confirmed. Send your message again.") }
+                  ? {
+                      type: "success",
+                      title: gt("Account confirmed"),
+                      description: gt("Anything refused before was not sent, so send it again."),
+                    }
                   : outcome === "stale"
                     ? {
                         type: "info",

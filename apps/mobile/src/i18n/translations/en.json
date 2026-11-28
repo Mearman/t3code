@@ -4581,7 +4581,7 @@
   "3548216a7598251d": "Account confirmed",
   "d97e569df0c972ec": "Claude is now signed in as another account. Send again to see which.",
   "20802d5bd40e9f24": "This thread has no account change to confirm.",
-  "3cb1528baceaefc3": "Send your message again.",
+  "7ffd58f9b7131b4c": "Anything refused before was not sent, so send it again.",
   "318f262e7c81966a": "Provider-managed agent. Its work appears in the transcript.",
   "8f4c65f679c5c2ae": "Opens this agent's thread",
   "bf1748c788d31e19": "Opens a read-only view of this agent's thread on {label}",

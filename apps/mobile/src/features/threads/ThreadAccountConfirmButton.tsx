@@ -27,7 +27,8 @@ type FailureRow = Parameters<typeof threadAccountToConfirm>[0] & {
 };
 
 /**
- * Offered on the thread's latest turn when it was refused because the Claude account changed. It confirms the account that row names, which the server accepts only while still current.
+ * Offered on the thread's latest turn when it was refused because the Claude account changed.
+ * It confirms the account that row names, which the server accepts only while still current.
  */
 export function ThreadAccountConfirmButton(props: {
   readonly environmentId: EnvironmentId;
@@ -73,7 +74,10 @@ export function ThreadAccountConfirmButton(props: {
               }
               const outcome = result.value.outcome;
               if (outcome === "confirmed")
-                Dialog.alert(gt("Account confirmed"), gt("Send your message again."));
+                Dialog.alert(
+                  gt("Account confirmed"),
+                  gt("Anything refused before was not sent, so send it again."),
+                );
               else if (outcome === "stale")
                 Dialog.alert(
                   gt("Claude is now signed in as another account. Send again to see which."),
