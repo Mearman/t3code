@@ -2574,6 +2574,7 @@
   "e880959d9520231a": "Vérifier les modifications",
   "9e25940062052a95": "Copier le lien de la PR ou le fil",
   "67f5b13c3c7bcd40": "Partager avec un invité",
+  "e8d108c0f0bba756": "Déplacer vers une autre machine",
   "6a433e2e6d1cfd88": "Nouveau fil · {environment}",
   "fb49961cfffa5467": "Fermer la palette de commandes",
   "6fdd3baa7bafa38b": "Rechercher des commandes, des projets et des fils",
@@ -4196,6 +4197,15 @@
       "v": "v"
     }
   ],
+  "0b683f392a47b919": "La session n’a pas pu être déplacée.",
+  "0d490afd183e7688": "Le code se trouve dans {path} sur la branche {branch}.",
+  "d64fb4903d379c3b": "Copier la commande de reprise",
+  "4d21cb6ae950a14b": "Reprendre la session d’un terminal",
+  "63739f23d55fa6a9": "Déplacement…",
+  "9f122f4c410241c0": "Déplacer",
+  "4548ba21532a6a3d": "La session est déplacée avec ses commits non poussés et ses modifications non validées dans un nouveau worktree là-bas. Les fichiers ignorés comme .env restent ici, ainsi qu’une copie de la session.",
+  "b394843fc9e17542": "Aucune machine liée ne peut recevoir cette session. Liez-en une avec un accès complet dans les Réglages.",
+  "2398b5e61515bbba": "Reprendre la main si un terminal l’a ouverte : un claude inactif y est d’abord arrêté. Un claude qui travaille n’est jamais arrêté.",
   "43c5fbd02c6f330a": "Afficher moins",
   "918cd5477d0c0e9b": "Afficher le message complet",
   "74fed222a72f86bc": "Photothèque",

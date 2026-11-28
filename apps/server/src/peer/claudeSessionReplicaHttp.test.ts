@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
+import * as ClaudeSessionMove from "../claudeSessions/ClaudeSessionMove.ts";
 import * as ClaudeSessionReplication from "../claudeSessions/ClaudeSessionReplication.ts";
 import { sha256OfBytes } from "../claudeSessions/ClaudeSessionFiles.ts";
 import * as ClaudeSessionReplicaHttp from "./claudeSessionReplicaHttp.ts";
@@ -34,7 +35,7 @@ const serveBox = Effect.gen(function* () {
       Effect.succeed(sessionId === SESSION && nonce === NONCE),
   });
   const peer = yield* servePeer(box, Layer.empty, ClaudeSessionReplicaHttp.layer).pipe(
-    Effect.provide(replication),
+    Effect.provide(Layer.merge(replication, Layer.mock(ClaudeSessionMove.ClaudeSessionMove)({}))),
   );
   return { ...peer, listed };
 });

@@ -7,6 +7,12 @@ import {
   ClaudeSessionReplicationError,
   type EnvironmentId,
   PEER_LINK_CLAUDE_SESSIONS_CLAIM_ROUTE,
+  PEER_LINK_CLAUDE_MOVE_FILE_ROUTE,
+  PEER_LINK_CLAUDE_MOVE_MANIFEST_ROUTE,
+  PEER_LINK_CLAUDE_MOVE_ROUTE,
+  ClaudeSessionCodePackage,
+  ClaudeSessionMoveResult,
+  type ClaudeSessionMoveOffer,
   PEER_LINK_CLAUDE_SESSIONS_FILE_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_LIST_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_CLAIM_CONFIRM_ROUTE,
@@ -27,11 +33,15 @@ import * as PeerLinks from "./PeerLinks.ts";
 
 /** A whole chunk over a slow route: well beyond a link's probe timeout, still bounded. */
 const TRANSFER_TIMEOUT = Duration.minutes(2);
+/** A move's target may clone a repository and fetch its code before it answers. */
+const MOVE_TIMEOUT = Duration.minutes(30);
 
 const decodeList = Schema.decodeUnknownEffect(Schema.toCodecJson(ClaudeRemoteSessionList));
 const decodeManifest = Schema.decodeUnknownEffect(Schema.toCodecJson(ClaudeSessionManifest));
 const decodeClaim = Schema.decodeUnknownEffect(ClaudeSessionClaimResult);
 const decodeConfirm = Schema.decodeUnknownEffect(Schema.Struct({ confirmed: Schema.Boolean }));
+const decodeMoveResult = Schema.decodeUnknownEffect(Schema.toCodecJson(ClaudeSessionMoveResult));
+const decodeCodePackage = Schema.decodeUnknownEffect(Schema.toCodecJson(ClaudeSessionCodePackage));
 const decodeRefusal = Schema.decodeUnknownOption(
   Schema.Struct({ error: Schema.String, message: Schema.optionalKey(Schema.String) }),
 );
@@ -78,6 +88,30 @@ export class PeerClaudeSessions extends Context.Service<
       readonly environmentId: EnvironmentId;
       readonly claim: ClaudeSessionClaimInput;
     }) => Effect.Effect<ClaudeSessionClaimResult, ClaudeSessionReplicationError>;
+    /**
+     * Fails unless the peer takes moves (it advertises `claudeSessionMove`) over a full-access
+     * link, so a move stops before anything here changes.
+     */
+    readonly checkMoveTarget: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<void, ClaudeSessionReplicationError>;
+    /** Asks the target of a move to take the session in; it may clone and fetch for a while. */
+    readonly offerMove: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly offer: ClaudeSessionMoveOffer;
+    }) => Effect.Effect<ClaudeSessionMoveResult, ClaudeSessionReplicationError>;
+    /** The code a move's source packed, as the target reads it back. */
+    readonly moveManifest: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly moveId: string;
+    }) => Effect.Effect<ClaudeSessionCodePackage, ClaudeSessionReplicationError>;
+    readonly readMoveChunk: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly moveId: string;
+      readonly path: string;
+      readonly offset: number;
+      readonly length: number;
+    }) => Effect.Effect<Uint8Array, ClaudeSessionReplicationError>;
   }
 >()("t3/peer/PeerClaudeSessions") {}
 
@@ -144,7 +178,10 @@ const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const httpClient = yield* HttpClient.HttpClient;
 
-  const resolve = Effect.fn("PeerClaudeSessions.resolve")(function* (environmentId: EnvironmentId) {
+  const resolve = Effect.fn("PeerClaudeSessions.resolve")(function* (
+    environmentId: EnvironmentId,
+    capability: "claudeSessionReplication" | "claudeSessionMove" = "claudeSessionReplication",
+  ) {
     if (!(yield* links.enabled)) {
       return yield* new ClaudeSessionReplicationError({
         reason: "disabled",
@@ -152,7 +189,7 @@ const make = Effect.gen(function* () {
       });
     }
     const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
-    if (resolved.capabilities.claudeSessionReplication !== true) {
+    if (resolved.capabilities[capability] !== true) {
       return yield* fromStatus(404, undefined, resolved.link.label);
     }
     return resolved;
@@ -161,8 +198,12 @@ const make = Effect.gen(function* () {
   const send = Effect.fn("PeerClaudeSessions.send")(function* (
     environmentId: EnvironmentId,
     request: (url: string) => HttpClientRequest.HttpClientRequest,
+    options?: {
+      readonly capability: "claudeSessionMove";
+      readonly timeout: Duration.Duration;
+    },
   ) {
-    const resolved = yield* resolve(environmentId);
+    const resolved = yield* resolve(environmentId, options?.capability);
     const label = resolved.link.label;
     const response = yield* httpClient
       .execute(
@@ -171,7 +212,7 @@ const make = Effect.gen(function* () {
         ),
       )
       .pipe(
-        Effect.timeout(TRANSFER_TIMEOUT),
+        Effect.timeout(options?.timeout ?? TRANSFER_TIMEOUT),
         Effect.mapError(
           (cause) =>
             new ClaudeSessionReplicationError({
@@ -198,8 +239,9 @@ const make = Effect.gen(function* () {
     environmentId: EnvironmentId,
     request: (url: string) => HttpClientRequest.HttpClientRequest,
     decode: (body: unknown) => Effect.Effect<A, Schema.SchemaError>,
+    options?: Parameters<typeof send>[2],
   ) =>
-    send(environmentId, request).pipe(
+    send(environmentId, request, options).pipe(
       Effect.flatMap(({ label, response }) =>
         response.json.pipe(
           Effect.flatMap(decode),
@@ -269,21 +311,27 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const readChunk = Effect.fn("PeerClaudeSessions.readChunk")(function* (input: {
+  const readChunkAt = Effect.fn("PeerClaudeSessions.readChunkAt")(function* (input: {
     readonly environmentId: EnvironmentId;
-    readonly sessionId: string;
+    readonly route: string;
+    readonly query: Record<string, string>;
     readonly path: string;
     readonly offset: number;
     readonly length: number;
+    readonly capability?: "claudeSessionMove";
   }) {
     const query = new URLSearchParams({
-      session: input.sessionId,
+      ...input.query,
       path: input.path,
       offset: String(input.offset),
       length: String(input.length),
     });
-    const { label, response } = yield* send(input.environmentId, (url) =>
-      HttpClientRequest.get(`${url}${PEER_LINK_CLAUDE_SESSIONS_FILE_ROUTE}?${query}`),
+    const { label, response } = yield* send(
+      input.environmentId,
+      (url) => HttpClientRequest.get(`${url}${input.route}?${query}`),
+      input.capability === undefined
+        ? undefined
+        : { capability: input.capability, timeout: TRANSFER_TIMEOUT },
     );
     const bytes = new Uint8Array(
       yield* response.arrayBuffer.pipe(
@@ -320,7 +368,85 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return PeerClaudeSessions.of({ list, confirmClaim, manifest, readChunk, claim });
+  const readChunk = (input: {
+    readonly environmentId: EnvironmentId;
+    readonly sessionId: string;
+    readonly path: string;
+    readonly offset: number;
+    readonly length: number;
+  }) =>
+    readChunkAt({
+      ...input,
+      route: PEER_LINK_CLAUDE_SESSIONS_FILE_ROUTE,
+      query: { session: input.sessionId },
+    });
+
+  const moveOptions = { capability: "claudeSessionMove", timeout: MOVE_TIMEOUT } as const;
+
+  const checkMoveTarget = Effect.fn("PeerClaudeSessions.checkMoveTarget")(function* (
+    environmentId: EnvironmentId,
+  ) {
+    const resolved = yield* resolve(environmentId, "claudeSessionMove");
+    if (resolved.link.access !== "full-access") {
+      return yield* fromStatus(403, "full_access_required", resolved.link.label);
+    }
+  });
+
+  const offerMove = Effect.fn("PeerClaudeSessions.offerMove")(function* (input: {
+    readonly environmentId: EnvironmentId;
+    readonly offer: ClaudeSessionMoveOffer;
+  }) {
+    return yield* readJson(
+      input.environmentId,
+      (url) =>
+        HttpClientRequest.post(`${url}${PEER_LINK_CLAUDE_MOVE_ROUTE}`).pipe(
+          HttpClientRequest.setBody(HttpBody.text(JSON.stringify(input.offer), "application/json")),
+        ),
+      decodeMoveResult,
+      moveOptions,
+    );
+  });
+
+  const moveManifest = Effect.fn("PeerClaudeSessions.moveManifest")(function* (input: {
+    readonly environmentId: EnvironmentId;
+    readonly moveId: string;
+  }) {
+    return yield* readJson(
+      input.environmentId,
+      (url) =>
+        HttpClientRequest.get(
+          `${url}${PEER_LINK_CLAUDE_MOVE_MANIFEST_ROUTE}?${new URLSearchParams({ move: input.moveId })}`,
+        ),
+      decodeCodePackage,
+      { capability: "claudeSessionMove", timeout: TRANSFER_TIMEOUT },
+    );
+  });
+
+  const readMoveChunk = (input: {
+    readonly environmentId: EnvironmentId;
+    readonly moveId: string;
+    readonly path: string;
+    readonly offset: number;
+    readonly length: number;
+  }) =>
+    readChunkAt({
+      ...input,
+      route: PEER_LINK_CLAUDE_MOVE_FILE_ROUTE,
+      query: { move: input.moveId },
+      capability: "claudeSessionMove",
+    });
+
+  return PeerClaudeSessions.of({
+    list,
+    confirmClaim,
+    manifest,
+    readChunk,
+    claim,
+    checkMoveTarget,
+    offerMove,
+    moveManifest,
+    readMoveChunk,
+  });
 });
 
 export const layer = Layer.effect(PeerClaudeSessions, make);

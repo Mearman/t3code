@@ -201,6 +201,7 @@ import * as LinkThreadHttp from "./peer/linkThreadHttp.ts";
 import * as ClaudeSessionReplicaHttp from "./peer/claudeSessionReplicaHttp.ts";
 import * as PeerClaudeSessions from "./peer/PeerClaudeSessions.ts";
 import * as ClaudeSessionReplication from "./claudeSessions/ClaudeSessionReplication.ts";
+import * as ClaudeSessionMove from "./claudeSessions/ClaudeSessionMove.ts";
 import * as ClaudeSessionReplicas from "./persistence/ClaudeSessionReplicas.ts";
 import * as CloudLink from "./cloud/CloudLink.ts";
 import * as ConnectReachability from "./cloud/ConnectReachability.ts";
@@ -790,6 +791,16 @@ const layerClaudeSessionReplication = ClaudeSessionReplication.layer.pipe(
   Layer.provide(PeerLinks.layer),
 );
 
+// Moves read and write the same replicas, so they take the replication instance above.
+const layerClaudeSessionMove = ClaudeSessionMove.layer.pipe(
+  Layer.provideMerge(layerClaudeSessionReplication),
+  Layer.provide(PeerClaudeSessions.layer),
+  Layer.provide(PeerLinks.layer),
+  Layer.provide(
+    ClaudeLiveSessions.layer.pipe(Layer.provide(ProviderOrchestrationAdapterInfrastructure.layer)),
+  ),
+);
+
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   ProviderHostPathWatcher.layer.pipe(Layer.provide(layerDesktopTelemetryReceiver)),
@@ -797,7 +808,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
   layerClaudeSessionSyncWorker,
-  layerClaudeSessionReplication,
+  layerClaudeSessionMove,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),

@@ -34,7 +34,7 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import * as ServerSettings from "../serverSettings.ts";
 import { ClaudeLiveSessions } from "./ClaudeLiveSessions.ts";
 import { ClaudeProcessTableError } from "./ClaudeProcessTable.ts";
-import { sha256OfBytes } from "./ClaudeSessionFiles.ts";
+import { claudeProjectSlug, sha256OfBytes } from "./ClaudeSessionFiles.ts";
 import * as ClaudeSessionOwnershipGate from "./ClaudeSessionOwnershipGate.ts";
 import {
   ClaudeSessionReplication,
@@ -544,6 +544,52 @@ it.layer(testLayer)("ClaudeSessionReplication between two environments", (it) =>
 
       expect((yield* Fiber.join(send))?.message).toBeUndefined();
       expect((yield* env.a.replicas.get(sessionId))?.ownerEnvironmentId).toBe(B);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("leaves a copy where it is when its new project folder already holds the session", () =>
+    Effect.gen(function* () {
+      const env = yield* environments();
+      const { sessionId } = yield* env.ownSession({});
+      yield* env.b.replication.replicateNow;
+      const copy = env.copyOn(env.b, sessionId);
+      const before = yield* env.bytes(copy);
+      const takenDir = `${env.b.home}/projects/${claudeProjectSlug("/elsewhere")}`;
+      yield* (yield* FileSystem.FileSystem).makeDirectory(takenDir, { recursive: true });
+      yield* env.append(`${takenDir}/${sessionId}.jsonl`, "someone else's");
+
+      const refused = yield* Effect.flip(
+        env.b.replication.takeIn({ ownerEnvironmentId: A, sessionId, cwd: "/elsewhere" }),
+      );
+
+      expect(refused.reason).toBe("refused");
+      expect(yield* env.bytes(copy)).toBe(before);
+      expect((yield* env.b.replicas.get(sessionId))?.transcriptPath).toBe(copy);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("leaves a copy a claude holds where it is when a move takes it in", () =>
+    Effect.gen(function* () {
+      const env = yield* environments();
+      const { sessionId } = yield* env.ownSession({});
+      yield* env.b.replication.replicateNow;
+      const copy = env.copyOn(env.b, sessionId);
+      const before = yield* env.bytes(copy);
+      env.live.get(B)?.add(sessionId);
+
+      const refused = yield* Effect.flip(
+        env.b.replication.takeIn({ ownerEnvironmentId: A, sessionId, cwd: "/elsewhere" }),
+      );
+
+      expect(refused.reason).toBe("refused");
+      expect(refused.message).toContain("has the copy of this session open");
+      expect(yield* env.bytes(copy)).toBe(before);
+      expect((yield* env.b.replicas.get(sessionId))?.transcriptPath).toBe(copy);
+      expect(
+        yield* (yield* FileSystem.FileSystem).exists(
+          `${env.b.home}/projects/${claudeProjectSlug("/elsewhere")}`,
+        ),
+      ).toBe(false);
     }).pipe(Effect.scoped),
   );
 

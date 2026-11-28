@@ -47,8 +47,15 @@ const ICONS: Record<string, LucideIcon> = {
   trash: Trash2Icon,
 };
 
-// The palette has its own rows for these, and no inline title editor for rename.
-const SKIPPED: ReadonlySet<ThreadActionMenuId> = new Set(["rename", "project-settings"]);
+/**
+ * Thread menu items the palette leaves out: it has its own rows for these, and no inline title
+ * editor for rename.
+ */
+export const PALETTE_SKIPPED_THREAD_ACTIONS: ReadonlySet<ThreadActionMenuId> = new Set([
+  "rename",
+  "project-settings",
+  "move-claude-session",
+]);
 
 const SHORTCUTS: Partial<Record<ThreadActionMenuId, KeybindingCommand>> = {
   settle: "thread.settle",
@@ -70,7 +77,7 @@ export function useCommandPaletteThreadActions(input: {
   const toPaletteItem = (
     item: ContextMenuItem<ThreadActionMenuId>,
   ): CommandPaletteActionItem | CommandPaletteSubmenuItem | null => {
-    if (SKIPPED.has(item.id)) return null;
+    if (PALETTE_SKIPPED_THREAD_ACTIONS.has(item.id)) return null;
     const Icon = item.icon ? ICONS[item.icon] : undefined;
     const shared = {
       value: `thread-action:${item.id}`,

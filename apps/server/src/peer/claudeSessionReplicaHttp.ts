@@ -7,18 +7,30 @@ import {
   type ClaudeSessionReplicationError,
   PEER_LINK_CLAUDE_SESSIONS_CLAIM_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_CLAIM_CONFIRM_ROUTE,
+  CLAUDE_SESSION_FILE_CHUNK_BYTES,
+  ClaudeSessionCodePackage,
+  ClaudeSessionMoveOffer,
+  ClaudeSessionMoveResult,
+  PEER_LINK_CLAUDE_MOVE_FILE_ROUTE,
+  PEER_LINK_CLAUDE_MOVE_MANIFEST_ROUTE,
+  PEER_LINK_CLAUDE_MOVE_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_FILE_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_LIST_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_MANIFEST_ROUTE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { sha256OfBytes } from "../claudeSessions/ClaudeSessionFiles.ts";
+import { claudeSessionCodeFiles } from "../claudeSessions/ClaudeSessionCode.ts";
+import * as ClaudeSessionMove from "../claudeSessions/ClaudeSessionMove.ts";
 import * as ClaudeSessionReplication from "../claudeSessions/ClaudeSessionReplication.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -216,6 +228,101 @@ const claimConfirmRoute = HttpRouter.add(
   }),
 );
 
+const encodeMoveResult = Schema.encodeEffect(Schema.toCodecJson(ClaudeSessionMoveResult));
+const encodeCodePackage = Schema.encodeEffect(Schema.toCodecJson(ClaudeSessionCodePackage));
+const decodeMoveOffer = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaudeSessionMoveOffer));
+
+// The target of a move: it takes the session in, fetching the code and the session from the source.
+const moveRoute = HttpRouter.add(
+  "POST",
+  PEER_LINK_CLAUDE_MOVE_ROUTE,
+  Effect.gen(function* () {
+    const admitted = yield* admitLink(true);
+    if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
+    const text = yield* admitted.request.text.pipe(Effect.option);
+    if (text._tag === "None") return refusal(400, "invalid_request");
+    const offer = yield* decodeMoveOffer(text.value).pipe(Effect.option);
+    if (offer._tag === "None") return refusal(400, "invalid_request");
+    const moves = yield* ClaudeSessionMove.ClaudeSessionMove;
+    const moved = yield* Effect.result(moves.accept(offer.value));
+    if (moved._tag === "Failure") return refusal(409, moved.failure.reason, moved.failure.message);
+    const body = yield* encodeMoveResult(moved.success).pipe(Effect.option);
+    if (body._tag === "None") return refusal(500, "move_failed");
+    return withLinkExpiry(
+      HttpServerResponse.jsonUnsafe(body.value, { headers: NO_STORE }),
+      admitted.linkExpiresAt,
+    );
+  }),
+);
+
+// The source of a move: the code it packed, until its target has taken it.
+const moveManifestRoute = HttpRouter.add(
+  "GET",
+  PEER_LINK_CLAUDE_MOVE_MANIFEST_ROUTE,
+  Effect.gen(function* () {
+    const admitted = yield* admitLink(true);
+    if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
+    const moves = yield* ClaudeSessionMove.ClaudeSessionMove;
+    const found = yield* moves.packageOf(admitted.params.get("move") ?? "");
+    if (found === undefined) return refusal(404, "session_not_found");
+    const body = yield* encodeCodePackage(found.code).pipe(Effect.option);
+    if (body._tag === "None") return refusal(500, "session_read_failed");
+    return withLinkExpiry(
+      HttpServerResponse.jsonUnsafe(body.value, { headers: NO_STORE }),
+      admitted.linkExpiresAt,
+    );
+  }),
+);
+
+const moveFileRoute = HttpRouter.add(
+  "GET",
+  PEER_LINK_CLAUDE_MOVE_FILE_ROUTE,
+  Effect.gen(function* () {
+    const admitted = yield* admitLink(true);
+    if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
+    const moves = yield* ClaudeSessionMove.ClaudeSessionMove;
+    const found = yield* moves.packageOf(admitted.params.get("move") ?? "");
+    const filePath = admitted.params.get("path");
+    const offset = nonNegativeInt(admitted.params.get("offset"));
+    const length = nonNegativeInt(admitted.params.get("length"));
+    if (found === undefined) return refusal(404, "session_not_found");
+    // Only a file the package lists is served, never another path below its directory.
+    const file = claudeSessionCodeFiles(found.code).find((entry) => entry.path === filePath);
+    if (
+      file === undefined ||
+      offset === undefined ||
+      length === undefined ||
+      length > CLAUDE_SESSION_FILE_CHUNK_BYTES
+    ) {
+      return refusal(400, "invalid_request");
+    }
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const bytes = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* fileSystem.open(path.join(found.packageDir, file.path), {
+          flag: "r",
+        });
+        yield* handle.seek(BigInt(offset), "start");
+        const read = length === 0 ? Option.none() : yield* handle.readAlloc(length);
+        return Option.getOrElse(read, () => new Uint8Array());
+      }),
+    ).pipe(Effect.option);
+    if (bytes._tag === "None") return refusal(500, "session_read_failed");
+    return withLinkExpiry(
+      HttpServerResponse.uint8Array(bytes.value, {
+        contentType: "application/octet-stream",
+        headers: {
+          ...NO_STORE,
+          [CLAUDE_SESSION_CHUNK_SHA256_HEADER]: sha256OfBytes(bytes.value),
+          [CLAUDE_SESSION_FILE_SIZE_HEADER]: String(file.size),
+        },
+      }),
+      admitted.linkExpiresAt,
+    );
+  }),
+);
+
 /** What an environment serves of the Claude sessions it owns to the environments linked to it. */
 export const layer = Layer.mergeAll(
   listRoute,
@@ -223,4 +330,7 @@ export const layer = Layer.mergeAll(
   fileRoute,
   claimRoute,
   claimConfirmRoute,
+  moveRoute,
+  moveManifestRoute,
+  moveFileRoute,
 );

@@ -78,6 +78,7 @@ import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regenerati
 import { canTurnThreadIntoProject, turnThreadIntoProject } from "./turnThreadIntoProject";
 import { threadCanArchive } from "../home/threadArchive";
 import { useCanShareWithGuest } from "./useCanShareWithGuest";
+import { useCanMoveClaudeSession } from "./useCanMoveClaudeSession";
 import {
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   resolveThreadListV2SnoozeGateExpiryMs,
@@ -979,6 +980,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     !useEnvironmentScopeDenied(thread.environmentId, AuthOrchestrationOperateScope) &&
     !canOperateThread;
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
+  const canMoveClaudeSession = useCanMoveClaudeSession(thread.environmentId, thread.id);
   const navigation = useNavigation();
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
@@ -1163,6 +1165,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ...(canShareWithGuest
         ? [{ id: "share-guest", title: gt("Share with guest"), image: "person.badge.plus" }]
         : []),
+      ...(canMoveClaudeSession
+        ? [
+            {
+              id: "move-claude-session",
+              title: gt("Move to another machine"),
+              image: "arrow.left.arrow.right",
+            },
+          ]
+        : []),
     ];
     if (snoozedRow) {
       return layoutThreadListV2RowMenuActions(
@@ -1242,6 +1253,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     );
   }, [
     autoSettleMenuItems,
+    canMoveClaudeSession,
     canShareWithGuest,
     canUnsettle,
     pinMenuItems,
@@ -1291,6 +1303,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       }
       if (nativeEvent.event === "copy-thread-id") {
         copyTextWithHaptic(thread.id, { target: "thread-id" });
+      }
+      if (nativeEvent.event === "move-claude-session") {
+        navigation.navigate("ClaudeSessionMove", {
+          environmentId: thread.environmentId,
+          threadId: thread.id,
+        });
       }
       if (nativeEvent.event === "share-guest") {
         navigation.navigate("ThreadGuestShare", {

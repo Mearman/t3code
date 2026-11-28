@@ -2578,6 +2578,7 @@
   "e880959d9520231a": "Änderungen prüfen",
   "9e25940062052a95": "PR-Link oder Thread kopieren",
   "67f5b13c3c7bcd40": "Mit Gast teilen",
+  "e8d108c0f0bba756": "Auf einen anderen Rechner verschieben",
   "6a433e2e6d1cfd88": "Neuer Thread · {environment}",
   "fb49961cfffa5467": "Befehlspalette schließen",
   "6fdd3baa7bafa38b": "Befehle, Projekte und Threads durchsuchen",
@@ -4201,6 +4202,15 @@
       "v": "v"
     }
   ],
+  "0b683f392a47b919": "Die Sitzung konnte nicht verschoben werden.",
+  "0d490afd183e7688": "Der Code liegt in {path} auf dem Branch {branch}.",
+  "d64fb4903d379c3b": "Befehl zum Fortsetzen kopieren",
+  "4d21cb6ae950a14b": "Sitzung eines Terminals übernehmen",
+  "63739f23d55fa6a9": "Wird verschoben…",
+  "9f122f4c410241c0": "Verschieben",
+  "4548ba21532a6a3d": "Die Sitzung wird mit ihren nicht gepushten Commits und nicht committeten Änderungen in einen neuen Worktree dort verschoben. Ignorierte Dateien wie .env bleiben hier, ebenso eine Kopie der Sitzung.",
+  "b394843fc9e17542": "Kein verknüpfter Rechner kann diese Sitzung übernehmen. Verknüpfe einen mit Vollzugriff in den Einstellungen.",
+  "2398b5e61515bbba": "Übernehmen, wenn ein Terminal sie geöffnet hat: Ein untätiges claude dort wird zuerst beendet. Ein arbeitendes wird nie beendet.",
   "43c5fbd02c6f330a": "Weniger anzeigen",
   "918cd5477d0c0e9b": "Vollständige Nachricht anzeigen",
   "74fed222a72f86bc": "Fotomediathek",

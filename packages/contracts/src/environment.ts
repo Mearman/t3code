@@ -242,6 +242,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * and copies theirs by its replication rules. Absent on servers that do neither.
    */
   claudeSessionReplication: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Moves a Claude Code session it owns, with its code, to a linked environment, and takes one in.
+   */
+  claudeSessionMove: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

@@ -84,6 +84,7 @@ vi.mock("./turnThreadIntoProject", () => ({
   turnThreadIntoProject: vi.fn(),
 }));
 vi.mock("./useCanShareWithGuest", () => ({ useCanShareWithGuest: () => false }));
+vi.mock("./useCanMoveClaudeSession", () => ({ useCanMoveClaudeSession: () => false }));
 vi.mock("../home/swipe-row-activation", () => ({ useSwipeRowDormant: () => false }));
 vi.mock("../home/thread-swipe-actions", () => ({
   ThreadSwipeable: ({ children }: { children: (close: () => void) => ReactNode }) =>

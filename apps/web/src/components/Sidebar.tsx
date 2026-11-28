@@ -146,6 +146,7 @@ import {
   useConnectedEnvironmentIds,
   useEnvironmentMachines,
   usePrimaryEnvironmentId,
+  readEnvironment,
 } from "../state/environments";
 import {
   readThreadShell,
@@ -164,7 +165,12 @@ import { useThreadSearch } from "../state/queries";
 import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { claudeReplicationEnvironment } from "../state/claudeReplication";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
+import {
+  canMoveClaudeSession,
+  openClaudeSessionMoveDialog,
+} from "./chat/claudeSessionMoveDialogState";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import {
   buildThreadRouteParams,
@@ -2744,6 +2750,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               canShareWithGuest: appAtomRegistry.get(
                 canShareWithGuestAtom(threadRef.environmentId),
               ),
+              canMoveClaudeSession: canMoveClaudeSession(
+                threadRef.threadId,
+                readEnvironment(threadRef.environmentId)?.serverConfig?.environment.capabilities,
+                appAtomRegistry.get(
+                  claudeReplicationEnvironment.move.permissionAtom(threadRef.environmentId),
+                ),
+              ),
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
               canRename: !fromSearch,
               supports: {
@@ -2874,6 +2887,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           case "share-guest":
             openGuestShareDialog(threadRef);
+            return;
+          case "move-claude-session":
+            openClaudeSessionMoveDialog(threadRef);
             return;
           case "regenerate-title": {
             if (isRegeneratingTitle) return;

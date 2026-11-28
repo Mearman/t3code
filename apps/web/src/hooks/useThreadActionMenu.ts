@@ -3,6 +3,10 @@ import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
 import {
+  canMoveClaudeSession,
+  openClaudeSessionMoveDialog,
+} from "../components/chat/claudeSessionMoveDialogState";
+import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
   settlePromise,
@@ -33,13 +37,15 @@ import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { threadEnvironment } from "../state/threads";
 import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope } from "../state/session";
+import { claudeReplicationEnvironment } from "../state/claudeReplication";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import {
   readEnvironmentServerConfigLoaded,
   readEnvironmentSupportsAutoSettleOptOut,
   readThreadShell,
   useProjects,
 } from "../state/entities";
-import { usePrimaryEnvironmentId } from "../state/environments";
+import { readEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import {
@@ -151,6 +157,13 @@ export function useThreadActionMenu(input: {
       supports,
       snoozePresets,
       canShareWithGuest,
+      canMoveClaudeSession: canMoveClaudeSession(
+        threadRef.threadId,
+        readEnvironment(threadRef.environmentId)?.serverConfig?.environment.capabilities,
+        appAtomRegistry.get(
+          claudeReplicationEnvironment.move.permissionAtom(threadRef.environmentId),
+        ),
+      ),
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
     });
     const run = async (action: ThreadActionMenuId) => {
@@ -272,6 +285,9 @@ export function useThreadActionMenu(input: {
           return;
         case "share-guest":
           openGuestShareDialog(threadRef);
+          return;
+        case "move-claude-session":
+          openClaudeSessionMoveDialog(threadRef);
           return;
         case "turn-into-project": {
           const result = await turnThreadIntoProject(threadRef);

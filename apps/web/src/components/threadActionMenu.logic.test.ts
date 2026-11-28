@@ -84,6 +84,19 @@ describe("buildThreadActionMenuItems", () => {
     expect(items.map((item) => item.id)).not.toContain("mark-unread");
   });
 
+  it.each([
+    ["offers moving a session its server can move", { canMoveClaudeSession: true }, true],
+    ["omits moving a session its server cannot move", { canMoveClaudeSession: false }, false],
+    [
+      "omits moving without permission to run the thread",
+      { canMoveClaudeSession: true, canOperate: false },
+      false,
+    ],
+  ])("%s", (_, overrides, offered) => {
+    const items = buildThreadActionMenuItems({ ...baseState, ...overrides });
+    expect(items.map((item) => item.id).includes("move-claude-session")).toBe(offered);
+  });
+
   it("disables only rename where no inline title editor exists", () => {
     const items = buildThreadActionMenuItems({ ...baseState, canRename: false });
     expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(["rename"]);

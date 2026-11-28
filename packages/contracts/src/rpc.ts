@@ -41,6 +41,11 @@ import {
   ClaudeSessionReplicationError,
 } from "./claudeSessionReplication.ts";
 import {
+  ClaudeSessionMoveError,
+  ClaudeSessionMoveInput,
+  ClaudeSessionMoveResult,
+} from "./claudeSessionMove.ts";
+import {
   ClaudeAccountCreateInput,
   ClaudeAccountCreateResult,
   ChatGptReconnectProfileInput,
@@ -626,6 +631,8 @@ export const WS_METHODS = {
   claudeSessionsListRemote: "claudeSessions.listRemote",
   claudeSessionsReplicationReport: "claudeSessions.replicationReport",
   claudeSessionsReplicateNow: "claudeSessions.replicateNow",
+  claudeSessionsMove: "claudeSessions.move",
+  claudeSessionsMoveTargets: "claudeSessions.moveTargets",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -1008,6 +1015,20 @@ const WsClaudeSessionsReplicateNowRpc = Rpc.make(WS_METHODS.claudeSessionsReplic
   payload: Schema.Struct({}),
   success: ClaudeReplicationReport,
   error: Schema.Union([ClaudeSessionReplicationError, EnvironmentAuthorizationError]),
+});
+
+/** Moves a session this environment owns, with its code, to a linked environment. */
+const WsClaudeSessionsMoveRpc = Rpc.make(WS_METHODS.claudeSessionsMove, {
+  payload: ClaudeSessionMoveInput,
+  success: ClaudeSessionMoveResult,
+  error: Schema.Union([ClaudeSessionMoveError, EnvironmentAuthorizationError]),
+});
+
+/** The linked environments a session can move to: full-access links that take moves. */
+const WsClaudeSessionsMoveTargetsRpc = Rpc.make(WS_METHODS.claudeSessionsMoveTargets, {
+  payload: Schema.Struct({}),
+  success: Schema.Struct({ targets: Schema.Array(PeerLinkName) }),
+  error: Schema.Union([ClaudeSessionMoveError, EnvironmentAuthorizationError]),
 });
 
 const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
@@ -2586,6 +2607,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsClaudeSessionsListRemoteRpc,
   WsClaudeSessionsReplicationReportRpc,
   WsClaudeSessionsReplicateNowRpc,
+  WsClaudeSessionsMoveRpc,
+  WsClaudeSessionsMoveTargetsRpc,
   WsPeerLinksNamesRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,

@@ -303,6 +303,7 @@ export const make = Effect.gen(function* () {
       linkFence: true,
       linkThreadStream: true,
       claudeSessionReplication: true,
+      claudeSessionMove: true,
       linkClientPairing: true,
       linkPairingForLink: true,
       mcpApprovalCodes: true,
