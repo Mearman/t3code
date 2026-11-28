@@ -970,6 +970,7 @@
   "2605da0149cd15f1": "Compacting context",
   "39a82db18ca50c21": "Context compacted {before} → {after} tokens",
   "885ae08a2160a158": "Context compacted",
+  "38f2bf3794b38f19": "The message handed to the terminal's claude did not reach it: {reason}. Send it again, or fork.",
   "404da0acd158332d": "Sent beside another Claude Code process that has this session open. Its next prompt continues from before this reply, so `claude --resume` follows one side of the branch; fork or take over to keep one line.",
   "4d4981a1c5bd9728": "Running command",
   "a078225c5f197cd2": "Failed command",

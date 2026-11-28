@@ -970,6 +970,7 @@
   "2605da0149cd15f1": "Compactando el contexto",
   "39a82db18ca50c21": "Contexto compactado de {before} → {after} tokens",
   "885ae08a2160a158": "Contexto compactado",
+  "38f2bf3794b38f19": "El mensaje pasado al claude de la terminal no le llegó: {reason}. Envíalo de nuevo o bifurca.",
   "404da0acd158332d": "Enviado junto a otro proceso de Claude Code que tiene esta sesión abierta. Su siguiente prompt continúa desde antes de esta respuesta, así que `claude --resume` sigue un solo lado de la bifurcación; bifurca o toma el control para mantener una sola línea.",
   "4d4981a1c5bd9728": "Ejecutando comando",
   "a078225c5f197cd2": "Comando fallido",
