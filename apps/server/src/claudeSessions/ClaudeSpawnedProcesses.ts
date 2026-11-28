@@ -1,6 +1,8 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 import type * as PlatformError from "effect/PlatformError";
+import * as Semaphore from "effect/Semaphore";
 
 import type { ClaudeProcessRow, ClaudeProcessTableError } from "./ClaudeProcessTable.ts";
 
@@ -15,8 +17,47 @@ export class ClaudeSpawnedProcesses extends Context.Service<
     /** The recorded CLIs that write to the registry `sessionsDir`, through any path naming it. */
     readonly pids: (sessionsDir: string) => Effect.Effect<ReadonlyArray<number>>;
     readonly readProcesses: Effect.Effect<ReadonlyArray<ClaudeProcessRow>, ClaudeProcessTableError>;
+    /** Keeps T3 Code from starting a CLI on a session while a move copies its files. */
+    readonly moveFence: ClaudeSessionMoveFence;
   }
 >()("t3/claudeSessions/ClaudeSpawnedProcesses") {}
+
+/** Why T3 Code started no Claude process on a session a move holds. */
+export const CLAUDE_SESSION_MOVING_DETAIL =
+  "This thread is moving to another Claude account. Send again once the move has finished.";
+
+export interface ClaudeSessionMoveFence {
+  /** Runs `effect`, which may start a CLI on `sessionId`; none when a move holds the session. */
+  readonly unlessMoving: <A, E, R>(
+    sessionId: string,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<Option.Option<A>, E, R>;
+  /** Runs `effect` while no CLI may start on `sessionId`; none when a start is under way. */
+  readonly whileMoving: <A, E, R>(
+    sessionId: string,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<Option.Option<A>, E, R>;
+}
+
+// Any number of starts share a session's fence; a move takes every permit at once.
+const FENCE_PERMITS = 2 ** 30;
+
+export function makeClaudeSessionMoveFence(): ClaudeSessionMoveFence {
+  const fences = new Map<string, Semaphore.Semaphore>();
+  const fence = (sessionId: string) => {
+    const existing = fences.get(sessionId);
+    if (existing !== undefined) return existing;
+    const created = Semaphore.makeUnsafe(FENCE_PERMITS);
+    fences.set(sessionId, created);
+    return created;
+  };
+  return {
+    unlessMoving: (sessionId, effect) =>
+      Semaphore.withPermitsIfAvailable(fence(sessionId), 1)(effect),
+    whileMoving: (sessionId, effect) =>
+      Semaphore.withPermitsIfAvailable(fence(sessionId), FENCE_PERMITS)(effect),
+  };
+}
 
 export function makeClaudeSpawnedProcesses(
   readProcesses: ClaudeSpawnedProcesses["Service"]["readProcesses"],
@@ -25,6 +66,7 @@ export function makeClaudeSpawnedProcesses(
   const live = new Map<number, string>();
   // A registry not yet created has no real path.
   const canonical = (path: string) => realPath(path).pipe(Effect.orElseSucceed(() => path));
+  const moveFence = makeClaudeSessionMoveFence();
   return ClaudeSpawnedProcesses.of({
     register: (pid, sessionsDir) => {
       live.set(pid, sessionsDir);
@@ -43,6 +85,7 @@ export function makeClaudeSpawnedProcesses(
       return found;
     }),
     readProcesses,
+    moveFence,
   });
 }
 

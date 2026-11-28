@@ -13,6 +13,7 @@ import type {
   ServerProviderWorkspaceSnapshot,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
@@ -113,6 +114,11 @@ export interface ProviderNativeThreadStore {
   }) => Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError>;
   /** Fails while any process, T3 Code's own included, still holds `nativeId`. */
   readonly checkNativeThreadReleased: ProviderNativeThreadStore["checkNativeThreadFree"];
+  /** Runs `effect` while T3 Code may start no process on `nativeId`; none if one is starting. */
+  readonly whileNativeThreadFenced: <A, E, R>(
+    nativeId: string,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<Option.Option<A>, E, R>;
 }
 
 export interface ProviderContinuationIdentity {

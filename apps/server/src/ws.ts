@@ -33,7 +33,6 @@ import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
   AcpRegistryOperationError,
   CommandId,
-  isListedThreadLineage,
   authScopeResponse,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
@@ -2812,34 +2811,19 @@ export const layerWsRpc = (
         [WS_METHODS.providerAuthCancel]: (input) => providerAuth.cancel(input, currentSessionId),
         [WS_METHODS.providerAuthRemoveMethod]: (input) => providerAuth.removeMethod(input),
         [WS_METHODS.providerAuthLogout]: (input) => providerAuth.logout(input),
-        [WS_METHODS.claudeThreadMoveList]:
-          /* Request instrumentation already owns the span; keep this helper in that context. */
-          Effect.fnUntraced(function* (input) {
-            const read = (location: "active" | "archive") =>
-              orchestrationEngine.readShellSnapshot({ location }).pipe(Effect.flatten);
-            const snapshots = yield* Effect.all([read("active"), read("archive")]).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderSetupError({
-                    instanceId: input.instanceId,
-                    operation: "moveThreads",
-                    detail: "Could not list that account's threads.",
-                    cause,
-                  }),
-              ),
-            );
-            return {
-              threadIds: snapshots.flatMap((snapshot) =>
-                [...snapshot.threads, ...snapshot.archivedThreads]
-                  .filter(
-                    (thread) =>
-                      thread.modelSelection.instanceId === input.instanceId &&
-                      isListedThreadLineage(thread.lineage),
-                  )
-                  .map((thread) => thread.id),
-              ),
-            };
-          }),
+        [WS_METHODS.claudeThreadMoveList]: (input) =>
+          ClaudeAccountMove.listClaudeAccountThreads(orchestrationEngine, input.instanceId).pipe(
+            Effect.map((threadIds) => ({ threadIds })),
+            Effect.mapError(
+              (cause) =>
+                new ProviderSetupError({
+                  instanceId: input.instanceId,
+                  operation: "moveThreads",
+                  detail: "Could not list that account's threads.",
+                  cause,
+                }),
+            ),
+          ),
         [WS_METHODS.claudeThreadMove]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {

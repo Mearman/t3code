@@ -14,6 +14,10 @@ import { T3_CODE_ENTRYPOINT } from "../provider/Drivers/ClaudeHome.ts";
 import type { ClaudeBridge } from "./ClaudeBridge.ts";
 import type { ClaudeSecondWriterRuns } from "./ClaudeSecondWriterRuns.ts";
 import {
+  CLAUDE_SESSION_MOVING_DETAIL,
+  type ClaudeSessionMoveFence,
+} from "./ClaudeSpawnedProcesses.ts";
+import {
   indexClaudeProcessTable,
   type ClaudeProcessRow,
   type ClaudeProcessTableError,
@@ -342,6 +346,8 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   takeOver: ClaudeSessionTakeOver,
   secondWriters: Pick<ClaudeSecondWriterRuns["Service"], "record">,
   bridge: ClaudeSessionBridge,
+  /** Refuses any start on a session a move is copying, however the start was asked for. */
+  moveFence: ClaudeSessionMoveFence,
 ): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
   const refuseHeldSession = refuseHeldClaudeSession(runtime.driver, probe, processTableRequirement);
   const refuseHeld = (
@@ -594,21 +600,92 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
       ),
     );
   };
+  const movingRefusal = (providerThread: OrchestrationV2ProviderThread) =>
+    new ProviderAdapter.ProviderAdapterThreadInUseError({
+      driver: runtime.driver,
+      providerThreadId: providerThread.id,
+      detail: CLAUDE_SESSION_MOVING_DETAIL,
+      cause: CLAUDE_SESSION_MOVING_DETAIL,
+    });
+  /** Runs `effect` unless a move holds the session, failing with `refuse` when one does. */
+  const fenced = <A, E, R, F>(
+    providerThread: OrchestrationV2ProviderThread,
+    effect: Effect.Effect<A, E, R>,
+    refuse: () => F,
+  ): Effect.Effect<A, E | F, R> => {
+    const nativeId = providerThread.nativeThreadRef?.nativeId;
+    if (nativeId === undefined || nativeId === null) return effect;
+    return moveFence
+      .unlessMoving(nativeId, effect)
+      .pipe(Effect.flatMap((ran) => Effect.fromOption(ran).pipe(Effect.mapError(refuse))));
+  };
+  const unlessMoving = <A, E, R>(
+    providerThread: OrchestrationV2ProviderThread,
+    effect: Effect.Effect<A, E, R>,
+  ) => fenced(providerThread, effect, () => movingRefusal(providerThread));
+  const startUnlessMoving = <A, E, R>(
+    input: Pick<
+      ProviderAdapter.ProviderAdapterV2TurnInput,
+      "threadId" | "runId" | "providerThread"
+    >,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    fenced(
+      input.providerThread,
+      effect,
+      () =>
+        new ProviderAdapter.ProviderAdapterTurnStartError({
+          driver: runtime.driver,
+          threadId: input.threadId,
+          providerThreadId: input.providerThread.id,
+          runId: input.runId,
+          refusedBeforePrompt: true,
+          cause: movingRefusal(input.providerThread),
+        }),
+    );
   const { resumeTurn, compactThread, applyThreadTitle, mcpApps, mcpSignIn } = runtime;
   return {
     ...runtime,
     checkNativeThreadFree: refuseHeld,
     resumeThread: (input: Parameters<SessionRuntime["resumeThread"]>[0]) =>
-      refuseHeld(input.providerThread).pipe(Effect.andThen(() => runtime.resumeThread(input))),
+      refuseHeld(input.providerThread).pipe(
+        Effect.andThen(() =>
+          unlessMoving(
+            input.providerThread,
+            Effect.suspend(() => runtime.resumeThread(input)),
+          ),
+        ),
+      ),
     startTurn: (input: ProviderAdapter.ProviderAdapterV2TurnInput) =>
-      refuseBeforePrompt(input).pipe(Effect.andThen(() => runtime.startTurn(input))),
+      refuseBeforePrompt(input).pipe(
+        Effect.andThen(() =>
+          startUnlessMoving(
+            input,
+            Effect.suspend(() => runtime.startTurn(input)),
+          ),
+        ),
+      ),
     steerTurn: (input: ProviderAdapter.ProviderAdapterV2SteerInput) =>
-      refuseHeld(input.providerThread).pipe(Effect.andThen(() => runtime.steerTurn(input))),
+      refuseHeld(input.providerThread).pipe(
+        Effect.andThen(() =>
+          unlessMoving(
+            input.providerThread,
+            Effect.suspend(() => runtime.steerTurn(input)),
+          ),
+        ),
+      ),
     ...(resumeTurn === undefined
       ? {}
       : {
           resumeTurn: (input: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
-            refuseBeforePrompt(input).pipe(Effect.andThen(() => resumeTurn(input))),
+            refuseBeforePrompt(input).pipe(
+              Effect.andThen(() =>
+                startUnlessMoving(
+                  input,
+                  Effect.suspend(() => resumeTurn(input)),
+                ),
+              ),
+            ),
         }),
     ...(compactThread === undefined
       ? {}
@@ -619,7 +696,14 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
               threadId: input.threadId,
               runId: input.runId,
               providerThread: input.providerThread,
-            }).pipe(Effect.andThen(() => compactThread(input))),
+            }).pipe(
+              Effect.andThen(() =>
+                startUnlessMoving(
+                  input,
+                  Effect.suspend(() => compactThread(input)),
+                ),
+              ),
+            ),
         }),
     // With nothing live the adapter keeps the title for the next turn, as it does here when held.
     ...(applyThreadTitle === undefined
@@ -672,6 +756,7 @@ export function gateHeldClaudeSessions(
   takeOver: ClaudeSessionTakeOver,
   secondWriters: Pick<ClaudeSecondWriterRuns["Service"], "record">,
   bridge: ClaudeSessionBridge,
+  moveFence: ClaudeSessionMoveFence,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     ...adapter,
@@ -687,6 +772,7 @@ export function gateHeldClaudeSessions(
               takeOver,
               secondWriters,
               bridge,
+              moveFence,
             ),
           ),
         ),

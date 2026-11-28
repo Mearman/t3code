@@ -292,8 +292,7 @@ export const make = Effect.gen(function* () {
       serverReleaseRepository: CLI_RELEASE_REPOSITORY,
       claudeManagedAccounts: true,
       claudeThreadAccounts: true,
-      // A move between separate histories links files, which Windows grants only with elevation.
-      ...(hostPlatform === "win32" ? {} : { claudeAccountMoves: true }),
+      claudeAccountMoves: true,
       ...(serverInstallation === null ? {} : { serverInstallation }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? { serverSelfUpdateProgress: true }
