@@ -3799,9 +3799,7 @@ const make = Effect.gen(function* () {
           mode,
           ...(input.freshContext ? { freshContext: true } : {}),
           ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
-          ...(input.heldSessionSend === undefined
-            ? {}
-            : { heldSessionSend: input.heldSessionSend }),
+          ...(input.forkIfHeld === true ? { heldSessionSend: "fork" as const } : {}),
           createdBy: "agent",
           creationSource: "mcp",
         })

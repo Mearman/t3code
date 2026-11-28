@@ -1040,10 +1040,8 @@ const threadSendCommand = Command.make("send", {
               message,
               mode: "queue",
               ...output,
-              ...Option.match(flags.heldSession, {
-                onNone: () => ({}),
-                onSome: (heldSessionSend) => ({ heldSessionSend }),
-              }),
+              // `ask` is what an agent's send does when it names nothing.
+              ...(Option.getOrUndefined(flags.heldSession) === "fork" ? { forkIfHeld: true } : {}),
             },
             OrchestratorMcpThreadSendResult,
           );
