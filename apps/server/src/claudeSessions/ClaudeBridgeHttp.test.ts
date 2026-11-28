@@ -9,15 +9,16 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 
 import { ClaudeBridge, layer as bridgeLayer } from "./ClaudeBridge.ts";
 import { answerClaudeBridgePoll, handleClaudeBridgePoll } from "./ClaudeBridgeHttp.ts";
 
 const bridge = bridgeLayer.pipe(Layer.provide(SecureRandom.layerWebCrypto));
-const body = Effect.succeed(
-  Option.some<unknown>({ schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION, sessionId: "a", acks: [] }),
-);
+const body = Effect.succeedSome<unknown>({
+  schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
+  sessionId: "a",
+  acks: [],
+});
 
 it.layer(NodeServices.layer)("ClaudeBridgeHttp", (it) => {
   it.effect("answers with the proof only a same-host caller holding the token", () =>
