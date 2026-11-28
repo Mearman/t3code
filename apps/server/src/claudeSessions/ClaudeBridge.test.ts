@@ -183,7 +183,13 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
       const directory = path.join(home, CLAUDE_BRIDGE_CONNECTION_DIRECTORY);
       yield* fileSystem.makeDirectory(directory, { mode: 0o755 });
       const connectionOf = (pid: number) =>
-        JSON.stringify({ schemaVersion: 1, url: "http://127.0.0.1:1", token: "t", proof: "p", pid });
+        JSON.stringify({
+          schemaVersion: 1,
+          url: "http://127.0.0.1:1",
+          token: "t",
+          proof: "p",
+          pid,
+        });
       // No process has the largest pid, so this server stopped without removing its file.
       yield* fileSystem.writeFileString(path.join(directory, "dead.json"), connectionOf(2 ** 22));
       yield* fileSystem.writeFileString(path.join(directory, "live.json"), connectionOf(1));

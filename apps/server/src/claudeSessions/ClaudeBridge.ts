@@ -295,10 +295,9 @@ const make = Effect.gen(function* () {
   const pruneStale = Effect.fn("ClaudeBridge.pruneStale")(function* (home: string) {
     for (const name of yield* fileSystem.readDirectory(directoryOf(home))) {
       const file = path.join(directoryOf(home), name);
-      const read = yield* fileSystem.readFileString(file).pipe(
-        Effect.flatMap(decodeConnection),
-        Effect.option,
-      );
+      const read = yield* fileSystem
+        .readFileString(file)
+        .pipe(Effect.flatMap(decodeConnection), Effect.option);
       if (read._tag === "Some" && read.value.pid !== process.pid && !isAlive(read.value.pid)) {
         yield* fileSystem.remove(file).pipe(Effect.ignore);
       }

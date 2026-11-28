@@ -7,15 +7,19 @@ import {
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
-import { HttpServerResponse } from "effect/http";
-import * as HttpRouter from "effect/http/HttpRouter";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import { ClaudeBridge, layer as bridgeLayer } from "./ClaudeBridge.ts";
-import { answerClaudeBridgePoll, layer as routeLayer } from "./ClaudeBridgeHttp.ts";
+import { answerClaudeBridgePoll, handleClaudeBridgePoll } from "./ClaudeBridgeHttp.ts";
 
 const bridge = bridgeLayer.pipe(Layer.provide(SecureRandom.layerWebCrypto));
-const body = Effect.succeed({ schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION, sessionId: "a", acks: [] });
+const body = Effect.succeed({
+  schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
+  sessionId: "a",
+  acks: [],
+});
 
 it.layer(NodeServices.layer)("ClaudeBridgeHttp", (it) => {
   it.effect("answers with the proof only a same-host caller holding the token", () =>
@@ -45,21 +49,19 @@ it.layer(NodeServices.layer)("ClaudeBridgeHttp", (it) => {
   it.effect("refuses a request that did not come straight from this host", () =>
     Effect.gen(function* () {
       const { token } = yield* ClaudeBridge;
-      const { handler, dispose } = HttpRouter.toWebHandler(
-        routeLayer.pipe(Layer.provide(Layer.succeed(ClaudeBridge, yield* ClaudeBridge))),
-        { disableLogger: true },
-      );
       // A web request carries no socket, as one through a proxy or a browser shows none to trust.
-      const response = yield* Effect.promise(() =>
-        handler(
-          new Request(`http://127.0.0.1${CLAUDE_BRIDGE_ROUTE_PREFIX}/poll`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ schemaVersion: 1, sessionId: "a", acks: [] }),
-          }),
+      const request = HttpServerRequest.fromWeb(
+        new Request(`http://127.0.0.1${CLAUDE_BRIDGE_ROUTE_PREFIX}/poll`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ schemaVersion: 1, sessionId: "a", acks: [] }),
+        }),
+      );
+      const response = HttpServerResponse.toWeb(
+        yield* handleClaudeBridgePoll.pipe(
+          Effect.provideService(HttpServerRequest.HttpServerRequest, request),
         ),
       );
-      yield* Effect.promise(dispose);
 
       assert.strictEqual(response.status, 403);
       assert.isNull(response.headers.get(CLAUDE_BRIDGE_PROOF_HEADER));

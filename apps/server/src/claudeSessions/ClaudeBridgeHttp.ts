@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import * as Mac from "effect/crypto/Mac";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Schema from "effect/Schema";
 
@@ -30,15 +31,19 @@ function presentsToken(authorization: string | undefined, token: string): boolea
 export const answerClaudeBridgePoll = Effect.fn("ClaudeBridgeHttp.answerPoll")(function* (input: {
   readonly sameHost: boolean;
   readonly authorization: string | undefined;
-  readonly body: Effect.Effect<unknown, unknown>;
+  /** The request body as JSON, or none when it is not JSON. */
+  readonly body: Effect.Effect<Option.Option<unknown>>;
 }) {
   const bridge = yield* ClaudeBridge;
   if (!input.sameHost || !presentsToken(input.authorization, bridge.token)) {
     return HttpServerResponse.empty({ status: 403, headers: NO_STORE });
   }
   const headers = { ...NO_STORE, [CLAUDE_BRIDGE_PROOF_HEADER]: bridge.proof };
-  const poll = yield* input.body.pipe(Effect.flatMap(decodePoll), Effect.option);
-  if (poll._tag === "None") return HttpServerResponse.empty({ status: 400, headers });
+  const json = yield* input.body;
+  const poll = Option.isNone(json)
+    ? Option.none()
+    : yield* decodePoll(json.value).pipe(Effect.option);
+  if (Option.isNone(poll)) return HttpServerResponse.empty({ status: 400, headers });
   const answer = yield* bridge.poll(poll.value);
   if (answer._tag === "refused") {
     return yield* HttpServerResponse.json(
@@ -52,15 +57,18 @@ export const answerClaudeBridgePoll = Effect.fn("ClaudeBridgeHttp.answerPoll")(f
   );
 });
 
+/** The route's handler, reading the request it answers. */
+export const handleClaudeBridgePoll = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  return yield* answerClaudeBridgePoll({
+    sameHost: isDirectSameHostRequest(request),
+    authorization: request.headers["authorization"],
+    body: request.json.pipe(Effect.option),
+  });
+});
+
 export const layer = HttpRouter.add(
   "POST",
   `${CLAUDE_BRIDGE_ROUTE_PREFIX}/poll`,
-  Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    return yield* answerClaudeBridgePoll({
-      sameHost: isDirectSameHostRequest(request),
-      authorization: request.headers["authorization"],
-      body: request.json,
-    });
-  }),
+  handleClaudeBridgePoll,
 );
