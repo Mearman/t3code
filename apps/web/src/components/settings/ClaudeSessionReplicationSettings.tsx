@@ -13,16 +13,19 @@ import { useState } from "react";
 import { openLinkedThreadRead } from "../../lib/sideChatPane";
 import { claudeReplicationEnvironment } from "../../state/claudeReplication";
 import { peerLinkEnvironment } from "../../state/peerLinks";
+import { useDebouncedValue } from "../../state/queries";
 import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
+import { Input } from "../ui/input";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
 
 const DEFAULTS = DEFAULT_SERVER_SETTINGS.claudeSessionSync.replication;
+const SEARCH_DEBOUNCE_MS = 300;
 
 function parseNonNegativeInt(text: string): number | undefined {
   const trimmed = text.trim();
@@ -250,7 +253,7 @@ function ReplicationReport(props: { readonly report: ClaudeReplicationReport }) 
 }
 
 /** Each linked machine's own sessions, opened read-only through the link without a copy. */
-function LinkedSessions(props: { readonly environmentId: EnvironmentId }) {
+export function LinkedSessions(props: { readonly environmentId: EnvironmentId }) {
   const gt = useGT();
   const navigate = useNavigate();
   const { environmentId } = props;
@@ -258,12 +261,14 @@ function LinkedSessions(props: { readonly environmentId: EnvironmentId }) {
   const [selected, setSelected] = useState<EnvironmentId | null>(null);
   const [query, setQuery] = useState("");
   const linkId = selected ?? links.data?.links[0]?.environmentId ?? null;
+  // Each listing is a call to the linked machine, so typing settles before one is made.
+  const searched = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
   const sessions = useEnvironmentQuery(
     linkId === null
       ? null
       : claudeReplicationEnvironment.remoteSessions({
           environmentId,
-          input: { environmentId: linkId, ...(query === "" ? {} : { query }) },
+          input: { environmentId: linkId, ...(searched === "" ? {} : { query: searched }) },
         }),
   );
   const linkLabel = links.data?.links.find((link) => link.environmentId === linkId)?.label ?? "";
@@ -284,11 +289,12 @@ function LinkedSessions(props: { readonly environmentId: EnvironmentId }) {
             {link.label}
           </Button>
         ))}
-        <DraftInput
+        <Input
           size="sm"
+          type="search"
           className="w-full sm:w-56"
           value={query}
-          onCommit={setQuery}
+          onChange={(event) => setQuery(event.currentTarget.value)}
           placeholder={gt("Search title or folder")}
           aria-label={gt("Search sessions on the linked machine")}
         />
