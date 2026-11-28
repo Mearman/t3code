@@ -165,6 +165,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   claudeThreadAccounts: Schema.optionalKey(Schema.Boolean),
   /** Serves `provider.claude.thread.move`; hide Move to account where it is absent. */
   claudeAccountMoves: Schema.optionalKey(Schema.Boolean),
+  /** Moves go only between accounts that share history (no symbolic links on the host). */
+  claudeAccountMovesSharedHistoryOnly: Schema.optionalKey(Schema.Boolean),
   /** The repository whose releases this server updates from; absent on older servers. */
   serverReleaseRepository: Schema.optionalKey(ReleaseRepository),
   /** Server answers server.getNpmRelease using its configured npm registry. */

@@ -293,6 +293,8 @@ export const make = Effect.gen(function* () {
       claudeManagedAccounts: true,
       claudeThreadAccounts: true,
       claudeAccountMoves: true,
+      // Separate histories are linked, which Windows grants only with elevation.
+      ...(hostPlatform === "win32" ? { claudeAccountMovesSharedHistoryOnly: true } : {}),
       ...(serverInstallation === null ? {} : { serverInstallation }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? { serverSelfUpdateProgress: true }

@@ -225,6 +225,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
     }),
   );
   it.effect.each([
+    { platform: "darwin", sharedOnly: undefined },
+    { platform: "linux", sharedOnly: undefined },
+    { platform: "win32", sharedOnly: true },
+  ] as const)("advertises Claude account moves on $platform", (host) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-environment-moves-test-",
+      });
+      const descriptor = yield* Effect.gen(function* () {
+        const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+        return yield* serverEnvironment.getDescriptor;
+      }).pipe(
+        Effect.provide(layerServerEnvironment(baseDir)),
+        Effect.provideService(HostProcess.Platform, host.platform),
+      );
+      // Same-history moves need no links, so every host offers moves.
+      expect(descriptor.capabilities.claudeAccountMoves).toBe(true);
+      expect(descriptor.capabilities.claudeAccountMovesSharedHistoryOnly).toBe(host.sharedOnly);
+    }),
+  );
+  it.effect.each([
     { name: "missing", content: undefined },
     { name: "empty", content: "" },
     { name: "whitespace-only", content: " \t\n" },

@@ -280,15 +280,21 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
     source.continuationIdentity.continuationKey === target.continuationIdentity.continuationKey;
   // The selection is read again inside the hold: one changed meanwhile (a model, an effort, or a
   // move that got there first) is kept, and a thread no longer on the source is left alone.
+  // The session is read again too: a rollback can give the thread a new one, which this move
+  // has not located or compacted.
   const currentSelection = Effect.gen(function* () {
     const current = yield* deps.orchestration.getThreadProjection(threadId);
-    return current.thread.modelSelection.instanceId === sourceId
+    const currentNativeId =
+      current.providerThreads.find(
+        (candidate) => candidate.id === current.thread.activeProviderThreadId,
+      )?.nativeThreadRef?.nativeId ?? undefined;
+    return current.thread.modelSelection.instanceId === sourceId && currentNativeId === nativeId
       ? current.thread.modelSelection
       : undefined;
   });
   const movedMeanwhile = outcome("busy", {
     detail:
-      "The thread changed account while this move waited. Move it again if you still want to.",
+      "The thread changed account or session while this move waited. Move it again if you still want to.",
   });
   const setSelection = Effect.fn("ClaudeAccountMove.setSelection")(function* (
     modelSelection: ClaudeAccountMoveThread["thread"]["modelSelection"],
@@ -365,6 +371,13 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
       Effect.gen(function* () {
         const selection = yield* currentSelection;
         if (selection === undefined) return { refused: movedMeanwhile } as const;
+        // A run that started just before the fence is refused before its session is torn down.
+        const working = yield* refusal(
+          yield* deps.orchestration.getThreadProjection(threadId),
+          source,
+        );
+        if (working !== undefined)
+          return { refused: outcome(working.status, { detail: working.detail }) } as const;
         for (const session of (yield* deps.orchestration.getThreadProjection(threadId))
           .providerSessions) {
           if (session.providerInstanceId !== sourceId || session.status === "stopped") continue;
@@ -408,7 +421,9 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
               }),
             );
             if (files._tag === "Failure") return files;
-            const selected = yield* Effect.result(setSelection(selection));
+            // A model chosen while the files copied is kept; the account cannot change meanwhile.
+            const latest = yield* currentSelection;
+            const selected = yield* Effect.result(setSelection(latest ?? selection));
             if (selected._tag === "Success") {
               yield* files.success.commit;
               return files;

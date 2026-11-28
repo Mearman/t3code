@@ -8866,6 +8866,84 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("does not retry a failed setup on an account the thread has since left", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-layer-retry-moved-thread");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("retry-moved-create"),
+        threadId,
+        projectId: ProjectId.make("retry-moved-project"),
+        title: "Retry after a move",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("retry-moved-message"),
+        threadId,
+        messageId: MessageId.make("retry-moved-message"),
+        text: "Prepare my workspace.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: {
+          type: "defer_start",
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+        },
+      });
+      const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      yield* orchestrator.dispatch({
+        type: "prepared-run.fail",
+        commandId: CommandId.make("retry-moved-fail"),
+        threadId,
+        runId: run.id,
+        failure: {
+          class: "validation_error",
+          message: "Worktree setup failed",
+          code: null,
+          retryable: true,
+        },
+      });
+      const retry = (id: string) =>
+        orchestrator.dispatch({
+          type: "prepared-run.retry",
+          commandId: CommandId.make(id),
+          threadId,
+          runId: run.id,
+        });
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("retry-moved-select"),
+        threadId,
+        modelSelection: { ...modelSelection, instanceId: alternateInstanceId },
+      });
+      const refused = yield* retry("retry-moved-retry").pipe(Effect.flip);
+      assert.equal(refused._tag, "OrchestratorDispatchError");
+      assert.include(String(refused.cause), "now uses another account");
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(after.runs.find((candidate) => candidate.id === run.id)?.status, "failed");
+
+      // Back on the run's own account, the same setup can be retried.
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("retry-moved-select-back"),
+        threadId,
+        modelSelection,
+      });
+      yield* retry("retry-moved-retry-back");
+      const retried = yield* orchestrator.getThreadProjection(threadId);
+      assert.notEqual(retried.runs.find((candidate) => candidate.id === run.id)?.status, "failed");
+    }),
+  );
+
   it.effect("cancels preparing work on archive and keeps it cancelled through replay", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
