@@ -3463,6 +3463,26 @@
     }
   ],
   "1b1131295f62c44c": "O processo do provedor não existe mais. Interrompa ou reinicie a thread filha para responder.",
+  "efac0e9dbb4b2100": [
+    "Uma cópia de uma sessão que pertence a outra máquina. Essa máquina não responde desde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", então pode ter linhas mais recentes; enviar aqui primeiro move a sessão para esta máquina."
+  ],
+  "c98bb5c47f908908": [
+    "Uma cópia de uma sessão que pertence a outra máquina, atualizada em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Enviar aqui primeiro move a sessão para esta máquina."
+  ],
+  "cfcc829832d9bdf0": "Cópia desatualizada",
+  "ffd3cdd328e21c9d": "Cópia",
   "da66023072c473d1": [
     "Não foi possível carregar a saída: ",
     {
@@ -7938,6 +7958,49 @@
       "v": "v"
     }
   ],
+  "844c32db6fd476e0": "Manter sessões fixadas de máquinas vinculadas",
+  "1ffad146a191b5be": "Copiar sessões ativas nos últimos (dias)",
+  "14c344353bbaebae": "Também copiar sessões alteradas dentro deste número de dias. 0 desativa.",
+  "aae7e17a73bcc94f": "Copiar todas as sessões das máquinas vinculadas. As cópias contêm tudo o que suas conversas fizeram, incluindo segredos e material de clientes.",
+  "62a64590137da3c1": "Manter todas as sessões de máquinas vinculadas",
+  "84bf7b8a3e54efaa": "Manter livre para cópias (GB)",
+  "8d211c657d3e02cf": "Uma sessão não é copiada enquanto copiá-la deixaria menos espaço livre do que isso no disco que contém a pasta do Claude.",
+  "302d87882761c40f": "Redefinir o espaço livre para cópias ao padrão",
+  "f05fad95eac949e7": "Cópias de máquinas vinculadas",
+  "b71858f60946d0ad": "Ainda não verificado desde que este servidor iniciou.",
+  "ed6d25e478d8e2b0": "Copiando…",
+  "f8a2e8b1fded8548": "Copiar agora",
+  "228022b34db63655": "verificado",
+  "c083303e13d6d989": "não compartilha sessões",
+  "ef0c2a8c1ab7b88e": "recusado",
+  "176b736661a0af3a": "não respondeu; suas cópias estão marcadas como desatualizadas",
+  "13c4766a5b0c7ac1": "desatualizada desde {time}, pertence a {owner}",
+  "6140fe53442d425d": "atualizada em {time}, pertence a {owner}",
+  "aaa04f7e7c6d2227": "linhas adicionadas aqui mantidas como {sessions}",
+  "fc0555e901deafd4": "Pesquisar título ou pasta",
+  "7bbf4d6c9eae88c0": "Pesquisar sessões na máquina vinculada",
+  "f56b0c9e19a5fb22": [
+    "Copiar cada sessão cuja conversa ou projeto esteja fixado em uma máquina vinculada com acesso total. Uma cópia inclui backups dos arquivos que editou, inclusive .env, e é retomada aqui com um simples",
+    " ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "claude --resume"
+    },
+    "."
+  ],
+  "9890d5a89e23e8d9": [
+    "Última verificação: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "56d09bbb0cd3a7d8": "Nenhuma cópia nesta máquina.",
+  "a6406061a28035f1": "Não copiadas",
+  "3c0fb2338f009c09": "Sessões em máquinas vinculadas",
   "d0e747ae0c4f68a5": "Não foi possível instalar o t3",
   "ba3ac338f36cba74": "Não foi possível remover o t3",
   "9c942b53b58119b8": "Não foi possível adicionar o t3 ao PATH",
@@ -13061,6 +13124,8 @@
   "a863c1fb1edfc155": "Ler em segundo plano as sessões não abertas",
   "ac9f7d647fde336a": "claude code terminal sessões transcrições importar sincronizar histórico",
   "c6ca82dcbd99e23b": "claude code sessões recuperar restaurar excluída conversa",
+  "82d1d9b107471d5e": "claude code sessões replicar cópia sincronizar máquinas fixadas retomar",
+  "e27fd544c642d3b0": "claude code sessões replicar cópia sincronizar máquinas todas",
   "d7bd140afc367aef": "claude code sessões espaço disco armazenamento limite",
   "e2ba25992774347f": "Pastas do Claude adicionais",
   "f04c3d73e1bc1bb1": "claude code sessões histórico preenchimento ocioso",

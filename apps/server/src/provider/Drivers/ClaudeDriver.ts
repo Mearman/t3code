@@ -16,9 +16,12 @@ import { ChildProcessSpawner } from "effect/process";
 
 import { claudeProcessTableRequirement } from "../../claudeSessions/ClaudeProcessTable.ts";
 import { ClaudeSecondWriterRuns } from "../../claudeSessions/ClaudeSecondWriterRuns.ts";
+import { ClaudeSessionOwnershipGate } from "../../claudeSessions/ClaudeSessionOwnershipGate.ts";
 import { ClaudeSpawnedProcesses } from "../../claudeSessions/ClaudeSpawnedProcesses.ts";
 import {
   ClaudeTakeOverSignalError,
+  type ClaudeSessionHold,
+  type ClaudeSessionHoldProbe,
   gateHeldClaudeSessions,
   probeClaudeSessionHold,
 } from "../../claudeSessions/ClaudeSessionSendGate.ts";
@@ -97,6 +100,7 @@ export type ClaudeDriverEnv =
   | ClaudeAdapterV2DriverEnv
   | ClaudeSecondWriterRuns
   | ClaudeSpawnedProcesses
+  | ClaudeSessionOwnershipGate
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
   | ResetCreditCoordinator.ResetCreditCoordinator
@@ -231,20 +235,28 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const secondWriters = yield* ClaudeSecondWriterRuns;
     const platform = yield* HostProcess.Platform;
     const sessionsDir = path.join(configDir, "sessions");
+    const ownership = yield* ClaudeSessionOwnershipGate;
+    // A copy owned elsewhere is claimed first, so a resume here never forks history silently.
+    const probe: ClaudeSessionHoldProbe = (sessionId) =>
+      Effect.flatMap(ownership.check(sessionId), (refusal) =>
+        refusal !== undefined
+          ? Effect.succeed<ClaudeSessionHold>({ _tag: "replica", message: refusal.message })
+          : probeClaudeSessionHold({
+              sessionsDir,
+              sessionId,
+              ownRootPids: spawnedProcesses.pids(sessionsDir),
+              readProcesses: spawnedProcesses.readProcesses,
+              // Windows has no `ps lstart` to match `procStart` against; `startedAt` is checked
+              // instead.
+              matchStartTime: platform !== "win32",
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            ),
+      );
     const sendGatedAdapter = gateHeldClaudeSessions(
       orchestrationAdapter,
-      (sessionId) =>
-        probeClaudeSessionHold({
-          sessionsDir,
-          sessionId,
-          ownRootPids: spawnedProcesses.pids(sessionsDir),
-          readProcesses: spawnedProcesses.readProcesses,
-          // Windows has no `ps lstart` to match `procStart` against; `startedAt` is checked instead.
-          matchStartTime: platform !== "win32",
-        }).pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-        ),
+      probe,
       claudeProcessTableRequirement(platform),
       {
         terminate: (pid) =>

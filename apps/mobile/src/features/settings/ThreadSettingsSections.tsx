@@ -23,6 +23,7 @@ import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/prefer
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
+import { ClaudeReplicationSection } from "./ClaudeReplicationSection";
 import { ClaudeSessionSyncSection } from "./ClaudeSessionSyncSection";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
@@ -167,6 +168,21 @@ export function AutoSettleSettingsRows(props: {
           write={props.write}
         />
       ) : null}
+      {!projectSelected && referenceSettings.claudeSessionSync.enabled
+        ? displayTargets
+            .filter(
+              (target) =>
+                target.environment.serverConfig?.environment.capabilities
+                  .claudeSessionReplication === true,
+            )
+            .map((target) => (
+              <ClaudeReplicationSection
+                key={target.environment.environmentId}
+                environmentId={target.environment.environmentId}
+                label={target.environment.label}
+              />
+            ))
+        : null}
       <SettingsSection title={gt("Auto-settle")}>
         <SettingsSwitchRow
           icon="arrow.triangle.branch"

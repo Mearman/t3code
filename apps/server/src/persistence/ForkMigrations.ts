@@ -4,6 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import ForkMigration0001 from "./ForkMigrations/001_ClaudeSessionSyncState.ts";
 import ForkMigration0002 from "./ForkMigrations/002_ClaudeSessionSyncProgress.ts";
+import ForkMigration0003 from "./ForkMigrations/003_ClaudeSessionReplicas.ts";
 import { claudeNativeIdIndex } from "./ForkIndexes.ts";
 import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
 
@@ -13,6 +14,7 @@ const FORK_MIGRATIONS_TABLE = "fork_migrations";
 const forkMigrationEntries = [
   [1, "ClaudeSessionSyncState", ForkMigration0001],
   [2, "ClaudeSessionSyncProgress", ForkMigration0002],
+  [3, "ClaudeSessionReplicas", ForkMigration0003],
 ] as const;
 
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);

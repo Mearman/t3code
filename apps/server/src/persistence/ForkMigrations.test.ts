@@ -57,6 +57,9 @@ describe("runForkMigrations", () => {
       assert.strictEqual(Math.max(...upstreamBefore.map(([id]) => id)), latestUpstreamId);
       assert.deepStrictEqual(yield* schemaNames, [
         "fork_claude_session_lines",
+        "fork_claude_session_places",
+        "fork_claude_session_replicas",
+        "fork_claude_session_replicas_owner_idx",
         "fork_claude_session_sync_state",
         "fork_claude_session_sync_state_hydration_idx",
         "fork_claude_session_sync_state_thread_idx",

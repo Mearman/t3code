@@ -320,6 +320,8 @@ export function threadListV2RowAccessibilityLabel(
     readonly snoozeWakeLabel: string | undefined;
     readonly providerNameLabel: string | null;
     readonly fromTerminal: boolean;
+    /** Whether the row's Claude session is a copy another machine owns, and if it is current. */
+    readonly replica: "current" | "stale" | null;
     readonly hasQueuedMessages: boolean;
     readonly regeneratingTitle: boolean;
   },
@@ -337,6 +339,11 @@ export function threadListV2RowAccessibilityLabel(
     meta,
     input.providerNameLabel,
     input.fromTerminal ? resolve(msg("from a terminal")) : null,
+    input.replica === "current"
+      ? resolve(msg("copy of a session another machine owns"))
+      : input.replica === "stale"
+        ? resolve(msg("stale copy of a session another machine owns"))
+        : null,
     input.hasQueuedMessages ? resolve(msg("messages queued to send")) : null,
     input.regeneratingTitle ? resolve(msg("regenerating title")) : null,
   ]

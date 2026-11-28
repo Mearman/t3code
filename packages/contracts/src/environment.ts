@@ -237,6 +237,11 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   issueLinkedThreads: Schema.optionalKey(Schema.Boolean),
   /** Keeps more than one account per standalone issue tracker; older servers keep one. */
   issueTrackerAccounts: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Serves the Claude Code sessions it owns to full-access links (`PEER_LINK_CLAUDE_SESSIONS_*`)
+   * and copies theirs by its replication rules. Absent on servers that do neither.
+   */
+  claudeSessionReplication: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

@@ -3463,6 +3463,26 @@
     }
   ],
   "1b1131295f62c44c": "Leverantörsprocessen finns inte längre. Avbryt eller starta om undertråden för att svara.",
+  "efac0e9dbb4b2100": [
+    "En kopia av en session som en annan dator äger. Den datorn har inte svarat sedan ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", så den kan ha nyare rader; att skicka här flyttar först sessionen till den här datorn."
+  ],
+  "c98bb5c47f908908": [
+    "En kopia av en session som en annan dator äger, aktuell ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Att skicka här flyttar först sessionen till den här datorn."
+  ],
+  "cfcc829832d9bdf0": "Inaktuell kopia",
+  "ffd3cdd328e21c9d": "Kopia",
   "da66023072c473d1": [
     "Kunde inte läsa in utdata: ",
     {
@@ -7944,6 +7964,49 @@
       "v": "v"
     }
   ],
+  "844c32db6fd476e0": "Behåll fästa sessioner från länkade datorer",
+  "1ffad146a191b5be": "Kopiera sessioner aktiva inom (dagar)",
+  "14c344353bbaebae": "Kopiera även sessioner som ändrats inom så här många dagar. 0 stänger av det.",
+  "aae7e17a73bcc94f": "Kopiera varje session som länkade datorer äger. Kopior innehåller allt deras konversationer gjorde, även hemligheter och kundmaterial.",
+  "62a64590137da3c1": "Behåll alla sessioner från länkade datorer",
+  "84bf7b8a3e54efaa": "Håll ledigt för kopior (GB)",
+  "8d211c657d3e02cf": "En session kopieras inte så länge kopieringen skulle lämna mindre ledigt utrymme än så här på disken med Claude-hemmet.",
+  "302d87882761c40f": "Återställ ledigt utrymme för kopior till standard",
+  "f05fad95eac949e7": "Kopior från länkade datorer",
+  "b71858f60946d0ad": "Inte kontrollerat än sedan servern startade.",
+  "ed6d25e478d8e2b0": "Kopierar…",
+  "f8a2e8b1fded8548": "Kopiera nu",
+  "228022b34db63655": "kontrollerad",
+  "c083303e13d6d989": "delar inte sessioner",
+  "ef0c2a8c1ab7b88e": "nekad",
+  "176b736661a0af3a": "svarade inte; dess kopior markeras som inaktuella",
+  "13c4766a5b0c7ac1": "inaktuell sedan {time}, ägs av {owner}",
+  "6140fe53442d425d": "aktuell {time}, ägs av {owner}",
+  "aaa04f7e7c6d2227": "rader tillagda här sparade som {sessions}",
+  "fc0555e901deafd4": "Sök titel eller mapp",
+  "7bbf4d6c9eae88c0": "Sök sessioner på den länkade datorn",
+  "f56b0c9e19a5fb22": [
+    "Kopiera varje session vars tråd eller projekt är fäst på en dator som är länkad med full åtkomst. En kopia innehåller säkerhetskopior av filerna den redigerade, även .env, och återupptas här med vanligt",
+    " ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "claude --resume"
+    },
+    "."
+  ],
+  "9890d5a89e23e8d9": [
+    "Senast kontrollerad ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "56d09bbb0cd3a7d8": "Inga kopior på den här datorn.",
+  "a6406061a28035f1": "Inte kopierade",
+  "3c0fb2338f009c09": "Sessioner på länkade datorer",
   "d0e747ae0c4f68a5": "Kunde inte installera t3",
   "ba3ac338f36cba74": "Kunde inte ta bort t3",
   "9c942b53b58119b8": "Kunde inte lägga till t3 i PATH",
@@ -13068,6 +13131,8 @@
   "a863c1fb1edfc155": "Läs oöppnade sessioner i bakgrunden",
   "ac9f7d647fde336a": "claude code terminal sessioner utskrifter import synkronisera historik",
   "c6ca82dcbd99e23b": "claude code sessioner återställ borttagen tråd",
+  "82d1d9b107471d5e": "claude code sessioner replikera kopia synkronisera datorer fästa återuppta",
+  "e27fd544c642d3b0": "claude code sessioner replikera kopia synkronisera datorer alla",
   "d7bd140afc367aef": "claude code sessioner diskutrymme lagring gräns",
   "e2ba25992774347f": "Ytterligare Claude-mappar",
   "f04c3d73e1bc1bb1": "claude code sessioner historik fyll inaktiv",

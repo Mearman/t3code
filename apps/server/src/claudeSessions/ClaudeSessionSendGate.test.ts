@@ -1026,6 +1026,24 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 
+  it.effect("writes nothing to a copy another environment owns and says why", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const { runtime, calls } = makeGate({
+        hold: { _tag: "replica", message: "This session is a copy of one Box owns." },
+      });
+
+      const refused = yield* refusals(writes(runtime, providerThread(now), now));
+
+      expect(calls).toEqual([]);
+      for (const [name, refusal] of refused) expectInUse(name, refusal, true);
+      const { message } = yield* Effect.flip(
+        runtime.resumeThread({ providerThread: providerThread(now) }),
+      );
+      expect(message).toContain("a copy of one Box owns");
+    }),
+  );
+
   it.effect("refuses for an unreadable entry without marking a holder as seen", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;

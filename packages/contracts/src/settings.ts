@@ -1079,6 +1079,21 @@ export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
 const ClaudeSessionNonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
+/**
+ * Which sessions owned by linked environments this environment keeps a copy of. A session is
+ * copied when any enabled rule matches it; nothing is copied while the copy would leave less than
+ * `reserveGiB` free on the disk holding the Claude home.
+ */
+export const ClaudeSessionReplicationRules = Schema.Struct({
+  /** Sessions whose thread, or that thread's project, is pinned on the owning environment. */
+  pinned: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Sessions changed within this many days; 0 turns the rule off. */
+  activeWithinDays: ClaudeSessionNonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  everything: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  reserveGiB: ClaudeSessionNonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(20))),
+});
+export type ClaudeSessionReplicationRules = typeof ClaudeSessionReplicationRules.Type;
+
 /** Showing every Claude Code session from the configured Claude homes as a thread. */
 export const ClaudeSessionSyncSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -1111,6 +1126,7 @@ export const ClaudeSessionSyncSettings = Schema.Struct({
   heldSessionSend: ForwardCompatibleNullable(ClaudeHeldSessionSend).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  replication: ClaudeSessionReplicationRules.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 });
 export type ClaudeSessionSyncSettings = typeof ClaudeSessionSyncSettings.Type;
 
@@ -2065,6 +2081,14 @@ export const ServerSettingsPatch = Schema.Struct({
       excludedCwdGlobs: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
       restoreSessionIds: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
       heldSessionSend: Schema.optionalKey(Schema.NullOr(ClaudeHeldSessionSend)),
+      replication: Schema.optionalKey(
+        Schema.Struct({
+          pinned: Schema.optionalKey(Schema.Boolean),
+          activeWithinDays: Schema.optionalKey(ClaudeSessionNonNegativeInt),
+          everything: Schema.optionalKey(Schema.Boolean),
+          reserveGiB: Schema.optionalKey(ClaudeSessionNonNegativeInt),
+        }),
+      ),
     }),
   ),
   observability: Schema.optionalKey(

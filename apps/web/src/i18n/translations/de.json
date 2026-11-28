@@ -3464,6 +3464,26 @@
     }
   ],
   "1b1131295f62c44c": "Der Anbieterprozess ist beendet. Unterbrich den untergeordneten Thread oder starte ihn neu, um zu antworten.",
+  "efac0e9dbb4b2100": [
+    "Eine Kopie einer Sitzung, die einem anderen Rechner gehört. Dieser Rechner antwortet seit ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " nicht, daher kann er neuere Zeilen haben; wenn du hier sendest, wird die Sitzung zuerst auf diesen Rechner verschoben."
+  ],
+  "c98bb5c47f908908": [
+    "Eine Kopie einer Sitzung, die einem anderen Rechner gehört, aktuell seit ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Wenn du hier sendest, wird die Sitzung zuerst auf diesen Rechner verschoben."
+  ],
+  "cfcc829832d9bdf0": "Veraltete Kopie",
+  "ffd3cdd328e21c9d": "Kopie",
   "da66023072c473d1": [
     "Ausgabe konnte nicht geladen werden: ",
     {
@@ -7939,6 +7959,49 @@
       "v": "v"
     }
   ],
+  "844c32db6fd476e0": "Angeheftete Sitzungen verknüpfter Rechner behalten",
+  "1ffad146a191b5be": "Sitzungen kopieren, die aktiv waren in den letzten (Tagen)",
+  "14c344353bbaebae": "Kopiere auch Sitzungen, die sich in so vielen Tagen geändert haben. 0 schaltet das aus.",
+  "aae7e17a73bcc94f": "Kopiere jede Sitzung, die verknüpften Rechnern gehört. Kopien enthalten alles, was in ihren Unterhaltungen vorkam, auch Geheimnisse und Kundenmaterial.",
+  "62a64590137da3c1": "Alle Sitzungen verknüpfter Rechner behalten",
+  "84bf7b8a3e54efaa": "Für Kopien frei halten (GB)",
+  "8d211c657d3e02cf": "Eine Sitzung wird nicht kopiert, solange danach weniger freier Speicher als dieser auf dem Laufwerk mit dem Claude-Home bliebe.",
+  "302d87882761c40f": "Für Kopien freigehaltenen Speicher auf Standard zurücksetzen",
+  "f05fad95eac949e7": "Kopien von verknüpften Rechnern",
+  "b71858f60946d0ad": "Seit dem Start dieses Servers noch nicht geprüft.",
+  "ed6d25e478d8e2b0": "Wird kopiert…",
+  "f8a2e8b1fded8548": "Jetzt kopieren",
+  "228022b34db63655": "geprüft",
+  "c083303e13d6d989": "teilt keine Sitzungen",
+  "ef0c2a8c1ab7b88e": "abgelehnt",
+  "176b736661a0af3a": "hat nicht geantwortet; seine Kopien sind als veraltet markiert",
+  "13c4766a5b0c7ac1": "veraltet seit {time}, gehört {owner}",
+  "6140fe53442d425d": "aktuell seit {time}, gehört {owner}",
+  "aaa04f7e7c6d2227": "hier hinzugefügte Zeilen behalten als {sessions}",
+  "fc0555e901deafd4": "Titel oder Ordner suchen",
+  "7bbf4d6c9eae88c0": "Sitzungen auf dem verknüpften Rechner suchen",
+  "f56b0c9e19a5fb22": [
+    "Kopiere jede Sitzung, deren Thread oder Projekt auf einem mit Vollzugriff verknüpften Rechner angeheftet ist. Eine Kopie enthält Sicherungen der bearbeiteten Dateien, auch .env, und lässt sich hier mit einfachem",
+    " ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "claude --resume"
+    },
+    " fortsetzen."
+  ],
+  "9890d5a89e23e8d9": [
+    "Zuletzt geprüft ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "56d09bbb0cd3a7d8": "Keine Kopien auf diesem Rechner.",
+  "a6406061a28035f1": "Nicht kopiert",
+  "3c0fb2338f009c09": "Sitzungen auf verknüpften Rechnern",
   "d0e747ae0c4f68a5": "t3 konnte nicht installiert werden",
   "ba3ac338f36cba74": "t3 konnte nicht entfernt werden",
   "9c942b53b58119b8": "t3 konnte nicht zu PATH hinzugefügt werden",
@@ -13061,6 +13124,8 @@
   "a863c1fb1edfc155": "Nicht geöffnete Sitzungen im Hintergrund lesen",
   "ac9f7d647fde336a": "claude code terminal sitzungen transkripte import synchronisieren verlauf",
   "c6ca82dcbd99e23b": "claude code sitzungen wiederherstellen gelöscht thread",
+  "82d1d9b107471d5e": "claude code sitzungen replizieren kopie synchronisieren rechner angeheftet fortsetzen",
+  "e27fd544c642d3b0": "claude code sitzungen replizieren kopie synchronisieren rechner alle",
   "d7bd140afc367aef": "claude code sitzungen speicher platz datenträger grenze",
   "e2ba25992774347f": "Weitere Claude-Verzeichnisse",
   "f04c3d73e1bc1bb1": "claude code sitzungen verlauf nachladen füllen leerlauf",

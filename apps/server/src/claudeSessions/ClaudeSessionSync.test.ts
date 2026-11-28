@@ -103,7 +103,7 @@ const capacityFree = capacityOf();
 
 // Sessions the fake registry reports as held by a live process; each test starts with none.
 const liveNow = new Set<string>();
-const liveSessionsFake = Layer.succeed(ClaudeLiveSessions.ClaudeLiveSessions, {
+const liveSessionsFake = Layer.mock(ClaudeLiveSessions.ClaudeLiveSessions)({
   read: () => Effect.sync(() => new Set(liveNow)),
 });
 const persistence = Layer.mergeAll(
