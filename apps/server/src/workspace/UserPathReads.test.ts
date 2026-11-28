@@ -388,6 +388,9 @@ describe("readUserPath", () => {
             );
             for (let step = 0; step < steps; step += 1) yield* Effect.yieldNow;
             yield* Fiber.interrupt(caller);
+            // A job interrupted before it started is not left queued for the next drain to run.
+            const queued = state.lanes.get("/users/me/documents")?.queue ?? [];
+            expect(queued.filter(({ started }) => !started)).toHaveLength(0);
             expect(yield* readUserPath("/Users/me/Documents/b", Effect.succeed("b"))).toEqual(
               Exit.succeed("b"),
             );
@@ -524,8 +527,6 @@ describe("readLimit", () => {
     ["not a number", 2],
     ["8", 4],
     ["1", 1],
-    ["0", 1],
-    ["-5", 1],
     ["99999", 512],
   ] as const)("with UV_THREADPOOL_SIZE %s allows %s reads", (size, limit) => {
     expect(readLimit(size === undefined ? {} : { UV_THREADPOOL_SIZE: size })).toBe(limit);

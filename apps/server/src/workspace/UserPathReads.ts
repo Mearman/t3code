@@ -301,12 +301,12 @@ const isClosedPath = (state: UserPathReadState, spelled: string) => {
 };
 
 // Reads in all lanes together may hold at most half of the pool, so the rest of the server keeps
-// its threads. libuv reads `UV_THREADPOOL_SIZE` as at least 1 and at most 1024.
+// its threads. libuv caps `UV_THREADPOOL_SIZE` at 1024, and the half is never below one read.
 export const readLimit = (environment: NodeJS.ProcessEnv) => {
   const configured = Number.parseInt(environment.UV_THREADPOOL_SIZE ?? "", 10);
   const poolSize = Number.isNaN(configured)
     ? LIBUV_DEFAULT_POOL_SIZE
-    : Math.min(LIBUV_MAX_POOL_SIZE, Math.max(1, configured));
+    : Math.min(LIBUV_MAX_POOL_SIZE, configured);
   return Math.max(1, Math.floor(poolSize / 2));
 };
 
