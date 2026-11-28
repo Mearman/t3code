@@ -67,6 +67,10 @@ vi.mock("../state/environments", () => ({
   usePrimaryEnvironmentId: () => "primary",
 }));
 vi.mock("../state/threads", () => ({ threadEnvironment: { updateMetadata: "metadata" } }));
+vi.mock("../state/claudeReplication", () => ({
+  claudeReplicationEnvironment: { move: { permissionAtom: () => "move-permission" } },
+}));
+vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: { get: () => true } }));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: () => async () => {
     recordEffect("metadata");

@@ -37,6 +37,8 @@ import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { threadEnvironment } from "../state/threads";
 import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope } from "../state/session";
+import { claudeReplicationEnvironment } from "../state/claudeReplication";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import {
   readEnvironmentServerConfigLoaded,
   readEnvironmentSupportsAutoSettleOptOut,
@@ -158,6 +160,9 @@ export function useThreadActionMenu(input: {
       canMoveClaudeSession: canMoveClaudeSession(
         threadRef.threadId,
         readEnvironment(threadRef.environmentId)?.serverConfig?.environment.capabilities,
+        appAtomRegistry.get(
+          claudeReplicationEnvironment.move.permissionAtom(threadRef.environmentId),
+        ),
       ),
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
     });

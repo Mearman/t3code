@@ -15,10 +15,19 @@ export function openClaudeSessionMoveDialog(threadRef: ScopedThreadRef): void {
   appAtomRegistry.set(claudeSessionMoveDialogThreadAtom, threadRef);
 }
 
-/** Whether a thread shows a Claude Code session its server, by its capabilities, can move. */
+/**
+ * Whether to offer moving a thread's Claude Code session: its server can move sessions and this
+ * client holds the scopes a move needs (`permitted`, from the move command's permission), so a
+ * dialog never opens on a Move it cannot press.
+ */
 export function canMoveClaudeSession(
   threadId: string,
   capabilities: { readonly claudeSessionMove?: boolean } | undefined,
+  permitted: boolean,
 ): boolean {
-  return claudeSessionIdOfThread(threadId) !== null && capabilities?.claudeSessionMove === true;
+  return (
+    permitted &&
+    claudeSessionIdOfThread(threadId) !== null &&
+    capabilities?.claudeSessionMove === true
+  );
 }

@@ -125,6 +125,7 @@ import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesystem";
+import { claudeReplicationEnvironment } from "../state/claudeReplication";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
@@ -534,6 +535,9 @@ function OpenCommandPaletteDialog(props: {
   const workflowsReachable = useWorkflowEnvironmentIds().length > 0;
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
+  );
+  const canMoveActiveThreadSession = useAtomValue(
+    claudeReplicationEnvironment.move.permissionAtom(activeThread?.environmentId ?? null),
   );
   const canShareActiveThreadWithGuest = useAtomValue(
     canShareWithGuestAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
@@ -1591,7 +1595,11 @@ function OpenCommandPaletteDialog(props: {
   if (activeThread) {
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
     if (
-      canMoveClaudeSession(threadRef.threadId, activeThreadServerConfig?.environment.capabilities)
+      canMoveClaudeSession(
+        threadRef.threadId,
+        activeThreadServerConfig?.environment.capabilities,
+        canMoveActiveThreadSession,
+      )
     ) {
       actionItems.push({
         kind: "action",

@@ -165,6 +165,7 @@ import { useThreadSearch } from "../state/queries";
 import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { claudeReplicationEnvironment } from "../state/claudeReplication";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import {
   canMoveClaudeSession,
@@ -2752,6 +2753,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               canMoveClaudeSession: canMoveClaudeSession(
                 threadRef.threadId,
                 readEnvironment(threadRef.environmentId)?.serverConfig?.environment.capabilities,
+                appAtomRegistry.get(
+                  claudeReplicationEnvironment.move.permissionAtom(threadRef.environmentId),
+                ),
               ),
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
               canRename: !fromSearch,
