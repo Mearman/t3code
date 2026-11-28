@@ -42,7 +42,7 @@ describe("claude account moves", () => {
       provider("codex", "codex", true),
     ];
     expect(
-      claudeMoveTargets(providers, ProviderInstanceId.make("claudeAgent")).map(
+      claudeMoveTargets(providers, ProviderInstanceId.make("claudeAgent"), false).map(
         (target) => target.instanceId,
       ),
     ).toEqual(["claudeAgent_work"]);

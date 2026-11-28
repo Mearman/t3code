@@ -17,14 +17,33 @@ export function turnItemIsWorkspacePreparation(item: OrchestrationV2TurnItem): b
   );
 }
 
+type RetryableRun = Pick<
+  OrchestrationV2Run,
+  "id" | "status" | "workspacePreparation" | "providerInstanceId"
+>;
+
+/**
+ * Whether a run's failed workspace setup can be retried: the server refuses once the thread uses
+ * another provider instance than the run recorded, since the run would start on the old one.
+ */
+export function canRetryWorkspacePreparation(
+  run: Omit<RetryableRun, "id">,
+  threadInstanceId: OrchestrationV2Run["providerInstanceId"],
+): boolean {
+  return (
+    run.status === "failed" &&
+    run.workspacePreparation !== undefined &&
+    run.providerInstanceId === threadInstanceId
+  );
+}
+
 export function workspacePreparationRetryRunIds(
-  runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "status" | "workspacePreparation">>,
+  runs: ReadonlyArray<RetryableRun>,
   items: ReadonlyArray<ThreadStructureTurnItem>,
+  threadInstanceId: OrchestrationV2Run["providerInstanceId"],
 ): ReadonlySet<OrchestrationV2Run["id"]> {
   const failedRuns = new Set(
-    runs.flatMap((run) =>
-      run.status === "failed" && run.workspacePreparation !== undefined ? [run.id] : [],
-    ),
+    runs.flatMap((run) => (canRetryWorkspacePreparation(run, threadInstanceId) ? [run.id] : [])),
   );
   const retryable = new Set<OrchestrationV2Run["id"]>();
   if (failedRuns.size === 0) return retryable;

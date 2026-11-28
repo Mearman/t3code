@@ -1,5 +1,6 @@
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  ProviderInstanceId,
   RunId,
   ThreadId,
   TurnItemId,
@@ -12,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   turnItemIsWorkspacePreparation,
   workspacePreparationRetryRunIds,
+  canRetryWorkspacePreparation,
 } from "./turnItemPresentation.ts";
 
 function command(input: string): OrchestrationV2TurnItem {
@@ -59,13 +61,15 @@ function preparationFailure(
 }
 
 const worktree = { type: "worktree", baseRef: "main" } as const;
+const instance = ProviderInstanceId.make("claudeAgent");
 function run(
   status: OrchestrationV2Run["status"],
   workspacePreparation?: typeof worktree,
-): Pick<OrchestrationV2Run, "id" | "status" | "workspacePreparation"> {
+): Pick<OrchestrationV2Run, "id" | "status" | "workspacePreparation" | "providerInstanceId"> {
   return {
     id: RunId.make("run-1"),
     status,
+    providerInstanceId: instance,
     ...(workspacePreparation === undefined ? {} : { workspacePreparation }),
   };
 }
@@ -81,16 +85,27 @@ describe("turnItemIsWorkspacePreparation", () => {
 describe("workspacePreparationRetryRunIds", () => {
   it("offers a retry while the run still ends in its failed preparation", () => {
     const failure = [preparationFailure("failed")];
-    expect([...workspacePreparationRetryRunIds([run("failed", worktree)], failure)]).toEqual([
-      RunId.make("run-1"),
-    ]);
-    expect(workspacePreparationRetryRunIds([run("preparing", worktree)], failure).size).toBe(0);
-    expect(workspacePreparationRetryRunIds([run("failed")], failure).size).toBe(0);
+    expect([
+      ...workspacePreparationRetryRunIds([run("failed", worktree)], failure, instance),
+    ]).toEqual([RunId.make("run-1")]);
+    expect(
+      workspacePreparationRetryRunIds([run("preparing", worktree)], failure, instance).size,
+    ).toBe(0);
+    expect(workspacePreparationRetryRunIds([run("failed")], failure, instance).size).toBe(0);
     expect(
       workspacePreparationRetryRunIds(
         [run("failed", worktree)],
         [preparationFailure("failed", "provider_crashed")],
+        instance,
       ).size,
     ).toBe(0);
+  });
+
+  it("offers no retry once the thread uses another provider instance", () => {
+    const failure = [preparationFailure("failed")];
+    const moved = ProviderInstanceId.make("claudeAgent_work");
+    expect(workspacePreparationRetryRunIds([run("failed", worktree)], failure, moved).size).toBe(0);
+    expect(canRetryWorkspacePreparation(run("failed", worktree), moved)).toBe(false);
+    expect(canRetryWorkspacePreparation(run("failed", worktree), instance)).toBe(true);
   });
 });

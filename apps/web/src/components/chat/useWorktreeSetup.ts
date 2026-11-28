@@ -111,10 +111,13 @@ export function useWorktreeSetup(input: {
       : isPreparingWorktree);
 
   const retryableRunIdsKey = [
-    ...workspacePreparationRetryRunIds(
-      serverProjection?.runs ?? [],
-      serverProjection?.turnItems ?? [],
-    ),
+    ...(serverProjection === null
+      ? []
+      : workspacePreparationRetryRunIds(
+          serverProjection.runs,
+          serverProjection.turnItems,
+          serverProjection.thread.modelSelection.instanceId,
+        )),
   ].join("\n");
   const [retryableRunIds, setRetryableRunIds] = useState({
     key: retryableRunIdsKey,

@@ -9,7 +9,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vite-plus/test";
+import { afterEach, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   canManage: true,
@@ -56,6 +56,10 @@ vi.mock("../../state/entities", () => ({
 }));
 
 import { useClaudeAccountMove } from "./useClaudeAccountMove";
+
+afterEach(() => {
+  sharedHistory.only = false;
+});
 
 const source = ProviderInstanceId.make("personal");
 const thread = ThreadId.make("thread");
@@ -184,5 +188,4 @@ it("offers only accounts that share history where the server moves only within o
   sharedHistory.only = true;
   using mounted = mount();
   expect(mounted.hook().menuAction(source, { title: "Move" })).toBeUndefined();
-  sharedHistory.only = false;
 });

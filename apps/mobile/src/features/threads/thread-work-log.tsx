@@ -58,6 +58,7 @@ import * as DateTime from "effect/DateTime";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { canRetryWorkspacePreparation } from "@t3tools/client-runtime/state/turn-item-presentation";
 import { heldSessionForkRunId } from "@t3tools/client-runtime/state/thread-workflows";
 import { HeldSessionForkButton } from "./HeldSessionForkButton";
 import { ThreadAccountConfirmButton } from "./ThreadAccountConfirmButton";
@@ -791,8 +792,12 @@ function WorkspacePreparationRetryButton(props: {
   const retryable = useAtomValue(
     environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, props.threadId)),
     (thread) => {
-      const run = thread?.projection.runs.find((candidate) => candidate.id === props.runId);
-      return run?.status === "failed" && run.workspacePreparation !== undefined;
+      if (thread === undefined || thread === null) return false;
+      const run = thread.projection.runs.find((candidate) => candidate.id === props.runId);
+      return (
+        run !== undefined &&
+        canRetryWorkspacePreparation(run, thread.projection.thread.modelSelection.instanceId)
+      );
     },
   );
   const gt = useGT();
