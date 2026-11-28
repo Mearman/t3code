@@ -3496,9 +3496,8 @@
   "9f122f4c410241c0": "Move",
   "13cbedf16ef5992f": "Move to another machine",
   "4548ba21532a6a3d": "The session moves with its unpushed commits and uncommitted changes, into a new worktree there. Ignored files such as .env stay here, and so does a copy of the session.",
-  "c2d779f2e31f7b58": "No linked machine to move to. Link one in Settings → Connections.",
+  "00a0ebcf3ddb5580": "No linked machine can take this session. Link one with full access in Settings → Connections.",
   "2398b5e61515bbba": "Take over if a terminal has it open: an idle claude there is ended first. A working one is never ended.",
-  "abd89e9eefedf11b": "Done",
   "da66023072c473d1": [
     "Couldn't load output: ",
     {
@@ -3716,6 +3715,7 @@
   "438efc8205a48969": "Send message from {guestName}",
   "1b8e5125412bfefb": "Share with guest",
   "356ec2ce33231586": "The guest sees the thread as you do, including command output and the agent's reasoning. Each message they send waits for you.",
+  "abd89e9eefedf11b": "Done",
   "18d166056c1ab6ff": "Stop sharing",
   "7a2d510eac9e4587": "Guest link expired",
   "21888e302219891d": "Expanded {title} preview",

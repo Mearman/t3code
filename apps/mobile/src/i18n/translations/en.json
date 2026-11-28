@@ -4211,7 +4211,7 @@
   "63739f23d55fa6a9": "Moving…",
   "9f122f4c410241c0": "Move",
   "4548ba21532a6a3d": "The session moves with its unpushed commits and uncommitted changes, into a new worktree there. Ignored files such as .env stay here, and so does a copy of the session.",
-  "f065afb482e543d0": "No linked machine to move to. Link one in Settings.",
+  "b394843fc9e17542": "No linked machine can take this session. Link one with full access in Settings.",
   "2398b5e61515bbba": "Take over if a terminal has it open: an idle claude there is ended first. A working one is never ended.",
   "43c5fbd02c6f330a": "Show less",
   "918cd5477d0c0e9b": "Show full message",
