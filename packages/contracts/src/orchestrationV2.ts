@@ -1565,6 +1565,8 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  /** Its words are an agent's: one edited it while queued, whoever `createdBy` names. */
+  editedByAgent: Schema.optional(Schema.Literal(true)),
   /** A message that named no model; it runs on the thread's selection at start. */
   followsThreadSelection: Schema.optional(Schema.Literal(true)),
   senderThreadId: Schema.optional(ThreadId),
@@ -3792,6 +3794,8 @@ export const OrchestrationV2Command = Schema.Union([
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
     /** Only the server sets this, when the editor holds `terminal:operate`; see the run's field. */
     heldSessionTerminalAccess: Schema.optional(Schema.Literal(true)),
+    /** Only the server sets this, for an edit from a person's client; see the message's field. */
+    editedByPerson: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     type: Schema.Literal("runtime-request.respond"),

@@ -564,6 +564,31 @@ it.effect("records terminal access on a queued edit from the editor's scopes alo
   }).pipe(Effect.provide(layerIntakeTest)),
 );
 
+it.effect("marks a queued edit from a client as a person's words", () =>
+  Effect.gen(function* () {
+    const captured: OrchestrationV2ServerCommand[] = [];
+    const layerCapture = Layer.mock(ThreadManagementService.ThreadManagementService)({
+      dispatch: layerFailingDispatchHandler(captured),
+    });
+    yield* dispatchCommand(
+      {
+        type: "queued-run.edit",
+        commandId: CommandId.make("edit-by-person"),
+        threadId: ThreadId.make("thread-edit-by-person"),
+        runId: RunId.make("run-edit-by-person"),
+        text: "edited",
+      },
+      { managesProviders: true, operatesTerminal: false },
+    ).pipe(Effect.provide(layerCapture), Effect.result);
+
+    expect(
+      captured.map((command) =>
+        command.type === "queued-run.edit" ? command.editedByPerson : "other",
+      ),
+    ).toEqual([true]);
+  }).pipe(Effect.provide(layerIntakeTest)),
+);
+
 it.effect("refuses a queued edit that keeps a file another edit already deleted", () =>
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;

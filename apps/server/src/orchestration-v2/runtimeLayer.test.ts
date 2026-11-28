@@ -12264,6 +12264,66 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("records that an agent's edit of a person's queued message makes it the agent's", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-layer-queued-edit-author-thread");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-queued-edit-author-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-layer-queued-edit-author-project"),
+        title: "Edit a person's queued message",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-queued-edit-author",
+      });
+      for (const [name, dispatchMode] of [
+        ["active", { type: "start_immediately" }],
+        ["queued", { type: "queue_after_active" }],
+      ] as const) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-layer-queued-edit-author-${name}`),
+          threadId,
+          messageId: MessageId.make(`runtime-layer-queued-edit-author-${name}`),
+          text: `The ${name} message.`,
+          attachments: [],
+          modelSelection,
+          dispatchMode,
+        });
+      }
+      const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.status === "queued",
+      );
+      assert.isDefined(queuedRun);
+      const editAs = (name: string, byPerson: boolean) =>
+        Effect.gen(function* () {
+          yield* orchestrator.dispatch({
+            type: "queued-run.edit",
+            commandId: CommandId.make(`runtime-layer-queued-edit-author-${name}`),
+            threadId,
+            runId: queuedRun.id,
+            text: `Edited by ${name}.`,
+            ...(byPerson ? { editedByPerson: true as const } : {}),
+          });
+          const message = (yield* orchestrator.getThreadProjection(threadId)).messages.find(
+            (candidate) => candidate.id === queuedRun.userMessageId,
+          );
+          return [message?.createdBy, message?.editedByAgent];
+        });
+
+      assert.deepStrictEqual(yield* editAs("agent", false), ["user", true]);
+      assert.deepStrictEqual(yield* editAs("person", true), ["user", undefined]);
+    }),
+  );
+
   it.effect("edits and removes queued runs", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

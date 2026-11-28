@@ -494,6 +494,9 @@ function makeLocalCommandHarness(input: {
   readonly createdBy?: "agent" | "system";
   /** Who wrote the earlier unsent message a manual continuation resends. */
   readonly unsentResumeCreatedBy?: "user" | "agent" | "system";
+  /** The earlier unsent message came from a scheduled task, or an agent edited it in the queue. */
+  readonly unsentResumeScheduledTaskId?: ScheduledTaskId;
+  readonly unsentResumeEditedByAgent?: true;
   /** The run's held-session choice, and whether its sender could use terminals. */
   readonly heldSessionSend?: OrchestrationV2ThreadProjection["runs"][number]["heldSessionSend"];
   readonly heldSessionTerminalAccess?: true;
@@ -929,6 +932,12 @@ function makeLocalCommandHarness(input: {
           ...(input.unsentResumeCreatedBy === undefined
             ? {}
             : { createdBy: input.unsentResumeCreatedBy }),
+          ...(input.unsentResumeScheduledTaskId === undefined
+            ? {}
+            : { scheduledTaskId: input.unsentResumeScheduledTaskId }),
+          ...(input.unsentResumeEditedByAgent === undefined
+            ? {}
+            : { editedByAgent: input.unsentResumeEditedByAgent }),
         },
         ...projection.messages,
       ],
@@ -2451,6 +2460,34 @@ effectIt.effect.each(["user", "agent", "system"] as const)(
       const turn = harness.startTurn.mock.calls[0]?.[0];
       expect(turn?.message.text).toBe("Original request");
       expect(turn?.message.adoptAsUser === true).toBe(author === "user");
+    }),
+);
+
+effectIt.effect.each([
+  { source: "an agent edited in the queue", words: { unsentResumeEditedByAgent: true } },
+  {
+    source: "a person's scheduled task sent",
+    words: { unsentResumeScheduledTaskId: ScheduledTaskId.make("task-1") },
+  },
+] as const)(
+  "hands a resent message $source to the terminal under the mod's name",
+  ({ words }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "",
+        manualContinuation: true,
+        heldSessionSend: "adopt",
+        heldSessionTerminalAccess: true,
+        unsentResumeCreatedBy: "user",
+        ...words,
+        sideChat: { contextRun: "delivered", unsentResume: true },
+      });
+
+      yield* harness.start;
+
+      const turn = harness.startTurn.mock.calls[0]?.[0];
+      expect(turn?.message.text).toContain("Original request");
+      expect(turn?.message.adoptAsUser).toBeUndefined();
     }),
 );
 

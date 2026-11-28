@@ -21,15 +21,26 @@ export const CLAUDE_HELD_SESSION_TERMINAL_CHOICES: ReadonlySet<ClaudeHeldSession
 
 /**
  * Whether the bridge submits a held session's prompt as the person's own words: only when a
- * person chose `adopt` with terminal access and a person wrote the words, which on a resend are
- * the refused message's, not the resend's.
+ * person chose `adopt` with terminal access and the words are a person's, sent from a client.
+ * A scheduled task's words, even a person's task, and an agent's edit of a person's queued
+ * message go under the mod's name. On a resend the words are the refused message's.
  */
 export function claudeBridgeSubmitsAsPerson(input: {
   readonly choice: ClaudeHeldSessionSend | undefined;
   readonly terminalAccess: boolean;
-  readonly submittedBy: "user" | "agent" | "system";
+  readonly words: {
+    readonly createdBy: "user" | "agent" | "system";
+    readonly scheduledTaskId?: string | undefined;
+    readonly editedByAgent?: true | undefined;
+  };
 }): boolean {
-  return input.choice === "adopt" && input.terminalAccess && input.submittedBy === "user";
+  return (
+    input.choice === "adopt" &&
+    input.terminalAccess &&
+    input.words.createdBy === "user" &&
+    input.words.scheduledTaskId === undefined &&
+    input.words.editedByAgent !== true
+  );
 }
 
 /**
