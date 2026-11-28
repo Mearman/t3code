@@ -32,6 +32,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -108,8 +109,14 @@ const HEAD_CHUNK_BYTES = 64 * 1024;
 /** IN lists are split so a query stays far below SQLite's bound-parameter limit. */
 const LOOKUP_CHUNK = 500;
 /** A quick sweep lists only project directories that changed; every sixth one stats every file. */
-const SWEEP_INTERVAL = "5 minutes";
+const SWEEP_INTERVAL_MS = 5 * 60_000;
+const SWEEP_INTERVAL = Duration.millis(SWEEP_INTERVAL_MS);
 const FULL_SWEEP_EVERY = 6;
+/**
+ * How long after a transcript changes the sync may record it: an append to a session nothing
+ * holds is found only by the next full sweep, which records the file's own, earlier, mtime.
+ */
+export const CLAUDE_SYNC_RECORDING_LAG_MS = SWEEP_INTERVAL_MS * FULL_SWEEP_EVERY;
 /** Live sessions' transcripts are polled this often; the registry is re-read when its listing changes, and every fifth poll. */
 const LIVE_POLL_INTERVAL = "1 second";
 const REGISTRY_EVERY = 5;

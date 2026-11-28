@@ -216,8 +216,9 @@ const realPathOrPending = Effect.fn("realPathOrPending")(function* (target: stri
 });
 
 /**
- * Whether writing `relativePath` (a session file) lands inside its own root under `layout` once
- * every existing symlink on the way is resolved. Fails closed: a path that is not one of the
+ * Whether writing `relativePath` (a session file) lands inside its own root under `layout` (see
+ * `containingRoot`) once every existing symlink on the way is resolved: no link below the home
+ * leads to the root, nor from inside it out. Fails closed: a path that is not one of the
  * session's files never lands.
  */
 export const claudeSessionWriteStaysInside = Effect.fn("claudeSessionWriteStaysInside")(
@@ -231,11 +232,20 @@ export const claudeSessionWriteStaysInside = Effect.fn("claudeSessionWriteStaysI
     const base = input.relativePath.startsWith("projects/")
       ? input.layout.projectsDir
       : input.layout.home;
-    const realBase = yield* realPathOrPending(base);
+    const rootPath = claudeSessionFileAbsolutePath(
+      path,
+      input.layout,
+      containingRoot(input.relativePath),
+    );
+    const realRoot = yield* realPathOrPending(rootPath);
+    const unlinkedRoot = path.join(
+      yield* realPathOrPending(base),
+      ...path.relative(base, rootPath).split(path.sep),
+    );
     const target = yield* realPathOrPending(
       claudeSessionFileAbsolutePath(path, input.layout, input.relativePath),
     );
-    return target.startsWith(`${realBase}${path.sep}`);
+    return realRoot === unlinkedRoot && target.startsWith(`${realRoot}${path.sep}`);
   },
 );
 

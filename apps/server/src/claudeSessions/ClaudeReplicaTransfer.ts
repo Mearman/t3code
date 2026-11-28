@@ -224,6 +224,7 @@ export const copyClaudeSessionFiles = Effect.fn("copyClaudeSessionFiles")(functi
     input.transcript.target,
   );
   // Claude may have appended to the copy since it was planned; its lines are never overwritten.
+  // The live check runs on both sides of the hash, so a claude that opens it meanwhile is seen.
   const unchangedHere = Effect.gen(function* () {
     yield* input.beforeReplace;
     const present = yield* exists(transcriptTarget);
@@ -239,6 +240,7 @@ export const copyClaudeSessionFiles = Effect.fn("copyClaudeSessionFiles")(functi
           "Lines were added to this copy while it was being updated, so it was left as it is. The next pass keeps them as a session of their own.",
       });
     }
+    yield* input.beforeReplace;
   });
   yield* unchangedHere;
   for (const { part, target } of staged) {

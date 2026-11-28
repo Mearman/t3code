@@ -7,12 +7,14 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   ClaudeSessionReplicationError,
   EnvironmentId,
+  type ClaudeRemoteSessionList,
   type ClaudeSessionManifest,
   type PeerLinkSummary,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as TestClock from "effect/testing/TestClock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -31,6 +33,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ClaudeLiveSessions } from "./ClaudeLiveSessions.ts";
+import { ClaudeProcessTableError } from "./ClaudeProcessTable.ts";
 import { sha256OfBytes } from "./ClaudeSessionFiles.ts";
 import * as ClaudeSessionOwnershipGate from "./ClaudeSessionOwnershipGate.ts";
 import {
@@ -49,6 +52,7 @@ type Replication = ClaudeSessionReplication["Service"];
 const environments = (options?: {
   readonly reserveGiB?: number;
   /** Rewrites what B hears from A's manifest, as a buggy or hostile owner would send. */
+  readonly tamperList?: (list: ClaudeRemoteSessionList) => ClaudeRemoteSessionList;
   readonly tamper?: (manifest: ClaudeSessionManifest) => ClaudeSessionManifest;
 }) =>
   Effect.gen(function* () {
@@ -57,6 +61,10 @@ const environments = (options?: {
     const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
     const services = new Map<string, Replication>();
     const live = new Map<string, Set<string>>();
+    /** Environments whose process table cannot be read. */
+    const unreadable = new Set<string>();
+    /** Manifests B asked its owners for. */
+    const manifests: Array<string> = [];
     const down = new Set<string>();
     /** Runs before each chunk B reads from A, to act in the middle of a copy. */
     const onChunk = { run: (): Effect.Effect<void> => Effect.void };
@@ -94,15 +102,24 @@ const environments = (options?: {
         });
         const peers = Layer.mock(PeerClaudeSessions.PeerClaudeSessions)({
           list: (environmentId, listOptions) =>
-            Effect.flatMap(service(environmentId), (owner) => owner.listOwned(listOptions ?? {})),
+            Effect.flatMap(service(environmentId), (owner) =>
+              owner.listOwned(listOptions ?? {}),
+            ).pipe(Effect.map((list) => options?.tamperList?.(list) ?? list)),
           confirmClaim: ({ environmentId, sessionId, nonce }) =>
             Effect.flatMap(service(environmentId), (peer) =>
               peer.confirmClaim({ sessionId, nonce }),
             ),
           manifest: ({ environmentId, sessionId, prefixBytes }) =>
-            Effect.flatMap(service(environmentId), (owner) =>
-              owner.manifest({ sessionId, ...(prefixBytes === undefined ? {} : { prefixBytes }) }),
-            ).pipe(Effect.map((manifest) => options?.tamper?.(manifest) ?? manifest)),
+            Effect.sync(() => void manifests.push(sessionId)).pipe(
+              Effect.andThen(service(environmentId)),
+              Effect.flatMap((owner) =>
+                owner.manifest({
+                  sessionId,
+                  ...(prefixBytes === undefined ? {} : { prefixBytes }),
+                }),
+              ),
+              Effect.map((manifest) => options?.tamper?.(manifest) ?? manifest),
+            ),
           readChunk: ({ environmentId, ...chunk }) =>
             Effect.flatMap(onChunk.run(), () =>
               Effect.flatMap(service(environmentId), (owner) => owner.readFile(chunk)),
@@ -146,7 +163,10 @@ const environments = (options?: {
             resolve: () => Effect.succeed(null),
           }),
           Layer.mock(ClaudeLiveSessions)({
-            read: () => Effect.sync(() => new Set(live.get(self))),
+            readOrFail: () =>
+              unreadable.has(self)
+                ? Effect.fail(new ClaudeProcessTableError({ reason: "ps did not run" }))
+                : Effect.sync(() => new Set(live.get(self))),
           }),
           Layer.mock(ServerEnvironment.ServerEnvironment)({
             getEnvironmentId: Effect.succeed(self),
@@ -174,7 +194,12 @@ const environments = (options?: {
     const b = yield* build(B, [A]);
 
     /** A session `a` owns, as its sync records it: a transcript and one sidecar. */
-    const ownSession = (input: { readonly cwd?: string; readonly lines?: ReadonlyArray<string> }) =>
+    const ownSession = (input: {
+      readonly cwd?: string;
+      readonly lines?: ReadonlyArray<string>;
+      /** The transcript's mtime as the owner's sync records it. */
+      readonly mtimeMs?: number;
+    }) =>
       Effect.gen(function* () {
         const sessionId = NodeCrypto.randomUUID();
         const transcript = path.join(a.home, "projects", "-work", `${sessionId}.jsonl`);
@@ -199,7 +224,7 @@ const environments = (options?: {
             account_uuids_json, hydration_state, updated_at, file_path, file_size, file_mtime_ms, cwd
           ) VALUES (
             'store', ${sessionId}, 'id', NULL, NULL, '[]', 'entry', '2026-11-27T00:00:00.000Z',
-            ${transcript}, ${size}, 1700000000000, ${input.cwd ?? "/work"}
+            ${transcript}, ${size}, ${input.mtimeMs ?? 1700000000000}, ${input.cwd ?? "/work"}
           )
         `;
         return { sessionId, transcript };
@@ -215,6 +240,8 @@ const environments = (options?: {
       ownSession,
       copyOn,
       live,
+      unreadable,
+      manifests,
       down,
       onChunk,
       onClaim,
@@ -267,6 +294,57 @@ it.layer(testLayer)("ClaudeSessionReplication between two environments", (it) =>
       const report = yield* env.b.replication.replicateNow;
 
       expect(report.skipped.map((s) => s.reason)).toEqual(["held"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("copies nothing for a listed id that is not a session's", () =>
+    Effect.gen(function* () {
+      const env = yield* environments({
+        tamperList: (list) => ({
+          ...list,
+          sessions: list.sessions.map((session) => ({ ...session, sessionId: "../../outside" })),
+        }),
+      });
+      yield* env.ownSession({});
+
+      const report = yield* env.b.replication.replicateNow;
+
+      expect(report.skipped.map((s) => [s.sessionId, s.reason])).toEqual([
+        ["../../outside", "failed"],
+      ]);
+      expect(report.replicas).toEqual([]);
+      expect(env.manifests).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("leaves a copy alone when it cannot tell whether a claude here holds it", () =>
+    Effect.gen(function* () {
+      const env = yield* environments();
+      const { sessionId, transcript } = yield* env.ownSession({});
+      yield* env.b.replication.replicateNow;
+      const before = yield* env.bytes(env.copyOn(env.b, sessionId));
+      yield* env.append(transcript, "owner moved on");
+      env.unreadable.add(B);
+
+      const report = yield* env.b.replication.replicateNow;
+
+      expect(report.skipped[0]?.message).toContain("could not read which claude processes");
+      expect(yield* env.bytes(env.copyOn(env.b, sessionId))).toBe(before);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps a session the owner cannot tell is free when a copy claims it", () =>
+    Effect.gen(function* () {
+      const env = yield* environments();
+      const { sessionId } = yield* env.ownSession({});
+      yield* env.b.replication.replicateNow;
+      yield* env.append(env.copyOn(env.b, sessionId), "asked on the copy");
+      env.unreadable.add(A);
+
+      yield* env.b.replication.replicateNow;
+
+      expect((yield* env.b.replicas.get(sessionId))?.ownerEnvironmentId).toBe(A);
+      expect(yield* env.a.replicas.get(sessionId)).toBeUndefined();
     }).pipe(Effect.scoped),
   );
 
@@ -373,7 +451,7 @@ it.layer(testLayer)("ClaudeSessionReplication between two environments", (it) =>
       yield* env.b.replication.replicateNow;
       const row = yield* env.b.replicas.get(sessionId);
       if (row === undefined) return expect.unreachable();
-      // The owner already holds the claimant's copy as its own replica; the claimant lost the answer.
+      // The owner already holds the claimant's copy as its replica; the claimant lost the answer.
       const ownerRow = { ...row, ownerEnvironmentId: B };
       yield* env.a.replicas.upsert({ ...ownerRow, transcriptPath: env.copyOn(env.a, sessionId) });
       yield* env.b.replication.start();
@@ -469,6 +547,29 @@ it.layer(testLayer)("ClaudeSessionReplication between two environments", (it) =>
       yield* Fiber.join(pass);
       expect(yield* env.bytes(env.copyOn(env.b, second.sessionId))).toBe(
         yield* env.bytes(second.transcript),
+      );
+    }).pipe(Effect.scoped),
+  );
+});
+
+// Its own layer, since moving the test clock moves it for every test sharing one.
+it.layer(testLayer)("change-only listings", (it) => {
+  it.effect("copies a change the owner records only after its next full sweep", () =>
+    Effect.gen(function* () {
+      // Clocks well past the epoch, so a session with no thread or project sorts by its mtime.
+      yield* TestClock.adjust("20000 days");
+      const env = yield* environments();
+      yield* env.ownSession({});
+      yield* env.b.replication.replicateNow;
+      // Changed twenty minutes ago, while nothing held it, and recorded only now.
+      const late = yield* env.ownSession({
+        mtimeMs: DateTime.toEpochMillis(yield* DateTime.now) - 20 * 60_000,
+      });
+
+      yield* env.b.replication.replicateNow;
+
+      expect(yield* env.bytes(env.copyOn(env.b, late.sessionId))).toBe(
+        yield* env.bytes(late.transcript),
       );
     }).pipe(Effect.scoped),
   );

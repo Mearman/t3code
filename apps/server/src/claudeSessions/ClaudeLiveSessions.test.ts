@@ -7,7 +7,7 @@ import * as Path from "effect/Path";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as ClaudeLiveSessions from "./ClaudeLiveSessions.ts";
-import { parseClaudeProcessTable } from "./ClaudeProcessTable.ts";
+import { ClaudeProcessTableError, parseClaudeProcessTable } from "./ClaudeProcessTable.ts";
 import { ClaudeSpawnedProcesses, makeClaudeSpawnedProcesses } from "./ClaudeSpawnedProcesses.ts";
 
 const SESSION = "00000000-0000-4000-8000-0000000000bb";
@@ -73,6 +73,27 @@ describe("ClaudeLiveSessions", () => {
       const held = yield* fileSystem.makeTempDirectoryScoped();
       yield* entry(held, process.ppid, yield* startOf(process.ppid));
       expect([...(yield* read(held))]).toEqual([SESSION]);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer))),
+  );
+
+  it.effect("fails, rather than reading as free, when the process table cannot be read", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const spawned = makeClaudeSpawnedProcesses(
+        Effect.fail(new ClaudeProcessTableError({ reason: "ps did not run" })),
+        fileSystem.realPath,
+      );
+      const live = yield* ClaudeLiveSessions.ClaudeLiveSessions.pipe(
+        Effect.provide(ClaudeLiveSessions.layer),
+        Effect.provideService(ClaudeSpawnedProcesses, spawned),
+      );
+      const held = yield* fileSystem.makeTempDirectoryScoped();
+      yield* entry(held, process.ppid, yield* startOf(process.ppid));
+
+      const refused = yield* Effect.flip(live.readOrFail(held));
+
+      expect(refused._tag).toBe("ClaudeProcessTableError");
+      expect([...(yield* live.read(held))]).toEqual([]);
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer))),
   );
 });

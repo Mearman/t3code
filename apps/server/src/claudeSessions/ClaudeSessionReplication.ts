@@ -50,6 +50,7 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
 import { ClaudeLiveSessions } from "./ClaudeLiveSessions.ts";
+import { CLAUDE_SYNC_RECORDING_LAG_MS } from "./ClaudeSessionSync.ts";
 import { copyClaudeSessionFiles, planClaudeReplica } from "./ClaudeReplicaTransfer.ts";
 import {
   claudeProjectSlug,
@@ -72,11 +73,11 @@ import {
 const PASS_INTERVAL = "5 minutes";
 const DAY_MS = 24 * 60 * 60 * 1000;
 /**
- * A pass asks each owner only for what changed since its last full listing, with this overlap
- * for clock and commit order, and lists everything every `FULL_LIST_EVERY` passes since a pin
- * may not change what a session's change time reads.
+ * A pass asks each owner only for what changed since its last listing, reaching back over the
+ * owner's recording lag plus a minute for clocks, and lists everything every `FULL_LIST_EVERY`
+ * passes since a pin may not change what a session's change time reads.
  */
-const LIST_OVERLAP_MS = 60_000;
+const LIST_OVERLAP_MS = CLAUDE_SYNC_RECORDING_LAG_MS + 60_000;
 const FULL_LIST_EVERY = 12;
 
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
@@ -492,6 +493,22 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * The sessions a claude holds in `home`. An unreadable process table refuses, since a holder
+   * it hides would keep writing a file this environment is about to replace or hand over.
+   */
+  const liveOrRefuse = (home: string, outcome: string) =>
+    liveSessions.readOrFail(path.join(home, "sessions")).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ClaudeSessionReplicationError({
+            reason: "refused",
+            message: `This machine could not read which claude processes are running, so ${outcome}.`,
+            cause,
+          }),
+      ),
+    );
+
   const claim: ClaudeSessionReplication["Service"]["claim"] = Effect.fn(
     "ClaudeSessionReplication.claim",
   )(function* (input) {
@@ -533,7 +550,7 @@ const make = Effect.gen(function* () {
         "The environment named in the claim did not confirm asking for this session, so the owner kept it.",
       );
     }
-    const live = yield* liveSessions.read(path.join(located.layout.home, "sessions"));
+    const live = yield* liveOrRefuse(located.layout.home, "the owner kept the session");
     if (live.has(input.sessionId)) {
       return yield* keep(
         "A claude on the owner has this session open, so it kept the session. Close it there and try again.",
@@ -703,6 +720,13 @@ const make = Effect.gen(function* () {
         reason,
         message,
       });
+      // The owner names the id; nothing here builds a path from one that is not a session's.
+      if (!isClaudeSessionId(sessionId)) {
+        return skip(
+          "failed",
+          "The owner listed a session id that is not one, so it was not copied.",
+        );
+      }
       const row = yield* replicas
         .get(sessionId)
         .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
@@ -762,7 +786,7 @@ const make = Effect.gen(function* () {
           return skip("owned_here", "This environment has its own session with that id.");
         }
       }
-      const live = yield* liveSessions.read(path.join(layout.home, "sessions"));
+      const live = yield* liveOrRefuse(layout.home, "the copy was left as it is");
       if (live.has(sessionId)) {
         return skip("held", "A claude here has this copy open; it is copied again once that ends.");
       }
@@ -869,8 +893,8 @@ const make = Effect.gen(function* () {
       }
       let forked = row?.forkedSessionIds ?? [];
       if (plan.kind === "diverged") {
-        // The owner keeps the id; lines appended only here become their own session through the SDK's
-        // fork, before the owner's copy replaces this one. No line is merged by hand.
+        // The owner keeps the id; lines appended only here become their own session through the
+        // SDK's fork, before the owner's copy replaces this one. No line is merged by hand.
         const fork = yield* queryRunner
           .forkSession({
             sessionId,
@@ -891,7 +915,8 @@ const make = Effect.gen(function* () {
             ),
           );
         forked = [...forked, fork.sessionId];
-        // Recorded before the copy, so a copy cut short is retried by replacing, never forked again.
+        // Recorded before the copy, so a copy cut short is retried by replacing, never forked
+        // again.
         if (row !== undefined && local !== undefined) {
           yield* replicas
             .upsert({ ...row, forkedSessionIds: forked, keptSha256: local.sha256 })
@@ -908,7 +933,7 @@ const make = Effect.gen(function* () {
         localTranscript:
           local === undefined ? undefined : { size: local.size, sha256: local.sha256 },
         // A claude that opened the copy since the plan would write lines the rename would drop.
-        beforeReplace: liveSessions.read(path.join(layout.home, "sessions")).pipe(
+        beforeReplace: liveOrRefuse(layout.home, "the copy was left as it is").pipe(
           Effect.flatMap((open) =>
             open.has(sessionId)
               ? Effect.fail(

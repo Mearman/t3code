@@ -432,6 +432,31 @@ it.layer(NodeServices.layer)("copyClaudeSessionFiles", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("refuses a target that a symlink would carry into another session's files", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { owner, target, write } = yield* homes;
+      const other = "1c8e7b63-4d2e-4f90-8b3c-6d7e8f9a0b1c";
+      yield* write(owner, `projects/-owner-repo/${SESSION}.jsonl`, bytesOf(300, 31));
+      yield* write(owner, `file-history/${SESSION}/f@v1`, bytesOf(30, 32));
+      yield* fileSystem.makeDirectory(path.join(target, "file-history", other), {
+        recursive: true,
+      });
+      yield* fileSystem.symlink(
+        path.join(target, "file-history", other),
+        path.join(target, "file-history", SESSION),
+      );
+      const manifest = yield* manifestOf(owner);
+      const { source } = yield* ownerSource(owner);
+
+      const refused = yield* Effect.flip(copy({ source, targetHome: target, manifest }));
+
+      expect(refused.reason).toBe("refused");
+      expect(yield* fileSystem.readDirectory(path.join(target, "file-history", other))).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps lines Claude appends to the copy while it is being updated", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -489,6 +514,33 @@ it.layer(NodeServices.layer)("copyClaudeSessionFiles", (it) => {
 
       expect(refused.reason).toBe("refused");
       expectSameBytes(yield* fileSystem.readFile(here), new Uint8Array([...older, ...appended]));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("replaces nothing when a claude opens the copy while it is being hashed", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const { owner, target, write } = yield* homes;
+      const older = bytesOf(700, 29);
+      yield* write(owner, `projects/-owner-repo/${SESSION}.jsonl`, new Uint8Array([...older, 4]));
+      yield* write(owner, `tasks/${SESSION}/1.json`, bytesOf(40, 30));
+      yield* write(target, `projects/-here/${SESSION}.jsonl`, older);
+      const manifest = yield* manifestOf(owner);
+      const { source } = yield* ownerSource(owner);
+      let checks = 0;
+      // Free before the hash, held once it is done: the claude opened the copy in between.
+      const beforeReplace = Effect.suspend(() =>
+        ++checks === 1
+          ? Effect.void
+          : Effect.fail(new ClaudeSessionReplicationError({ reason: "refused", message: "held" })),
+      );
+
+      const refused = yield* Effect.flip(
+        copy({ source, targetHome: target, manifest, beforeReplace }),
+      );
+
+      expect(refused.message).toBe("held");
+      expect(yield* fileSystem.exists(`${target}/tasks/${SESSION}/1.json`)).toBe(false);
     }).pipe(Effect.scoped),
   );
 
