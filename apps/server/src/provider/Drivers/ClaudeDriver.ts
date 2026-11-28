@@ -250,6 +250,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
             catch: (cause) => new ClaudeTakeOverSignalError({ pid, cause }),
           }),
         pause: Effect.sleep(TAKE_OVER_CHECK_INTERVAL),
+        running: (pid) =>
+          Effect.map(spawnedProcesses.readProcesses, (rows) => rows.some((row) => row.pid === pid)),
       },
     );
     const textGeneration = yield* makeClaudeTextGeneration(
