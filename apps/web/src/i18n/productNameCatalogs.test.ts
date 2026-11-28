@@ -42,13 +42,13 @@ describe("renaming the product in the locale catalogues, with GT's own hash", ()
     (locale) => {
       const english = read("en");
       const translated = read(locale);
-      const renamed = renameCatalog({ english, translated, name: "ExaCode", hashSource });
+      const renamed = renameCatalog({ english, translated, name: "MearCode", hashSource });
       // Nothing is dropped, and no two entries collapse onto one key.
       expect(Object.keys(renamed)).toHaveLength(Object.keys(translated).length);
       for (const [key, source] of Object.entries(english)) {
         if (!namesUpstream(source) || translated[key] === undefined) continue;
         const renamedSource = JSON.parse(
-          JSON.stringify(source).replace(UPSTREAM_PRODUCT_PATTERN, "ExaCode"),
+          JSON.stringify(source).replace(UPSTREAM_PRODUCT_PATTERN, "MearCode"),
         ) as string | ReadonlyArray<unknown>;
         const dataFormat = (["ICU", "JSX"] as const).find(
           (format) => hashSource({ source, dataFormat: format }) === key,

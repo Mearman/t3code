@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./assets/exacode/exacode-web-icon-192x192.png" width="80" height="80" alt="ExaCode logo" />
+  <img src="./assets/mearcode/mearcode-web-icon-192x192.png" width="80" height="80" alt="MearCode logo" />
 </p>
 
-<h1 align="center">ExaCode</h1>
+<h1 align="center">MearCode</h1>
 
 <p align="center">An unofficial fork based on the T3 Code source code. It is not affiliated with, endorsed by or maintained by T3 Tools, Inc.</p>
 
@@ -11,13 +11,13 @@
   <a href="./docs/README.md">Docs</a>
 </p>
 
-ExaCode runs the coding agents on your machine and gives them one fast interface. Start a thread at your desk, then approve the next step from another device.
+MearCode runs the coding agents on your machine and gives them one fast interface. Start a thread at your desk, then approve the next step from another device.
 
-It works with Claude Code, Codex, Cursor, OpenCode, Grok Build, Antigravity, Kiro, Pi, Muse Code, fx, and any [ACP](./docs/user/providers-acp.md) agent. If an agent is set up on your computer, ExaCode can control it.
+It works with Claude Code, Codex, Cursor, OpenCode, Grok Build, Antigravity, Kiro, Pi, Muse Code, fx, and any [ACP](./docs/user/providers-acp.md) agent. If an agent is set up on your computer, MearCode can control it.
 
 ## What you get
 
-- **Your subscriptions.** ExaCode does not resell tokens. It drives the agents you are already signed in to.
+- **Your subscriptions.** MearCode does not resell tokens. It drives the agents you are already signed in to.
 - **Every agent in one place.** Change models in the middle of a thread. Let Claude hand a task to Codex.
 - **Desktop and web.** One server, and every client shows the same threads.
 - **Remote ready.** Run agents on any machine and connect over your local network or Tailscale.
@@ -26,12 +26,12 @@ It works with Claude Code, Codex, Cursor, OpenCode, Grok Build, Antigravity, Kir
 
 ## Install
 
-Every ExaCode release is on [GitHub Releases](https://github.com/Mearman/t3code/releases).
+Every MearCode release is on [GitHub Releases](https://github.com/Mearman/t3code/releases).
 
 ### Desktop app
 
-- **macOS:** the `ExaCode-*.dmg` or `.zip` for your Mac's architecture. Builds are signed with a self-signed certificate, so macOS asks you to approve the first launch.
-- **Linux:** the `ExaCode-*.AppImage` (`chmod +x` it, then run it) or the `ExaCode-*.deb`, for x86_64 or ARM64.
+- **macOS:** the `MearCode-*.dmg` or `.zip` for your Mac's architecture. Builds are signed with a self-signed certificate, so macOS asks you to approve the first launch.
+- **Linux:** the `MearCode-*.AppImage` (`chmod +x` it, then run it) or the `MearCode-*.deb`, for x86_64 or ARM64.
 
 ### Command line
 
@@ -39,7 +39,7 @@ Each release carries an `install.sh` that installs the `t3` command from that re
 
 ### Sign in to an agent
 
-ExaCode needs one agent that is installed and signed in. For example, install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`, or install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`.
+MearCode needs one agent that is installed and signed in. For example, install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`, or install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`.
 
 [Provider setup](./docs/user/install.md#providers) has the steps for each agent.
 
@@ -64,6 +64,6 @@ The source code in this repository is licensed under the [MIT License](./LICENSE
 
 ## Trademarks and forks
 
-ExaCode is derived from [T3 Code](https://github.com/pingdotgg/t3code) and is not the official T3 Code. It uses its own name and icons, and uses no T3 logos or wordmarks.
+MearCode is derived from [T3 Code](https://github.com/pingdotgg/t3code) and is not the official T3 Code. It uses its own name and icons, and uses no T3 logos or wordmarks.
 
 The MIT license applies **only to the source code**. It does not grant any rights to T3 Tools, Inc.'s trademarks, branding, or trade dress, including the **T3 Code** name, wordmark, logos, and application icons. See [TRADEMARK.md](./TRADEMARK.md) for the full trademark and branding policy.

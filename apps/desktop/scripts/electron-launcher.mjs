@@ -4,7 +4,7 @@ import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
-import { EXACODE_ICON_PATHS } from "../../../scripts/lib/brand-assets.ts";
+import { MEARCODE_ICON_PATHS } from "../../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../../scripts/lib/public-config.ts";
 import { ensureElectronRuntime } from "./ensure-electron-runtime.mjs";
 
@@ -31,7 +31,7 @@ const developmentMacIconPngPath = NodePath.join(
   "blueprint-macos-1024.png",
 );
 const productionMacIconPngPath = NodePath.join(repoRoot, "assets", "prod", "black-macos-1024.png");
-const forkMacIconPngPath = NodePath.join(repoRoot, EXACODE_ICON_PATHS.macIconPng);
+const forkMacIconPngPath = NodePath.join(repoRoot, MEARCODE_ICON_PATHS.macIconPng);
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher script has no Effect runtime.
 const hostPlatform = NodeOS.platform();
 

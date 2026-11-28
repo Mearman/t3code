@@ -109,8 +109,8 @@ it.layer(NodeServices.layer)("fork nightly version after main is rewritten", (it
 
 it("titles a release with the given product name", () => {
   assert.equal(
-    resolveNightlyReleaseMetadata("0.1.13", DAY, 41, "a".repeat(40), "nightly", "ExaCode").name,
-    `ExaCode Nightly 0.1.13-nightly.${DAY}.41 (${"a".repeat(12)})`,
+    resolveNightlyReleaseMetadata("0.1.13", DAY, 41, "a".repeat(40), "nightly", "MearCode").name,
+    `MearCode Nightly 0.1.13-nightly.${DAY}.41 (${"a".repeat(12)})`,
   );
   assert.equal(
     resolveNightlyReleaseMetadata("0.1.13", DAY, 41, "a".repeat(40)).name,

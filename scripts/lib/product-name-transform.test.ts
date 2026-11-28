@@ -13,7 +13,7 @@ import {
   type HashSource,
 } from "./product-name-transform.ts";
 
-const identity = { name: "ExaCode", repository: "owner/fork" };
+const identity = { name: "MearCode", repository: "owner/fork" };
 
 it("renames the name and repository except on marked lines and in T3's GitHub App name", () => {
   const source = [
@@ -25,10 +25,10 @@ it("renames the name and repository except on marked lines and in T3's GitHub Ap
   ].join("\n");
   expect(renameProductInSource(source, identity)).toBe(
     [
-      'const a = "Open ExaCode now";',
+      'const a = "Open MearCode now";',
       'const b = "T3 Code"; // product-name: keep',
       'const c = "Install T3 Code for GitHub";',
-      "const d = `ExaCode's logs at https://github.com/owner/fork/issues`;",
+      "const d = `MearCode's logs at https://github.com/owner/fork/issues`;",
       'const e = "See https://github.com/owner/fork for more, or https://t3.codes/install.sh";',
     ].join("\n"),
   );
@@ -50,13 +50,13 @@ it("re-keys an entry in the format it was keyed with, plain text or structured",
   const translated = Object.fromEntries(
     Object.entries(english).map(([key, value]) => [key, JSON.stringify(value)]),
   );
-  const renamed = renameCatalog({ english, translated, name: "ExaCode", hashSource });
+  const renamed = renameCatalog({ english, translated, name: "MearCode", hashSource });
   expect(Object.keys(renamed).toSorted()).toEqual(
     [
-      hashSource({ source: "Welcome to ExaCode", dataFormat: "JSX" }),
-      hashSource({ source: ["Get ExaCode", { t: "code", i: 1, c: "t3 pair" }], dataFormat: "JSX" }),
+      hashSource({ source: "Welcome to MearCode", dataFormat: "JSX" }),
+      hashSource({ source: ["Get MearCode", { t: "code", i: 1, c: "t3 pair" }], dataFormat: "JSX" }),
       hashSource({ source: "Close", dataFormat: "ICU" }),
-      hashSource({ source: "Open ExaCode", dataFormat: "ICU" }),
+      hashSource({ source: "Open MearCode", dataFormat: "ICU" }),
     ].toSorted(),
   );
 });
@@ -66,7 +66,7 @@ it("fails the build for an entry whose key the hash cannot reproduce", () => {
     renameCatalog({
       english: { opaque: "Open T3 Code" },
       translated: { opaque: "T3 Code öffnen" },
-      name: "ExaCode",
+      name: "MearCode",
       hashSource,
     }),
   ).toThrow(CatalogKeyNotReproducibleError);
@@ -98,7 +98,7 @@ it("stubs T3's icon images and wordmark and leaves other files alone", () => {
       code: "export const T3Wordmark = () => null;",
       map: null,
     });
-    expect(plugin.load(NodePath.join(root, "assets/exacode/logo.svg"))).toBeNull();
+    expect(plugin.load(NodePath.join(root, "assets/mearcode/logo.svg"))).toBeNull();
     expect(plugin.load(NodePath.join(root, "apps/web/src/other.ts"))).toBeNull();
   });
 });
@@ -108,8 +108,8 @@ it("renames shipped source and skips desktop, dependencies, vendored code and te
     const plugin = productNameTransformPlugin({ identity, repositoryRoot: root });
     const text = 'export const name = "T3 Code";';
     const renamed = (file: string) => plugin.transform(text, NodePath.join(root, file));
-    expect(renamed("apps/web/src/a.ts")?.code).toBe('export const name = "ExaCode";');
-    expect(renamed("packages/shared/src/b.tsx")?.code).toBe('export const name = "ExaCode";');
+    expect(renamed("apps/web/src/a.ts")?.code).toBe('export const name = "MearCode";');
+    expect(renamed("packages/shared/src/b.tsx")?.code).toBe('export const name = "MearCode";');
     expect(renamed("apps/desktop/src/c.ts")).toBeNull();
     expect(renamed("node_modules/pkg/index.js")).toBeNull();
     expect(renamed(".repos/vendored/index.ts")).toBeNull();
@@ -135,7 +135,7 @@ it("renames a locale catalogue through the English one beside it", async () => {
     await plugin.buildStart();
     const out = plugin.transform(german, path);
     expect(JSON.parse(out?.code ?? "{}")).toEqual({
-      [hashSource({ source: "Open ExaCode", dataFormat: "ICU" })]: "ExaCode öffnen",
+      [hashSource({ source: "Open MearCode", dataFormat: "ICU" })]: "MearCode öffnen",
     });
   });
 });
@@ -152,12 +152,12 @@ const withTreeAsync = async (run: (root: string) => Promise<void>) => {
 it("renames the page shell and the written web manifest", () => {
   withTree((root) => {
     const plugin = productNameTransformPlugin({ identity, repositoryRoot: root });
-    expect(plugin.transformIndexHtml("<title>T3 Code</title>")).toBe("<title>ExaCode</title>");
+    expect(plugin.transformIndexHtml("<title>T3 Code</title>")).toBe("<title>MearCode</title>");
     const dir = NodePath.join(root, "dist");
     write(root, "dist/manifest.webmanifest", '{"name":"T3 Code","short_name":"T3 Code"}');
     plugin.writeBundle({ dir });
     expect(NodeFS.readFileSync(NodePath.join(dir, "manifest.webmanifest"), "utf8")).toBe(
-      '{"name":"ExaCode","short_name":"ExaCode"}',
+      '{"name":"MearCode","short_name":"MearCode"}',
     );
     plugin.writeBundle({ dir: NodePath.join(root, "missing") });
     plugin.writeBundle({ dir: undefined });

@@ -33,7 +33,7 @@ import { isUpstreamReleaseRepository } from "@t3tools/shared/cliRelease";
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   BRAND_ASSET_PATHS,
-  EXACODE_ICON_PATHS,
+  MEARCODE_ICON_PATHS,
   resolveWebAssetBrandForChannel,
   type WebAssetBrand,
 } from "./lib/brand-assets.ts";
@@ -2807,9 +2807,9 @@ export function resolveDesktopBuildIconAssets(
 ): DesktopBuildIconAssets {
   if (forkProductName !== undefined) {
     return {
-      macIconPng: EXACODE_ICON_PATHS.macIconPng,
-      linuxIconPng: EXACODE_ICON_PATHS.linuxIconPng,
-      windowsIconIco: EXACODE_ICON_PATHS.windowsIconIco,
+      macIconPng: MEARCODE_ICON_PATHS.macIconPng,
+      linuxIconPng: MEARCODE_ICON_PATHS.linuxIconPng,
+      windowsIconIco: MEARCODE_ICON_PATHS.windowsIconIco,
     };
   }
   if (resolveDesktopUpdateChannel(version) === "nightly") {
@@ -2920,7 +2920,7 @@ export function renderLinuxMetainfo(template: string, listing: DesktopListing): 
     );
 }
 
-// A fork's release build names its own app and bundle id (exacode-release.yml); unset keeps these.
+// A fork's release build names its own app and bundle id (mearcode-release.yml); unset keeps these.
 const DesktopIdentityConfig = Config.all({
   productName: Config.String("T3CODE_DESKTOP_PRODUCT_NAME").pipe(Config.option),
   appId: Config.String("T3CODE_DESKTOP_APP_ID").pipe(Config.option),

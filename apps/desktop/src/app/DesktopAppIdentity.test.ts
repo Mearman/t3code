@@ -211,7 +211,7 @@ describe("DesktopAppIdentity", () => {
 
 it("states that a renamed build is unofficial and keeps upstream's About panel as it was", () => {
   assert.isUndefined(DesktopAppIdentity.unofficialForkNotice("T3 Code"));
-  const notice = DesktopAppIdentity.unofficialForkNotice("ExaCode");
+  const notice = DesktopAppIdentity.unofficialForkNotice("MearCode");
   assert.include(notice, "unofficial fork");
   assert.include(notice, "T3 Code source code");
 });

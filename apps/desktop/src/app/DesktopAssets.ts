@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { PRODUCT_NAME, UPSTREAM_PRODUCT_NAME } from "@t3tools/shared/productName";
-import { EXACODE_ICON_PATHS } from "../../../../scripts/lib/brand-assets.ts";
+import { MEARCODE_ICON_PATHS } from "../../../../scripts/lib/brand-assets.ts";
 
 export interface DesktopIconPaths {
   readonly ico: Option.Option<string>;
@@ -84,10 +84,10 @@ function resolveSourceTreeIconPath(
   if (PRODUCT_NAME !== UPSTREAM_PRODUCT_NAME) {
     const forkIconPath =
       ext === "ico"
-        ? EXACODE_ICON_PATHS.windowsIconIco
+        ? MEARCODE_ICON_PATHS.windowsIconIco
         : environment.platform === "darwin"
-          ? EXACODE_ICON_PATHS.macIconPng
-          : EXACODE_ICON_PATHS.linuxIconPng;
+          ? MEARCODE_ICON_PATHS.macIconPng
+          : MEARCODE_ICON_PATHS.linuxIconPng;
     return environment.path.join(environment.rootDir, forkIconPath);
   }
   const brand = environment.isDevelopment ? "dev" : "prod";

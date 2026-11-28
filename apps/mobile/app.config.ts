@@ -2,8 +2,8 @@ import type { ExpoConfig } from "expo/config";
 
 import {
   BRAND_ASSET_PATHS,
-  EXACODE_ICON_BACKGROUND_COLOR,
-  EXACODE_ICON_PATHS,
+  MEARCODE_ICON_BACKGROUND_COLOR,
+  MEARCODE_ICON_PATHS,
 } from "../../scripts/lib/brand-assets.ts";
 import { forkIdentity, provablyUpstream } from "../../scripts/lib/product-name-define.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
@@ -125,16 +125,16 @@ const RELEASE_ASSETS = {
 } as const;
 
 const FORK_ASSETS = {
-  appIcon: fromRepoRoot(EXACODE_ICON_PATHS.linuxIconPng),
-  iosIcon: fromRepoRoot(EXACODE_ICON_PATHS.linuxIconPng),
-  splashIcon: fromRepoRoot(EXACODE_ICON_PATHS.linuxIconPng),
-  androidAdaptiveForeground: fromRepoRoot(EXACODE_ICON_PATHS.androidForegroundPng),
-  androidAdaptiveBackgroundColor: EXACODE_ICON_BACKGROUND_COLOR,
+  appIcon: fromRepoRoot(MEARCODE_ICON_PATHS.linuxIconPng),
+  iosIcon: fromRepoRoot(MEARCODE_ICON_PATHS.linuxIconPng),
+  splashIcon: fromRepoRoot(MEARCODE_ICON_PATHS.linuxIconPng),
+  androidAdaptiveForeground: fromRepoRoot(MEARCODE_ICON_PATHS.androidForegroundPng),
+  androidAdaptiveBackgroundColor: MEARCODE_ICON_BACKGROUND_COLOR,
   androidAdaptiveBackgroundImage: undefined,
-  androidSplashIcon: fromRepoRoot(EXACODE_ICON_PATHS.androidSplashPng),
-  androidMonochromeIcon: fromRepoRoot(EXACODE_ICON_PATHS.androidForegroundPng),
-  androidNotificationIcon: fromRepoRoot(EXACODE_ICON_PATHS.androidForegroundPng),
-  androidNotificationColor: EXACODE_ICON_BACKGROUND_COLOR,
+  androidSplashIcon: fromRepoRoot(MEARCODE_ICON_PATHS.androidSplashPng),
+  androidMonochromeIcon: fromRepoRoot(MEARCODE_ICON_PATHS.androidForegroundPng),
+  androidNotificationIcon: fromRepoRoot(MEARCODE_ICON_PATHS.androidForegroundPng),
+  androidNotificationColor: MEARCODE_ICON_BACKGROUND_COLOR,
 } as const;
 
 const VARIANT_CONFIG = {

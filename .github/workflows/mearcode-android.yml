@@ -1,7 +1,7 @@
-name: ExaCode Android
+name: MearCode Android
 
 # The fork's Android APK, built on GitHub-hosted runners with Expo prebuild and Gradle (no EAS).
-# exacode-release.yml calls it for each nightly; a dispatch from main builds one on its own. See
+# mearcode-release.yml calls it for each nightly; a dispatch from main builds one on its own. See
 # docs/operations/03_release.md#fork-releases. The release key reaches only the signing job, which
 # runs no repository code, and only on runs from main.
 
@@ -34,7 +34,7 @@ on:
         type: boolean
 
 concurrency:
-  group: exacode-android-${{ inputs.ref || github.ref }}
+  group: mearcode-android-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 permissions: {}
@@ -42,8 +42,8 @@ permissions: {}
 env:
   # The fork's own application id, distinct from upstream's com.t3tools.t3code. Changing it makes
   # a new app that cannot update installs of this one.
-  ANDROID_PACKAGE: io.exadev.exacode
-  PRODUCT_NAME: ExaCode
+  ANDROID_PACKAGE: uk.mearman.mearcode
+  PRODUCT_NAME: MearCode
   # The SHA-256 of the release certificate, so a wrong keystore in the secrets fails the run.
   RELEASE_CERT_SHA256: c142a04ac08eabfcae3b03e28fe4babd37e1b218a7b7b9b648cc346fa7af8300
 
@@ -61,7 +61,7 @@ jobs:
     env:
       NODE_OPTIONS: --max-old-space-size=8192
     steps:
-      # A call passes its version; only exacode-release.yml's dry run builds off main.
+      # A call passes its version; only mearcode-release.yml's dry run builds off main.
       - name: Require main for a dispatch
         if: inputs.version == '' && github.ref != 'refs/heads/main'
         run: |
@@ -178,7 +178,7 @@ jobs:
       - name: Upload the unsigned build
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: exacode-android-build
+          name: mearcode-android-build
           path: ${{ runner.temp }}/apk/app-release.apk
           if-no-files-found: error
           retention-days: 1
@@ -211,7 +211,7 @@ jobs:
       - name: Download the build
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: exacode-android-build
+          name: mearcode-android-build
           path: ${{ runner.temp }}/build
 
       # Gradle signs a release build with the generated project's debug key; the release key
@@ -265,6 +265,6 @@ jobs:
       - name: Upload the APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: exacode-android-apk
+          name: mearcode-android-apk
           path: apk/
           if-no-files-found: error

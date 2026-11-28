@@ -17,8 +17,8 @@ afterEach(() => {
 
 it("renames every spelling of upstream's product", () => {
   assert.equal(
-    renameProduct("T3 Code restarts; the T3-Code-Server stays.", "ExaCode"),
-    "ExaCode restarts; the ExaCode-Server stays.",
+    renameProduct("T3 Code restarts; the T3-Code-Server stays.", "MearCode"),
+    "MearCode restarts; the MearCode-Server stays.",
   );
 });
 
@@ -30,8 +30,8 @@ it("keeps upstream's text when no product name is defined", () => {
 
 it("leaves T3's GitHub App name alone", () => {
   assert.equal(
-    renameProduct("Install T3 Code for GitHub, then open T3 Code.", "ExaCode"),
-    "Install T3 Code for GitHub, then open ExaCode.",
+    renameProduct("Install T3 Code for GitHub, then open T3 Code.", "MearCode"),
+    "Install T3 Code for GitHub, then open MearCode.",
   );
 });
 

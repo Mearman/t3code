@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 import { expect, it } from "vite-plus/test";
 
 const workflow = NodeFS.readFileSync(
-  NodePath.join(import.meta.dirname, "../.github/workflows/exacode-release.yml"),
+  NodePath.join(import.meta.dirname, "../.github/workflows/mearcode-release.yml"),
   "utf8",
 );
 

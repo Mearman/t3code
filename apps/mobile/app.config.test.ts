@@ -25,24 +25,24 @@ async function loadConfig(variant: string | undefined, env: Record<string, strin
 }
 
 const FORK_ENV = {
-  T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode",
+  T3CODE_DESKTOP_PRODUCT_NAME: "MearCode",
   T3CODE_DESKTOP_UPDATE_REPOSITORY: "example/fork",
   T3CODE_ANDROID_PACKAGE: "io.example.fork",
 };
 
 it("names a fork build, gives it its own package and icons, and keeps it off upstream's channels", async () => {
   const config = await loadConfig("production", { ...FORK_ENV, T3CODE_ANDROID_VERSION_CODE: "42" });
-  expect(config.name).toBe("ExaCode");
+  expect(config.name).toBe("MearCode");
   expect(config.android?.package).toBe("io.example.fork");
   expect(config.android?.versionCode).toBe(42);
   expect(config.scheme).toBe("io.example.fork");
   expect(config.android?.adaptiveIcon?.foregroundImage).toBe(
-    "../../assets/exacode/exacode-android-foreground.png",
+    "../../assets/mearcode/mearcode-android-foreground.png",
   );
   expect(config.android?.adaptiveIcon?.backgroundColor).toBe("#1B2A5E");
   expect(config.android?.intentFilters).toEqual([]);
   expect(config.updates?.enabled).toBe(false);
-  expect(config.extra?.productName).toBe("ExaCode");
+  expect(config.extra?.productName).toBe("MearCode");
   expect(config.extra?.releaseRepository).toBe("example/fork");
 });
 
