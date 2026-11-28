@@ -167,7 +167,11 @@ export const ClaudeReplicationReport = Schema.Struct({
 });
 export type ClaudeReplicationReport = typeof ClaudeReplicationReport.Type;
 
-export const ClaudeRemoteSessionsInput = Schema.Struct({ environmentId: EnvironmentId });
+/** A linked environment to list, and text its sessions' titles or folders must contain. */
+export const ClaudeRemoteSessionsInput = Schema.Struct({
+  environmentId: EnvironmentId,
+  query: Schema.optionalKey(Schema.String),
+});
 export type ClaudeRemoteSessionsInput = typeof ClaudeRemoteSessionsInput.Type;
 
 /** Why listing, copying or claiming a session across a link failed, in words a user can act on. */

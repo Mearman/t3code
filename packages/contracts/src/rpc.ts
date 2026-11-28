@@ -36,6 +36,7 @@ import {
 } from "./peerLink.ts";
 import {
   ClaudeRemoteSessionList,
+  ClaudeRemoteSessionsInput,
   ClaudeReplicationReport,
   ClaudeSessionReplicationError,
 } from "./claudeSessionReplication.ts";
@@ -52,12 +53,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
-import {
-  EnvironmentId,
-  IsoDateTime,
-  NonNegativeInt,
-  TrimmedNonEmptyString,
-} from "./baseSchemas.ts";
+import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { SecretSourceCheckResult } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
@@ -996,10 +992,7 @@ const WsServerReclaimDatabaseSpaceRpc = Rpc.make(WS_METHODS.serverReclaimDatabas
 
 /** A linked environment's own Claude Code sessions, newest first, to open through the link. */
 const WsClaudeSessionsListRemoteRpc = Rpc.make(WS_METHODS.claudeSessionsListRemote, {
-  payload: Schema.Struct({
-    environmentId: EnvironmentId,
-    query: Schema.optionalKey(Schema.String),
-  }),
+  payload: ClaudeRemoteSessionsInput,
   success: ClaudeRemoteSessionList,
   error: Schema.Union([ClaudeSessionReplicationError, EnvironmentAuthorizationError]),
 });
