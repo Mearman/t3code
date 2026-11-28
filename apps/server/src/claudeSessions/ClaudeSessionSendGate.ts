@@ -448,8 +448,6 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     });
   };
   // Hands the prompt to a holder running the bridge mod; Claude writes it, so nothing branches.
-  // Without the mod attached it refuses as `ask` does, naming what is missing.
-  // Hands the prompt to a holder running the bridge mod; Claude writes it, so nothing branches.
   // Anything it cannot hand over refuses as `ask` does, saying why, so no message is lost.
   const adoptHeld = (
     input: Pick<
