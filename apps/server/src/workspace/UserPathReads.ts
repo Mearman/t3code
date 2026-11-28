@@ -281,7 +281,7 @@ export const readUserPath = Effect.fn("UserPathReads.readUserPath")(function* <A
   if (Exit.isFailure(settled) && Cause.hasDies(settled.cause)) {
     yield* Effect.logError("A folder read failed unexpectedly", { folder: target }, settled.cause);
     const defects = settled.cause.reasons.filter(Cause.isDieReason);
-    return yield* Effect.failCause(Cause.fromReasons(defects));
+    return yield* Effect.failCause(Cause.fromReasons<never>(defects));
   }
   return settled;
 });
