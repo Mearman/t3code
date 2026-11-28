@@ -1079,7 +1079,6 @@ export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
 const ClaudeSessionNonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
-/** Showing every Claude Code session from the configured Claude homes as a thread. */
 /**
  * Which sessions owned by linked environments this environment keeps a copy of. A session is
  * copied when any enabled rule matches it; nothing is copied while the copy would leave less than
@@ -1095,6 +1094,7 @@ export const ClaudeSessionReplicationRules = Schema.Struct({
 });
 export type ClaudeSessionReplicationRules = typeof ClaudeSessionReplicationRules.Type;
 
+/** Showing every Claude Code session from the configured Claude homes as a thread. */
 export const ClaudeSessionSyncSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**

@@ -103,6 +103,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksLink]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksUnlink]: AuthAccessWriteScope,
 
+  // A pass writes copies into this machine's Claude home, as a run writes to its sessions.
   [WS_METHODS.claudeSessionsReplicateNow]: AuthOrchestrationOperateScope,
   // A link lets every agent here reach the other environment: Settings' bar.
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
