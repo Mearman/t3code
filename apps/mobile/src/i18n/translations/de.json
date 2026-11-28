@@ -4106,6 +4106,7 @@
   "7c6fad49c01c6e57": "nutzungsbedingungen",
   "5eb8b236120a62d0": "open-source-lizenzen",
   "0101a4713308f3ff": "Verschieben nicht möglich",
+  "9b5b09e53b84653b": "Threads werden nach {to} verschoben: {done} von {total} erledigt",
   "c86dce72b7d25a38": "Verbinde dich erneut und versuche es noch einmal.",
   "95fbf69a23f5d80b": "{from} konnte nicht komprimieren",
   "99145fad5ccd18ee": "{count, plural, one {{count} Thread blieb auf {from}.} other {{count} Threads blieben auf {from}.}} Verschiebe ohne Komprimieren, um den gesamten Verlauf an {to} zu senden.",

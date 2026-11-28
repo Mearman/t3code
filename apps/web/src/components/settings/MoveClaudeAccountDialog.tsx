@@ -2,12 +2,13 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   claudeAccountLabel,
   claudeMoveTargets,
+  moveClaudeThreadsInTurn,
   summariseClaudeMove,
   type ClaudeMoveSummary,
 } from "@t3tools/client-runtime/claudeAccountMove";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { ClaudeThreadMoveInput } from "@t3tools/contracts";
+import type { ThreadId } from "@t3tools/contracts";
 import { T, useGT, useMessages, Var } from "gt-react";
 import { useState } from "react";
 
@@ -58,36 +59,66 @@ function MoveClaudeAccountDialog({
     (settings) => settings.claudeSessionSync.compactBeforeAccountMove,
   );
   const move = useAtomCommand(serverEnvironment.moveClaudeThreads, { reportFailure: false });
+  const list = useAtomCommand(serverEnvironment.listClaudeThreadsToMove, { reportFailure: false });
   const source = providers.find((provider) => provider.instanceId === request.sourceInstanceId);
   const targets = claudeMoveTargets(providers, request.sourceInstanceId);
   const [targetId, setTargetId] = useState<string | undefined>(undefined);
   const target = targets.find((candidate) => candidate.instanceId === targetId) ?? targets[0];
   const [compact, setCompact] = useState<boolean | undefined>(undefined);
   const [pending, setPending] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [result, setResult] = useState<ClaudeMoveSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const from = source ? claudeAccountLabel(source) : "Claude";
   const to = target ? claudeAccountLabel(target) : "";
 
-  const run = async (selection: ClaudeThreadMoveInput["selection"], withCompaction: boolean) => {
+  const describe = (failure: unknown) =>
+    failure instanceof Error
+      ? (thrownErrorMessage(failure, resolveMessage) ?? failure.message)
+      : gt("The move failed.");
+
+  const run = async (threadIds: ReadonlyArray<ThreadId> | undefined, withCompaction: boolean) => {
     if (target === undefined || pending) return;
     setPending(true);
     setError(null);
-    const outcome = await move({
-      environmentId: request.environmentId,
-      input: { selection, targetInstanceId: target.instanceId, compact: withCompaction },
+    let ids = threadIds;
+    if (ids === undefined) {
+      const listed = await list({
+        environmentId: request.environmentId,
+        input: { instanceId: request.sourceInstanceId },
+      });
+      if (listed._tag === "Failure") {
+        setPending(false);
+        setError(describe(squashAtomCommandFailure(listed)));
+        return;
+      }
+      ids = listed.value.threadIds;
+    }
+    const moved = await moveClaudeThreadsInTurn({
+      threadIds: ids,
+      moveThread: async (threadId) => {
+        const outcome = await move({
+          environmentId: request.environmentId,
+          input: {
+            threadIds: [threadId],
+            targetInstanceId: target.instanceId,
+            compact: withCompaction,
+          },
+        });
+        return outcome._tag === "Failure"
+          ? { failure: squashAtomCommandFailure(outcome) }
+          : { outcomes: outcome.value.outcomes };
+      },
+      onProgress: (done, total) => setProgress({ done, total }),
     });
     setPending(false);
-    if (outcome._tag === "Failure") {
-      const failure = squashAtomCommandFailure(outcome);
-      setError(
-        failure instanceof Error
-          ? (thrownErrorMessage(failure, resolveMessage) ?? failure.message)
-          : gt("The move failed."),
-      );
+    setProgress(null);
+    if (moved.failure !== undefined) setError(describe(moved.failure));
+    const summary = summariseClaudeMove(moved.outcomes);
+    if (moved.failure !== undefined) {
+      setResult(summary);
       return;
     }
-    const summary = summariseClaudeMove(outcome.value.outcomes);
     if (summary.uncompacted.length === 0 && summary.refused.length === 0) {
       toastManager.add({
         type: "success",
@@ -103,12 +134,7 @@ function MoveClaudeAccountDialog({
   };
 
   const start = () =>
-    run(
-      request.threadId === undefined
-        ? { fromInstanceId: request.sourceInstanceId }
-        : { threadIds: [request.threadId] },
-      compact ?? defaultCompact,
-    );
+    run(request.threadId === undefined ? undefined : [request.threadId], compact ?? defaultCompact);
 
   return (
     <Dialog
@@ -212,10 +238,14 @@ function MoveClaudeAccountDialog({
             ) : null}
             {pending ? (
               <p role="status" className="text-xs text-muted-foreground">
-                <T>
-                  Each thread compacts and moves in turn, which can take a few minutes. Keep this
-                  open to see what moved.
-                </T>
+                {progress !== null && progress.total > 1
+                  ? gt("Moved {done} of {total} threads. Keep this open to see what moved.", {
+                      done: progress.done,
+                      total: progress.total,
+                    })
+                  : gt(
+                      "Each thread compacts and moves in turn, which can take a few minutes. Keep this open to see what moved.",
+                    )}
               </p>
             ) : null}
             {error ? (
@@ -230,10 +260,7 @@ function MoveClaudeAccountDialog({
             {result ? <T>Close</T> : <T>Cancel</T>}
           </Button>
           {result && result.uncompacted.length > 0 ? (
-            <Button
-              disabled={pending}
-              onClick={() => void run({ threadIds: [...result.uncompacted] }, false)}
-            >
+            <Button disabled={pending} onClick={() => void run(result.uncompacted, false)}>
               <T>Move without compacting</T>
             </Button>
           ) : null}

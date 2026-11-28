@@ -156,6 +156,10 @@ export function useClaudeAccountEditor(
       <Text accessibilityRole="alert" className="px-4 pb-3 text-danger-foreground">
         {error}
       </Text>
+    ) : accountMove.progressMessage !== undefined ? (
+      <Text accessibilityRole="progressbar" className="px-4 pb-3 text-foreground-muted">
+        {accountMove.progressMessage}
+      </Text>
     ) : null,
   };
 }

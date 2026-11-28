@@ -175,15 +175,18 @@ export const ClaudeThreadAccountConfirmResult = Schema.Struct({
   outcome: Schema.Literals(["confirmed", "stale", "none"]),
 });
 
-/** Moves threads to another Claude account; the client has named both accounts to the user. */
+/** The top-level threads, active or archived, a whole-account move takes from one account. */
+export const ClaudeThreadMoveListInput = Schema.Struct({ instanceId: ProviderInstanceId });
+export type ClaudeThreadMoveListInput = typeof ClaudeThreadMoveListInput.Type;
+export const ClaudeThreadMoveListResult = Schema.Struct({ threadIds: Schema.Array(ThreadId) });
+export type ClaudeThreadMoveListResult = typeof ClaudeThreadMoveListResult.Type;
+
+/**
+ * Moves threads to another Claude account; the client has named both accounts to the user. A
+ * whole-account move sends one thread at a time, so the client can show each one finish.
+ */
 export const ClaudeThreadMoveInput = Schema.Struct({
-  /** These threads, or every top-level thread, active or archived, on one account. */
-  selection: Schema.Union([
-    Schema.Struct({
-      threadIds: Schema.Array(ThreadId).check(Schema.isMinLength(1), Schema.isMaxLength(500)),
-    }),
-    Schema.Struct({ fromInstanceId: ProviderInstanceId }),
-  ]),
+  threadIds: Schema.Array(ThreadId).check(Schema.isMinLength(1), Schema.isMaxLength(500)),
   targetInstanceId: ProviderInstanceId,
   /** Compact under the old account first; a failed compaction then moves nothing. */
   compact: Schema.Boolean,

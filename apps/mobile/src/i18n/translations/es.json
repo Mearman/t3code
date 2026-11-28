@@ -4101,6 +4101,7 @@
   "7c6fad49c01c6e57": "términos",
   "5eb8b236120a62d0": "licencias de código abierto",
   "0101a4713308f3ff": "No se pudo mover",
+  "9b5b09e53b84653b": "Moviendo hilos a {to}: {done} de {total} listos",
   "c86dce72b7d25a38": "Vuelve a conectarte e inténtalo de nuevo.",
   "95fbf69a23f5d80b": "{from} no pudo compactar",
   "99145fad5ccd18ee": "{count, plural, one {{count} hilo se quedó en {from}.} other {{count} hilos se quedaron en {from}.}} Mueve sin compactar para enviar todo el historial a {to}.",

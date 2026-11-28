@@ -42,7 +42,6 @@ import {
   AuthProvidersManageScope,
   type AuthEnvironmentScope,
   ProviderDriverKind,
-  type ProviderInstanceId,
   type ScheduledTaskListResult,
   WorkflowRequestError,
   AuthSessionId,
@@ -2813,6 +2812,34 @@ export const layerWsRpc = (
         [WS_METHODS.providerAuthCancel]: (input) => providerAuth.cancel(input, currentSessionId),
         [WS_METHODS.providerAuthRemoveMethod]: (input) => providerAuth.removeMethod(input),
         [WS_METHODS.providerAuthLogout]: (input) => providerAuth.logout(input),
+        [WS_METHODS.claudeThreadMoveList]:
+          /* Request instrumentation already owns the span; keep this helper in that context. */
+          Effect.fnUntraced(function* (input) {
+            const read = (location: "active" | "archive") =>
+              orchestrationEngine.readShellSnapshot({ location }).pipe(Effect.flatten);
+            const snapshots = yield* Effect.all([read("active"), read("archive")]).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSetupError({
+                    instanceId: input.instanceId,
+                    operation: "moveThreads",
+                    detail: "Could not list that account's threads.",
+                    cause,
+                  }),
+              ),
+            );
+            return {
+              threadIds: snapshots.flatMap((snapshot) =>
+                [...snapshot.threads, ...snapshot.archivedThreads]
+                  .filter(
+                    (thread) =>
+                      thread.modelSelection.instanceId === input.instanceId &&
+                      isListedThreadLineage(thread.lineage),
+                  )
+                  .map((thread) => thread.id),
+              ),
+            };
+          }),
         [WS_METHODS.claudeThreadMove]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
@@ -2822,37 +2849,10 @@ export const layerWsRpc = (
             );
             return yield* ClaudeAccountMove.moveClaudeThreads(
               {
-                orchestration: {
-                  getThreadProjection: orchestrationEngine.getThreadProjection,
-                  dispatch: orchestrationEngine.dispatch,
-                  runUpdates: ({ threadId, afterSequence }) =>
-                    orchestrationEngine
-                      .streamStoredEventsFrom({ threadId, afterSequence, internal: true })
-                      .pipe(
-                        Stream.flatMap(({ event }) =>
-                          event.type === "run.created" || event.type === "run.updated"
-                            ? Stream.make(event.payload)
-                            : Stream.empty,
-                        ),
-                      ),
-                },
-                listThreads: Effect.fn("ClaudeAccountMove.listThreads")(function* (
-                  instanceId: ProviderInstanceId,
-                ) {
-                  const snapshots = yield* Effect.all([
-                    yield* orchestrationEngine.readShellSnapshot({ location: "active" }),
-                    yield* orchestrationEngine.readShellSnapshot({ location: "archive" }),
-                  ]);
-                  return snapshots.flatMap((snapshot) =>
-                    [...snapshot.threads, ...snapshot.archivedThreads]
-                      .filter(
-                        (thread) =>
-                          thread.modelSelection.instanceId === instanceId &&
-                          isListedThreadLineage(thread.lineage),
-                      )
-                      .map((thread) => thread.id),
-                  );
-                }),
+                orchestration:
+                  ClaudeAccountMove.claudeAccountMoveOrchestration(orchestrationEngine),
+                // Windows grants symbolic links only with Developer Mode or administrator rights.
+                canLinkFiles: (yield* HostProcess.Platform) !== "win32",
                 releaseSession: ({ threadId, providerSessionId }) =>
                   providerSessionsV2.detach({
                     threadId,

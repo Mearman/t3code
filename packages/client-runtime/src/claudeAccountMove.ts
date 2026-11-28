@@ -51,3 +51,31 @@ export function summariseClaudeMove(
     ),
   };
 }
+
+/** One move request's result: its outcomes, or why the request itself failed. */
+export type ClaudeMoveRequestResult =
+  | { readonly outcomes: ReadonlyArray<ClaudeThreadMoveOutcome> }
+  | { readonly failure: unknown };
+
+/**
+ * Moves `threadIds` one request per thread, reporting after each, so a whole-account move shows
+ * its progress. A request that fails stops the rest, which stay where they were.
+ */
+export async function moveClaudeThreadsInTurn(input: {
+  readonly threadIds: ReadonlyArray<ThreadId>;
+  readonly moveThread: (threadId: ThreadId) => Promise<ClaudeMoveRequestResult>;
+  readonly onProgress: (done: number, total: number) => void;
+}): Promise<{
+  readonly outcomes: ReadonlyArray<ClaudeThreadMoveOutcome>;
+  readonly failure?: unknown;
+}> {
+  const outcomes: Array<ClaudeThreadMoveOutcome> = [];
+  input.onProgress(0, input.threadIds.length);
+  for (const threadId of input.threadIds) {
+    const result = await input.moveThread(threadId);
+    if ("failure" in result) return { outcomes, failure: result.failure };
+    outcomes.push(...result.outcomes);
+    input.onProgress(outcomes.length, input.threadIds.length);
+  }
+  return { outcomes };
+}

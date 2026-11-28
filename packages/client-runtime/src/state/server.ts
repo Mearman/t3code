@@ -1607,6 +1607,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:claude-thread-move",
       tag: WS_METHODS.claudeThreadMove,
     }),
+    listClaudeThreadsToMove: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:claude-thread-move-list",
+      tag: WS_METHODS.claudeThreadMoveList,
+    }),
     confirmClaudeThreadAccount: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:claude-thread-account-confirm",
       tag: WS_METHODS.claudeThreadAccountConfirm,

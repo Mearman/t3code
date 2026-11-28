@@ -3,7 +3,6 @@ import {
   IDLE_COMPACTION_TEXT,
   MessageId,
   ProviderDriverKind,
-  ProviderSetupError,
   type ClaudeThreadMoveInput,
   type ClaudeThreadMoveOutcome,
   type OrchestrationV2RunStatus,
@@ -27,7 +26,7 @@ import {
   locateClaudeTranscript,
   moveClaudeSessionParts,
 } from "./ClaudeSessionFiles.ts";
-import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
+import type { OrchestratorV2Error, OrchestratorV2Shape } from "../orchestration-v2/Orchestrator.ts";
 import type { ClaudeThreadAccountStore } from "./ClaudeThreadAccounts.ts";
 
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
@@ -99,6 +98,14 @@ export interface ClaudeAccountMoveOrchestration {
           readonly modelSelection: OrchestrationV2ThreadProjection["thread"]["modelSelection"];
         },
   ) => Effect.Effect<{ readonly sequence: number }, OrchestratorV2Error>;
+  /**
+   * Runs `effect` while no message can be accepted for `threadId`, so no run starts on the old
+   * account between releasing its session and switching the thread.
+   */
+  readonly holdThreadMessages: <A, E, R>(
+    threadId: ThreadId,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
   /** Run states of `threadId` recorded after `afterSequence`, oldest first, never dropped. */
   readonly runUpdates: (input: {
     readonly threadId: ThreadId;
@@ -109,13 +116,36 @@ export interface ClaudeAccountMoveOrchestration {
   >;
 }
 
+/**
+ * The move's orchestration from the server's orchestrator. Run updates come from the internal
+ * event stream, which never drops: the RPC subscriber stream may, which would read as a failure.
+ */
+export const claudeAccountMoveOrchestration = (
+  orchestrator: Pick<
+    OrchestratorV2Shape,
+    "getThreadProjection" | "dispatch" | "holdThreadMessages" | "streamStoredEventsFrom"
+  >,
+): ClaudeAccountMoveOrchestration => ({
+  getThreadProjection: orchestrator.getThreadProjection,
+  dispatch: orchestrator.dispatch,
+  holdThreadMessages: orchestrator.holdThreadMessages,
+  runUpdates: ({ threadId, afterSequence }) =>
+    orchestrator
+      .streamStoredEventsFrom({ threadId, afterSequence, internal: true })
+      .pipe(
+        Stream.flatMap(({ event }) =>
+          event.type === "run.created" || event.type === "run.updated"
+            ? Stream.make(event.payload)
+            : Stream.empty,
+        ),
+      ),
+});
+
 export interface ClaudeAccountMoveDependencies {
   readonly orchestration: ClaudeAccountMoveOrchestration;
-  /** Top-level threads, active or archived, whose selection is `instanceId`. */
-  readonly listThreads: (
-    instanceId: ClaudeThreadMoveInput["targetInstanceId"],
-  ) => Effect.Effect<ReadonlyArray<ThreadId>, OrchestratorV2Error>;
-  /** Stops T3 Code's own process for the session, returning once it has exited. */
+  /** False where a move cannot link a session's files, so a move between stores is refused. */
+  readonly canLinkFiles: boolean;
+  /** Asks T3 Code's own process for the session to exit; the move then checks that it has. */
   readonly releaseSession: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: OrchestrationV2ThreadProjection["providerSessions"][number]["id"];
@@ -236,11 +266,19 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
       threadId,
       modelSelection: { ...thread.modelSelection, instanceId: input.targetInstanceId },
     });
-    // The user confirmed the new account by moving, so its next send records that account.
-    yield* deps.accounts.forget(threadId);
   });
+  // The user confirmed the new account by moving, so its next send records that account. If the
+  // record cannot be dropped the next send asks to confirm it again, so the move still stands.
+  const forgetAccount = deps.accounts
+    .forget(threadId)
+    .pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("claude-account-move.forget-account-failed", { threadId, cause }),
+      ),
+    );
   if (nativeId === undefined) {
     yield* setSelection;
+    yield* forgetAccount;
     return outcome("moved");
   }
   const projectDir = yield* locateClaudeTranscript(source.nativeThreadStore.root, nativeId);
@@ -268,52 +306,86 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
   }
   if (sameStore) {
     yield* setSelection;
+    yield* forgetAccount;
     return outcome("moved");
   }
-
-  // T3 Code's own process may still write the session, so it exits before any file moves.
-  for (const session of (yield* deps.orchestration.getThreadProjection(threadId))
-    .providerSessions) {
-    if (session.providerInstanceId !== sourceId || session.status === "stopped") continue;
-    yield* deps.orchestration.dispatch({
-      type: "provider-session.detach",
-      commandId: CommandId.make(`server:account-move-detach:${yield* random.uuidV4()}`),
-      threadId,
-      providerSessionId: session.id,
-      reason: "account-move",
+  if (!deps.canLinkFiles)
+    return outcome("unsupported", {
+      detail:
+        "Moving a thread to an account with its own history needs symbolic links, which this " +
+        "computer does not allow.",
     });
-    yield* deps.releaseSession({ threadId, providerSessionId: session.id });
-  }
-  const released = yield* refusal(yield* deps.orchestration.getThreadProjection(threadId), source);
-  if (released !== undefined) return outcome(released.status, { detail: released.detail });
+  const sourceStore = source.nativeThreadStore;
+  const targetStore = target.nativeThreadStore;
+  const providerThreadId = thread.activeProviderThreadId;
 
-  const parts = yield* listClaudeSessionParts(source.nativeThreadStore.root, projectDir, nativeId);
-  const homes = { source: source.nativeThreadStore.root, target: target.nativeThreadStore.root };
-  // Moving the files and the selection is one step: either both happen or neither does.
-  const moved = yield* Effect.uninterruptible(
+  // From releasing the session to switching the thread, no message may start a run on the old
+  // account, so nothing writes to the files while they move.
+  const moved = yield* deps.orchestration.holdThreadMessages(
+    threadId,
     Effect.gen(function* () {
-      const files = yield* Effect.result(
-        moveClaudeSessionParts({
-          ...homes,
-          parts,
-          linkOriginals: CLAUDE_MOVE_LINKS_ORIGINALS,
+      for (const session of (yield* deps.orchestration.getThreadProjection(threadId))
+        .providerSessions) {
+        if (session.providerInstanceId !== sourceId || session.status === "stopped") continue;
+        yield* deps.orchestration.dispatch({
+          type: "provider-session.detach",
+          commandId: CommandId.make(`server:account-move-detach:${yield* random.uuidV4()}`),
+          threadId,
+          providerSessionId: session.id,
+          reason: "account-move",
+        });
+        yield* deps.releaseSession({ threadId, providerSessionId: session.id });
+      }
+      const released = yield* refusal(
+        yield* deps.orchestration.getThreadProjection(threadId),
+        source,
+      );
+      if (released !== undefined)
+        return { refused: outcome(released.status, { detail: released.detail }) } as const;
+      // Releasing has a time limit, so a process of T3 Code's own may outlive it.
+      if (providerThreadId !== null) {
+        const exited = yield* Effect.result(
+          sourceStore.checkNativeThreadReleased({ providerThreadId, nativeId }),
+        );
+        if (exited._tag === "Failure")
+          return {
+            refused: outcome("held", {
+              detail: "T3 Code's Claude process for this thread has not exited yet. Try again.",
+            }),
+          } as const;
+      }
+      const parts = yield* listClaudeSessionParts(sourceStore.root, projectDir, nativeId);
+      // Moving the files and the selection is one step: either both happen or neither does.
+      const files = yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const files = yield* Effect.result(
+            moveClaudeSessionParts({
+              source: sourceStore.root,
+              target: targetStore.root,
+              parts,
+              linkOriginals: CLAUDE_MOVE_LINKS_ORIGINALS,
+            }),
+          );
+          if (files._tag === "Failure") return files;
+          const selected = yield* Effect.result(setSelection);
+          if (selected._tag === "Success") {
+            yield* files.success.commit;
+            return files;
+          }
+          yield* files.success.undo;
+          return yield* selected.failure;
         }),
       );
-      if (files._tag === "Failure") return files;
-      const selected = yield* Effect.result(setSelection);
-      if (selected._tag === "Success") {
-        yield* files.success.commit;
-        return files;
-      }
-      yield* files.success.undo;
-      return yield* selected.failure;
+      return { files } as const;
     }),
   );
-  if (moved._tag === "Failure")
-    return outcome(isRollbackError(moved.failure) ? "failed" : "copyFailed", {
-      detail: describeFailure(moved.failure),
+  if ("refused" in moved) return moved.refused;
+  if (moved.files._tag === "Failure")
+    return outcome(isRollbackError(moved.files.failure) ? "failed" : "copyFailed", {
+      detail: describeFailure(moved.files.failure),
     });
-  return outcome("moved", moved.success.copied ? { copied: true } : {});
+  yield* forgetAccount;
+  return outcome("moved", moved.files.success.copied ? { copied: true } : {});
 });
 
 /**
@@ -326,21 +398,7 @@ export const moveClaudeThreads = Effect.fn("ClaudeAccountMove.move")(function* (
   input: ClaudeThreadMoveInput,
 ) {
   const outcomes: Array<ClaudeThreadMoveOutcome> = [];
-  const threadIds =
-    "threadIds" in input.selection
-      ? input.selection.threadIds
-      : yield* deps.listThreads(input.selection.fromInstanceId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderSetupError({
-                instanceId: input.targetInstanceId,
-                operation: "moveThreads",
-                detail: "Could not list that account's threads.",
-                cause,
-              }),
-          ),
-        );
-  for (const threadId of threadIds) {
+  for (const threadId of input.threadIds) {
     outcomes.push(
       yield* moveOne(deps, input, threadId).pipe(
         Effect.catch((cause) =>

@@ -9132,7 +9132,8 @@
   "78253300f9f94d2b": "Mover para",
   "20adc4ec3fea0253": ["Compactar primeiro em ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
   "65eced1f62b31ac8": "A nova conta começa de um resumo. O histórico completo fica na sessão.",
-  "3184194a8a730e62": "Cada conversa é compactada e movida por vez, o que pode levar alguns minutos. Mantenha isto aberto para ver o que foi movido.",
+  "0cbf5109bcdb6a3f": "{done} de {total} conversas movidas. Mantenha isto aberto para ver o que foi movido.",
+  "4a027be0872edd31": "Cada conversa é compactada e movida por vez, o que pode levar alguns minutos. Mantenha isto aberto para ver o que foi movido.",
   "6bd44a7b22513151": "Mover sem compactar",
   "73da41e93823fd71": [
     "Não recomendamos gerenciar várias contas ",
