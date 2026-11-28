@@ -5751,7 +5751,7 @@
   "32c95cfa14c87987": "Claude Code-sessioner",
   "38eac42344c31eb7": "Sessioner som körs i en mapp som matchar något av dessa mönster, avgränsade med kommatecken, arkiveras och följs inte.",
   "844c32db6fd476e0": "Behåll fästa sessioner från länkade datorer",
-  "5e86fd5b8fda3d35": "Behåll en kopia av varje session vars tråd eller projekt är fäst på en dator som är länkad hit med full åtkomst. En kopia innehåller konversationen och säkerhetskopior av filerna den redigerade, även ignorerade filer som .env, och återupptas med vanligt claude --resume på den här datorn.",
+  "7c2af74fc169ce30": "Kopiera varje session vars tråd eller projekt är fäst på en dator som är länkad med full åtkomst. En kopia innehåller säkerhetskopior av filerna den redigerade, även .env, och återupptas här med vanligt claude --resume.",
   "1ffad146a191b5be": "Kopiera sessioner aktiva inom (dagar)",
   "14c344353bbaebae": "Kopiera även sessioner som ändrats inom så här många dagar. 0 stänger av det.",
   "62a64590137da3c1": "Behåll alla sessioner från länkade datorer",

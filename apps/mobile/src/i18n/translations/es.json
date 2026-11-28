@@ -5745,7 +5745,7 @@
   "32c95cfa14c87987": "Sesiones de Claude Code",
   "38eac42344c31eb7": "Las sesiones ejecutadas en una carpeta que coincida con uno de estos patrones, separados por comas, se archivan y no se siguen.",
   "844c32db6fd476e0": "Guardar las sesiones fijadas de máquinas vinculadas",
-  "5e86fd5b8fda3d35": "Guarda una copia de cada sesión cuyo hilo o proyecto esté fijado en una máquina vinculada aquí con acceso completo. Una copia contiene la conversación y copias de seguridad de los archivos que editó, incluidos archivos ignorados como .env, y se reanuda con un simple claude --resume en esta máquina.",
+  "7c2af74fc169ce30": "Copia cada sesión cuyo hilo o proyecto esté fijado en una máquina vinculada con acceso completo. Una copia incluye copias de seguridad de los archivos que editó, también .env, y se reanuda aquí con un simple claude --resume.",
   "1ffad146a191b5be": "Copiar sesiones activas en los últimos (días)",
   "14c344353bbaebae": "Copia también las sesiones modificadas en este número de días. 0 lo desactiva.",
   "62a64590137da3c1": "Guardar todas las sesiones de máquinas vinculadas",

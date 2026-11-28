@@ -5745,7 +5745,7 @@
   "32c95cfa14c87987": "Sessões do Claude Code",
   "38eac42344c31eb7": "Sessões executadas em uma pasta que corresponda a um destes padrões, separados por vírgulas, são arquivadas e não acompanhadas.",
   "844c32db6fd476e0": "Manter sessões fixadas de máquinas vinculadas",
-  "5e86fd5b8fda3d35": "Manter uma cópia de cada sessão cuja conversa ou projeto esteja fixado em uma máquina vinculada aqui com acesso total. Uma cópia contém a conversa e backups dos arquivos que editou, incluindo arquivos ignorados como .env, e é retomada com um simples claude --resume nesta máquina.",
+  "7c2af74fc169ce30": "Copiar cada sessão cuja conversa ou projeto esteja fixado em uma máquina vinculada com acesso total. Uma cópia inclui backups dos arquivos que editou, inclusive .env, e é retomada aqui com um simples claude --resume.",
   "1ffad146a191b5be": "Copiar sessões ativas nos últimos (dias)",
   "14c344353bbaebae": "Também copiar sessões alteradas dentro deste número de dias. 0 desativa.",
   "62a64590137da3c1": "Manter todas as sessões de máquinas vinculadas",

@@ -5745,7 +5745,7 @@
   "32c95cfa14c87987": "Sessions Claude Code",
   "38eac42344c31eb7": "Les sessions exécutées dans un dossier correspondant à l’un de ces motifs, séparés par des virgules, sont archivées et non suivies.",
   "844c32db6fd476e0": "Conserver les sessions épinglées des machines liées",
-  "5e86fd5b8fda3d35": "Conserver une copie de chaque session dont le fil ou le projet est épinglé sur une machine liée ici avec un accès complet. Une copie contient la conversation et des sauvegardes des fichiers modifiés, y compris les fichiers ignorés comme .env, et se reprend avec un simple claude --resume sur cette machine.",
+  "7c2af74fc169ce30": "Copier chaque session dont le fil ou le projet est épinglé sur une machine liée avec un accès complet. Une copie inclut des sauvegardes des fichiers modifiés, .env compris, et se reprend ici avec un simple claude --resume.",
   "1ffad146a191b5be": "Copier les sessions actives depuis (jours)",
   "14c344353bbaebae": "Copier aussi les sessions modifiées dans ce nombre de jours. 0 désactive cette option.",
   "62a64590137da3c1": "Conserver toutes les sessions des machines liées",

@@ -5751,7 +5751,7 @@
   "32c95cfa14c87987": "Claude-Code-Sitzungen",
   "38eac42344c31eb7": "Sitzungen in einem Ordner, der einem dieser durch Kommas getrennten Muster entspricht, werden archiviert und nicht verfolgt.",
   "844c32db6fd476e0": "Angeheftete Sitzungen verknüpfter Rechner behalten",
-  "5e86fd5b8fda3d35": "Behalte eine Kopie jeder Sitzung, deren Thread oder Projekt auf einem mit Vollzugriff verknüpften Rechner angeheftet ist. Eine Kopie enthält die Unterhaltung und Sicherungen der bearbeiteten Dateien, auch ignorierter Dateien wie .env, und lässt sich auf diesem Rechner mit einfachem claude --resume fortsetzen.",
+  "7c2af74fc169ce30": "Kopiere jede Sitzung, deren Thread oder Projekt auf einem mit Vollzugriff verknüpften Rechner angeheftet ist. Eine Kopie enthält Sicherungen der bearbeiteten Dateien, auch .env, und lässt sich hier mit einfachem claude --resume fortsetzen.",
   "1ffad146a191b5be": "Sitzungen kopieren, die aktiv waren in den letzten (Tagen)",
   "14c344353bbaebae": "Kopiere auch Sitzungen, die sich in so vielen Tagen geändert haben. 0 schaltet das aus.",
   "62a64590137da3c1": "Alle Sitzungen verknüpfter Rechner behalten",

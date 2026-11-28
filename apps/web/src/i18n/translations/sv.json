@@ -7964,7 +7964,6 @@
       "v": "v"
     }
   ],
-  "5e86fd5b8fda3d35": "Behåll en kopia av varje session vars tråd eller projekt är fäst på en dator som är länkad hit med full åtkomst. En kopia innehåller konversationen och säkerhetskopior av filerna den redigerade, även ignorerade filer som .env, och återupptas med vanligt claude --resume på den här datorn.",
   "844c32db6fd476e0": "Behåll fästa sessioner från länkade datorer",
   "1ffad146a191b5be": "Kopiera sessioner aktiva inom (dagar)",
   "14c344353bbaebae": "Kopiera även sessioner som ändrats inom så här många dagar. 0 stänger av det.",
@@ -7986,6 +7985,16 @@
   "aaa04f7e7c6d2227": "rader tillagda här sparade som {sessions}",
   "fc0555e901deafd4": "Sök titel eller mapp",
   "7bbf4d6c9eae88c0": "Sök sessioner på den länkade datorn",
+  "f56b0c9e19a5fb22": [
+    "Kopiera varje session vars tråd eller projekt är fäst på en dator som är länkad med full åtkomst. En kopia innehåller säkerhetskopior av filerna den redigerade, även .env, och återupptas här med vanligt",
+    " ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "claude --resume"
+    },
+    "."
+  ],
   "9890d5a89e23e8d9": [
     "Senast kontrollerad ",
     {

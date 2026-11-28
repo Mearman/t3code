@@ -7958,7 +7958,6 @@
       "v": "v"
     }
   ],
-  "5e86fd5b8fda3d35": "Manter uma cópia de cada sessão cuja conversa ou projeto esteja fixado em uma máquina vinculada aqui com acesso total. Uma cópia contém a conversa e backups dos arquivos que editou, incluindo arquivos ignorados como .env, e é retomada com um simples claude --resume nesta máquina.",
   "844c32db6fd476e0": "Manter sessões fixadas de máquinas vinculadas",
   "1ffad146a191b5be": "Copiar sessões ativas nos últimos (dias)",
   "14c344353bbaebae": "Também copiar sessões alteradas dentro deste número de dias. 0 desativa.",
@@ -7980,6 +7979,16 @@
   "aaa04f7e7c6d2227": "linhas adicionadas aqui mantidas como {sessions}",
   "fc0555e901deafd4": "Pesquisar título ou pasta",
   "7bbf4d6c9eae88c0": "Pesquisar sessões na máquina vinculada",
+  "f56b0c9e19a5fb22": [
+    "Copiar cada sessão cuja conversa ou projeto esteja fixado em uma máquina vinculada com acesso total. Uma cópia inclui backups dos arquivos que editou, inclusive .env, e é retomada aqui com um simples",
+    " ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "claude --resume"
+    },
+    "."
+  ],
   "9890d5a89e23e8d9": [
     "Última verificação: ",
     {

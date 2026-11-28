@@ -7967,7 +7967,6 @@
       "v": "v"
     }
   ],
-  "5e86fd5b8fda3d35": "Keep a copy of every session whose thread or project is pinned on a machine linked here with full access. A copy holds the conversation and backups of the files it edited, ignored files such as .env included, and resumes with plain claude --resume on this machine.",
   "844c32db6fd476e0": "Keep pinned sessions from linked machines",
   "1ffad146a191b5be": "Copy sessions active within (days)",
   "14c344353bbaebae": "Also copy sessions changed within this many days. 0 turns this off.",
@@ -7989,6 +7988,16 @@
   "aaa04f7e7c6d2227": "lines added here kept as {sessions}",
   "fc0555e901deafd4": "Search title or folder",
   "7bbf4d6c9eae88c0": "Search sessions on the linked machine",
+  "f56b0c9e19a5fb22": [
+    "Copy every session whose thread or project is pinned on a machine linked with full access. A copy includes backups of the files it edited, .env too, and resumes with plain",
+    " ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "claude --resume"
+    },
+    " here."
+  ],
   "9890d5a89e23e8d9": [
     "Last checked ",
     {

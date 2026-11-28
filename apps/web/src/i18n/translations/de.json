@@ -7959,7 +7959,6 @@
       "v": "v"
     }
   ],
-  "5e86fd5b8fda3d35": "Behalte eine Kopie jeder Sitzung, deren Thread oder Projekt auf einem mit Vollzugriff verknüpften Rechner angeheftet ist. Eine Kopie enthält die Unterhaltung und Sicherungen der bearbeiteten Dateien, auch ignorierter Dateien wie .env, und lässt sich auf diesem Rechner mit einfachem claude --resume fortsetzen.",
   "844c32db6fd476e0": "Angeheftete Sitzungen verknüpfter Rechner behalten",
   "1ffad146a191b5be": "Sitzungen kopieren, die aktiv waren in den letzten (Tagen)",
   "14c344353bbaebae": "Kopiere auch Sitzungen, die sich in so vielen Tagen geändert haben. 0 schaltet das aus.",
@@ -7981,6 +7980,16 @@
   "aaa04f7e7c6d2227": "hier hinzugefügte Zeilen behalten als {sessions}",
   "fc0555e901deafd4": "Titel oder Ordner suchen",
   "7bbf4d6c9eae88c0": "Sitzungen auf dem verknüpften Rechner suchen",
+  "f56b0c9e19a5fb22": [
+    "Kopiere jede Sitzung, deren Thread oder Projekt auf einem mit Vollzugriff verknüpften Rechner angeheftet ist. Eine Kopie enthält Sicherungen der bearbeiteten Dateien, auch .env, und lässt sich hier mit einfachem",
+    " ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "claude --resume"
+    },
+    " fortsetzen."
+  ],
   "9890d5a89e23e8d9": [
     "Zuletzt geprüft ",
     {

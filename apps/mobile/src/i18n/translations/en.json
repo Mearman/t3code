@@ -5753,7 +5753,7 @@
   "32c95cfa14c87987": "Claude Code sessions",
   "38eac42344c31eb7": "Sessions run in a folder matching one of these patterns, separated by commas, are archived and not followed.",
   "844c32db6fd476e0": "Keep pinned sessions from linked machines",
-  "5e86fd5b8fda3d35": "Keep a copy of every session whose thread or project is pinned on a machine linked here with full access. A copy holds the conversation and backups of the files it edited, ignored files such as .env included, and resumes with plain claude --resume on this machine.",
+  "7c2af74fc169ce30": "Copy every session whose thread or project is pinned on a machine linked with full access. A copy includes backups of the files it edited, .env too, and resumes with plain claude --resume here.",
   "1ffad146a191b5be": "Copy sessions active within (days)",
   "14c344353bbaebae": "Also copy sessions changed within this many days. 0 turns this off.",
   "62a64590137da3c1": "Keep every session from linked machines",
