@@ -1,6 +1,7 @@
 import {
   CommandId,
   IDLE_COMPACTION_TEXT,
+  isListedThreadLineage,
   MessageId,
   ProviderDriverKind,
   type ClaudeThreadMoveInput,
@@ -99,8 +100,8 @@ export interface ClaudeAccountMoveOrchestration {
         },
   ) => Effect.Effect<{ readonly sequence: number }, OrchestratorV2Error>;
   /**
-   * Runs `effect` while no message can be accepted for `threadId`, so no run starts on the old
-   * account between releasing its session and switching the thread.
+   * Runs `effect` while no message can be accepted for `threadId`; runs started any other way
+   * are kept off the session by its store's fence instead.
    */
   readonly holdThreadMessages: <A, E, R>(
     threadId: ThreadId,
@@ -139,6 +140,24 @@ export const claudeAccountMoveOrchestration = (
             : Stream.empty,
         ),
       ),
+});
+
+/** The top-level threads, active or archived, on `instanceId`: what a whole-account move takes. */
+export const listClaudeAccountThreads = Effect.fn("ClaudeAccountMove.listThreads")(function* (
+  orchestrator: Pick<OrchestratorV2Shape, "readShellSnapshot">,
+  instanceId: ClaudeThreadMoveInput["targetInstanceId"],
+) {
+  const read = (location: "active" | "archive") =>
+    orchestrator.readShellSnapshot({ location }).pipe(Effect.flatten);
+  const snapshots = yield* Effect.all([read("active"), read("archive")]);
+  return snapshots.flatMap((snapshot) =>
+    [...snapshot.threads, ...snapshot.archivedThreads]
+      .filter(
+        (thread) =>
+          thread.modelSelection.instanceId === instanceId && isListedThreadLineage(thread.lineage),
+      )
+      .map((thread) => thread.id),
+  );
 });
 
 export interface ClaudeAccountMoveDependencies {
@@ -259,12 +278,26 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
       ?.nativeThreadRef?.nativeId ?? undefined;
   const sameStore =
     source.continuationIdentity.continuationKey === target.continuationIdentity.continuationKey;
-  const setSelection = Effect.gen(function* () {
+  // The selection is read again inside the hold: one changed meanwhile (a model, an effort, or a
+  // move that got there first) is kept, and a thread no longer on the source is left alone.
+  const currentSelection = Effect.gen(function* () {
+    const current = yield* deps.orchestration.getThreadProjection(threadId);
+    return current.thread.modelSelection.instanceId === sourceId
+      ? current.thread.modelSelection
+      : undefined;
+  });
+  const movedMeanwhile = outcome("busy", {
+    detail:
+      "The thread changed account while this move waited. Move it again if you still want to.",
+  });
+  const setSelection = Effect.fn("ClaudeAccountMove.setSelection")(function* (
+    modelSelection: ClaudeAccountMoveThread["thread"]["modelSelection"],
+  ) {
     yield* deps.orchestration.dispatch({
       type: "thread.model-selection.set",
       commandId: CommandId.make(`server:account-move:${yield* random.uuidV4()}`),
       threadId,
-      modelSelection: { ...thread.modelSelection, instanceId: input.targetInstanceId },
+      modelSelection: { ...modelSelection, instanceId: input.targetInstanceId },
     });
   });
   // The user confirmed the new account by moving, so its next send records that account. If the
@@ -276,11 +309,18 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
         Effect.logWarning("claude-account-move.forget-account-failed", { threadId, cause }),
       ),
     );
-  if (nativeId === undefined) {
-    yield* setSelection;
+  const switchOnly = Effect.gen(function* () {
+    const selection = yield* deps.orchestration.holdThreadMessages(
+      threadId,
+      currentSelection.pipe(
+        Effect.tap((current) => (current === undefined ? Effect.void : setSelection(current))),
+      ),
+    );
+    if (selection === undefined) return movedMeanwhile;
     yield* forgetAccount;
     return outcome("moved");
-  }
+  });
+  if (nativeId === undefined) return yield* switchOnly;
   const projectDir = yield* locateClaudeTranscript(source.nativeThreadStore.root, nativeId);
   if (projectDir === undefined)
     return outcome("missing", {
@@ -304,11 +344,7 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
     const after = yield* refusal(yield* deps.orchestration.getThreadProjection(threadId), source);
     if (after !== undefined) return outcome(after.status, { detail: after.detail });
   }
-  if (sameStore) {
-    yield* setSelection;
-    yield* forgetAccount;
-    return outcome("moved");
-  }
+  if (sameStore) return yield* switchOnly;
   if (!deps.canLinkFiles)
     return outcome("unsupported", {
       detail:
@@ -319,66 +355,77 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
   const targetStore = target.nativeThreadStore;
   const providerThreadId = thread.activeProviderThreadId;
 
-  // From releasing the session to switching the thread, no message may start a run on the old
-  // account, so nothing writes to the files while they move.
-  const moved = yield* deps.orchestration.holdThreadMessages(
+  // From releasing the session to switching the thread no message is accepted for it, and no
+  // Claude process may start on its session by any route (a retry, a requeued steer), so nothing
+  // writes to the files while they move.
+  const fenced = yield* deps.orchestration.holdThreadMessages(
     threadId,
-    Effect.gen(function* () {
-      for (const session of (yield* deps.orchestration.getThreadProjection(threadId))
-        .providerSessions) {
-        if (session.providerInstanceId !== sourceId || session.status === "stopped") continue;
-        yield* deps.orchestration.dispatch({
-          type: "provider-session.detach",
-          commandId: CommandId.make(`server:account-move-detach:${yield* random.uuidV4()}`),
-          threadId,
-          providerSessionId: session.id,
-          reason: "account-move",
-        });
-        yield* deps.releaseSession({ threadId, providerSessionId: session.id });
-      }
-      const released = yield* refusal(
-        yield* deps.orchestration.getThreadProjection(threadId),
-        source,
-      );
-      if (released !== undefined)
-        return { refused: outcome(released.status, { detail: released.detail }) } as const;
-      // Releasing has a time limit, so a process of T3 Code's own may outlive it.
-      if (providerThreadId !== null) {
-        const exited = yield* Effect.result(
-          sourceStore.checkNativeThreadReleased({ providerThreadId, nativeId }),
+    sourceStore.whileNativeThreadFenced(
+      nativeId,
+      Effect.gen(function* () {
+        const selection = yield* currentSelection;
+        if (selection === undefined) return { refused: movedMeanwhile } as const;
+        for (const session of (yield* deps.orchestration.getThreadProjection(threadId))
+          .providerSessions) {
+          if (session.providerInstanceId !== sourceId || session.status === "stopped") continue;
+          yield* deps.orchestration.dispatch({
+            type: "provider-session.detach",
+            commandId: CommandId.make(`server:account-move-detach:${yield* random.uuidV4()}`),
+            threadId,
+            providerSessionId: session.id,
+            reason: "account-move",
+          });
+          yield* deps.releaseSession({ threadId, providerSessionId: session.id });
+        }
+        const released = yield* refusal(
+          yield* deps.orchestration.getThreadProjection(threadId),
+          source,
         );
-        if (exited._tag === "Failure")
-          return {
-            refused: outcome("held", {
-              detail: "T3 Code's Claude process for this thread has not exited yet. Try again.",
-            }),
-          } as const;
-      }
-      const parts = yield* listClaudeSessionParts(sourceStore.root, projectDir, nativeId);
-      // Moving the files and the selection is one step: either both happen or neither does.
-      const files = yield* Effect.uninterruptible(
-        Effect.gen(function* () {
-          const files = yield* Effect.result(
-            moveClaudeSessionParts({
-              source: sourceStore.root,
-              target: targetStore.root,
-              parts,
-              linkOriginals: CLAUDE_MOVE_LINKS_ORIGINALS,
-            }),
+        if (released !== undefined)
+          return { refused: outcome(released.status, { detail: released.detail }) } as const;
+        // Releasing has a time limit, so a process of T3 Code's own may outlive it.
+        if (providerThreadId !== null) {
+          const exited = yield* Effect.result(
+            sourceStore.checkNativeThreadReleased({ providerThreadId, nativeId }),
           );
-          if (files._tag === "Failure") return files;
-          const selected = yield* Effect.result(setSelection);
-          if (selected._tag === "Success") {
-            yield* files.success.commit;
-            return files;
-          }
-          yield* files.success.undo;
-          return yield* selected.failure;
-        }),
-      );
-      return { files } as const;
-    }),
+          if (exited._tag === "Failure")
+            return {
+              refused: outcome("held", {
+                detail: "T3 Code's Claude process for this thread has not exited yet. Try again.",
+              }),
+            } as const;
+        }
+        const parts = yield* listClaudeSessionParts(sourceStore.root, projectDir, nativeId);
+        // Moving the files and the selection is one step: either both happen or neither does.
+        const files = yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const files = yield* Effect.result(
+              moveClaudeSessionParts({
+                source: sourceStore.root,
+                target: targetStore.root,
+                parts,
+                linkOriginals: CLAUDE_MOVE_LINKS_ORIGINALS,
+              }),
+            );
+            if (files._tag === "Failure") return files;
+            const selected = yield* Effect.result(setSelection(selection));
+            if (selected._tag === "Success") {
+              yield* files.success.commit;
+              return files;
+            }
+            yield* files.success.undo;
+            return yield* selected.failure;
+          }),
+        );
+        return { files } as const;
+      }),
+    ),
   );
+  if (Option.isNone(fenced))
+    return outcome("busy", {
+      detail: "A turn is starting on this thread. Move it once the turn has finished.",
+    });
+  const moved = fenced.value;
   if ("refused" in moved) return moved.refused;
   if (moved.files._tag === "Failure")
     return outcome(isRollbackError(moved.files.failure) ? "failed" : "copyFailed", {

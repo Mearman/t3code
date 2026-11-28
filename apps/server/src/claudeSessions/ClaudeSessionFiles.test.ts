@@ -223,7 +223,9 @@ it.effect("compares files whose reads return less than was asked", () =>
   Effect.gen(function* () {
     const h = yield* homes;
     const fileSystem = h.fileSystem;
-    // Each read returns at most a few bytes, as a network mount may.
+    // Each read returns at most a few bytes, as a network mount may, and a different number in
+    // each home, so the two files' pieces never line up.
+    const readLimit = (file: string) => (file.startsWith(h.target) ? 5 : 7);
     const shortReads = FileSystem.make({
       ...fileSystem,
       open: (file, options) =>
@@ -233,7 +235,7 @@ it.effect("compares files whose reads return less than was asked", () =>
               new Proxy(handle, {
                 get: (target, key, receiver) =>
                   key === "readAlloc"
-                    ? (size: number) => target.readAlloc(Math.min(size, 7))
+                    ? (size: number) => target.readAlloc(Math.min(size, readLimit(file)))
                     : Reflect.get(target, key, receiver),
               }),
           ),

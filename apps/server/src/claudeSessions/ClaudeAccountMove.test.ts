@@ -17,6 +17,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -29,12 +30,14 @@ import {
   type ClaudeAccountMoveThread,
 } from "./ClaudeAccountMove.ts";
 import { claudeAccountIdentity, makeClaudeThreadAccountStore } from "./ClaudeThreadAccounts.ts";
+import { makeClaudeSessionMoveFence } from "./ClaudeSpawnedProcesses.ts";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 
 const services = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
 const claude = ProviderDriverKind.make("claudeAgent");
 const personal = ProviderInstanceId.make("claudeAgent");
 const work = ProviderInstanceId.make("claudeAgent_work");
+const third = ProviderInstanceId.make("claudeAgent_third");
 const threadId = ThreadId.make("thread-move");
 const providerThreadId = ProviderThreadId.make("provider-thread-move");
 const session = "11111111-2222-3333-4444-555555555555";
@@ -81,6 +84,12 @@ interface Options {
   readonly forgetDies?: boolean;
   /** Sends a message to the thread while its session is being released. */
   readonly messageDuringRelease?: boolean;
+  /** Changes the thread's model while the old account compacts. */
+  readonly modelDuringCompaction?: string;
+  /** Runs after the session is released, while the files are about to move. */
+  readonly afterRelease?: (
+    fence: ReturnType<typeof makeClaudeSessionMoveFence>,
+  ) => Effect.Effect<void>;
 }
 
 const harness = (options: Options = {}) =>
@@ -108,6 +117,10 @@ const harness = (options: Options = {}) =>
 
     const commands: Array<string> = [];
     let selected = personal;
+    let model = "claude-test";
+    const moveFence = makeClaudeSessionMoveFence();
+    const third_ = path.join(root, "third");
+    yield* fileSystem.makeDirectory(path.join(third_, "projects"), { recursive: true });
     let runStatus = options.runStatus;
     let held = options.held === true;
     const compactionWaiting = yield* Deferred.make<void>();
@@ -123,7 +136,7 @@ const harness = (options: Options = {}) =>
     );
     const projection = (): ClaudeAccountMoveThread => ({
       thread: {
-        modelSelection: { instanceId: selected, model: "claude-test" },
+        modelSelection: { instanceId: selected, model },
         activeProviderThreadId: providerThreadId,
       },
       runs: runStatus === undefined ? [] : [{ status: runStatus }],
@@ -149,6 +162,7 @@ const harness = (options: Options = {}) =>
           isHeld() || options.ownProcessLingers === true
             ? Effect.fail(inUse(input.providerThreadId))
             : Effect.void,
+        whileNativeThreadFenced: moveFence.whileMoving,
       },
     });
     let compactMessage: MessageId | undefined;
@@ -169,6 +183,7 @@ const harness = (options: Options = {}) =>
                   cause: "refused",
                 });
               selected = command.modelSelection.instanceId;
+              model = command.modelSelection.model;
             }
             return { sequence: commands.length };
           }),
@@ -180,6 +195,7 @@ const harness = (options: Options = {}) =>
               Stream.concat(Stream.never),
             );
           runStatus = options.duringCompaction?.runStatus ?? runStatus;
+          model = options.modelDuringCompaction ?? model;
           held = options.duringCompaction?.held ?? held;
           return Stream.fromIterable<{
             readonly userMessageId: MessageId;
@@ -207,6 +223,7 @@ const harness = (options: Options = {}) =>
                 ),
               ),
             );
+          if (options.afterRelease !== undefined) yield* options.afterRelease(moveFence);
         }),
       canLinkFiles: options.cannotLink !== true,
       getInstance: (instanceId) =>
@@ -219,7 +236,9 @@ const harness = (options: Options = {}) =>
                   options.sharedStore ? "claude:store:personal" : "claude:store:work",
                   () => false,
                 )
-              : undefined,
+              : instanceId === third
+                ? store(third_, "claude:store:third", () => false)
+                : undefined,
         ),
       accounts,
     };
@@ -236,7 +255,14 @@ const harness = (options: Options = {}) =>
       accounts,
       move,
       messagesDelivered,
+      moveFence,
+      third: third_,
+      deps,
       selected: () => selected,
+      model: () => model,
+      setModel: (next: string) => {
+        model = next;
+      },
     };
   });
 
@@ -465,4 +491,80 @@ it.effect("reads compaction runs from the event stream that never drops", () =>
     yield* Stream.runDrain(orchestration.runUpdates({ threadId, afterSequence: 4 }));
     assert.deepEqual(reads, [{ threadId, afterSequence: 4, internal: true }]);
   }),
+);
+
+it.effect(
+  "keeps a model chosen while the old account compacted, and moves to the new account",
+  () =>
+    Effect.gen(function* () {
+      const h = yield* harness({ modelDuringCompaction: "claude-other" });
+      assert.strictEqual((yield* h.move()).outcomes[0]?.status, "moved");
+      assert.strictEqual(h.selected(), work);
+      assert.strictEqual(h.model(), "claude-other");
+    }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("a second move that waited for the first leaves the thread where the first put it", () =>
+  Effect.gen(function* () {
+    const reached = yield* Deferred.make<void>();
+    const finish = yield* Deferred.make<void>();
+    const h = yield* harness({
+      afterRelease: () =>
+        Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+    });
+    // The first move to work holds the thread while a second move, read when it was still on
+    // personal, waits to move it to a third account.
+    const first = yield* Effect.forkChild(h.move(false, work));
+    yield* Deferred.await(reached);
+    const second = yield* Effect.forkChild(h.move(false, third));
+    yield* Effect.yieldNow;
+    yield* Deferred.succeed(finish, undefined);
+    assert.strictEqual((yield* Fiber.join(first)).outcomes[0]?.status, "moved");
+    const { outcomes } = yield* Fiber.join(second);
+    assert.strictEqual(outcomes[0]?.status, "busy");
+    assert.include(outcomes[0]?.detail, "changed account");
+    assert.strictEqual(h.selected(), work);
+    assert.isFalse(yield* h.fileSystem.exists(h.path.join(h.third, transcriptPath)));
+    assert.isFalse(yield* isLink(h.fileSystem, h.path.join(h.target, transcriptPath)));
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("moves nothing while a Claude process is starting on the session by another route", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({});
+    const started = yield* Deferred.make<void>();
+    const finish = yield* Deferred.make<void>();
+    // A retried or requeued run reaches the session through the send gate, not the intake.
+    const start = yield* Effect.forkChild(
+      h.moveFence.unlessMoving(
+        session,
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+      ),
+    );
+    yield* Deferred.await(started);
+    const outcome = (yield* h.move(false)).outcomes[0];
+    assert.strictEqual(outcome?.status, "busy");
+    assert.include(outcome?.detail, "turn is starting");
+    assert.strictEqual(h.selected(), personal);
+    assert.isFalse(yield* h.fileSystem.exists(h.path.join(h.target, transcriptPath)));
+    yield* Deferred.succeed(finish, undefined);
+    yield* Fiber.join(start);
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("a start by any route while the files move is refused, not run on the old account", () =>
+  Effect.gen(function* () {
+    const refusedDuringMove: Array<string> = [];
+    const h = yield* harness({
+      afterRelease: (fence) =>
+        fence.unlessMoving(session, Effect.void).pipe(
+          Effect.map((ran) => {
+            if (Option.isNone(ran)) refusedDuringMove.push("refused");
+          }),
+        ),
+    });
+    assert.strictEqual((yield* h.move(false)).outcomes[0]?.status, "moved");
+    assert.deepEqual(refusedDuringMove, ["refused"]);
+    assert.isTrue(Option.isSome(yield* h.moveFence.unlessMoving(session, Effect.void)));
+  }).pipe(Effect.scoped, Effect.provide(services)),
 );

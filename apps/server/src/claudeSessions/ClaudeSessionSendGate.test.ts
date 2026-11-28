@@ -16,9 +16,12 @@ import {
 } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -38,6 +41,7 @@ import {
   type ClaudeSessionHold,
   claudeHolderSource,
 } from "./ClaudeSessionSendGate.ts";
+import { makeClaudeSessionMoveFence } from "./ClaudeSpawnedProcesses.ts";
 
 const encodeEntry = Schema.encodeSync(Schema.fromJsonString(ClaudeSessionRegistryEntry));
 
@@ -546,6 +550,7 @@ describe("gateHeldClaudeSessionRuntime", () => {
     /** The bridge refuses every prompt for this reason. */
     readonly bridgeRefuses?: string;
   }) => {
+    const moveFence = makeClaudeSessionMoveFence();
     const calls: Array<string> = [];
     const probes: Array<string> = [];
     let lingering = input.lingeringChecks ?? 0;
@@ -624,8 +629,9 @@ describe("gateHeldClaudeSessionRuntime", () => {
                 calls.push(`bridge:${submitted.asUser ? "user" : "mod"}:${submitted.text}`);
               }),
       },
+      moveFence,
     );
-    return { runtime, calls, probes, state };
+    return { runtime, calls, probes, state, moveFence };
   };
   // Each operation that would start, drive or write to the native session.
   const writes = (
@@ -1329,6 +1335,62 @@ describe("gateHeldClaudeSessionRuntime", () => {
       );
       expect(message).toContain("Could not read the process table: ps exited with 1.");
       expect(message).toContain(REQUIREMENT);
+    }),
+  );
+
+  it.effect("starts nothing on a session a move holds, by any route, and says why", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const thread = providerThread(now);
+      const { runtime, calls, moveFence } = makeGate({});
+      const results = yield* moveFence.whileMoving(
+        "held-session",
+        Effect.gen(function* () {
+          const operations = writes(runtime, thread, now);
+          return yield* refusals({
+            resumeThread: operations.resumeThread,
+            startTurn: operations.startTurn,
+            resumeTurn: operations.resumeTurn,
+            compactThread: operations.compactThread,
+            steerTurn: operations.steerTurn,
+          });
+        }),
+      );
+      expect(calls).toEqual([]);
+      for (const [name, refusal] of results.pipe(Option.getOrThrow)) {
+        expectInUse(name, refusal, false);
+        const inUse =
+          TURN_STARTS.has(name) && Predicate.hasProperty(refusal, "cause")
+            ? refusal.cause
+            : refusal;
+        expect(inUse).toMatchObject({
+          detail: expect.stringContaining("moving to another Claude account"),
+        });
+      }
+      yield* runtime.startTurn(turnInput(thread, now));
+      expect(calls).toEqual(["startTurn"]);
+    }),
+  );
+
+  it.effect("a move cannot hold a session while a start on it is under way", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const thread = providerThread(now);
+      const { runtime, moveFence } = makeGate({});
+      const started = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<void>();
+      const fiber = yield* Effect.forkChild(
+        moveFence.unlessMoving(
+          "held-session",
+          Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+        ),
+      );
+      yield* Deferred.await(started);
+      expect(Option.isNone(yield* moveFence.whileMoving("held-session", Effect.void))).toBe(true);
+      yield* Deferred.succeed(finish, undefined);
+      yield* Fiber.join(fiber);
+      expect(Option.isSome(yield* moveFence.whileMoving("held-session", Effect.void))).toBe(true);
+      yield* runtime.startTurn(turnInput(thread, now));
     }),
   );
 });

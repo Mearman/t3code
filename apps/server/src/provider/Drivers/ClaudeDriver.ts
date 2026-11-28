@@ -286,6 +286,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       },
       secondWriters,
       bridge,
+      spawnedProcesses.moveFence,
     );
     const nativeThreadStore = {
       root: configDir,
@@ -306,6 +307,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         anyHolderProbe,
         claudeProcessTableRequirement(platform),
       ),
+      whileNativeThreadFenced: spawnedProcesses.moveFence.whileMoving,
     };
     const textGeneration = yield* makeClaudeTextGeneration(
       effectiveConfig,
