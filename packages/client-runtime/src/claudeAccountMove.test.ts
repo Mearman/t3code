@@ -110,3 +110,25 @@ describe("moveClaudeThreadsInTurn", () => {
     expect(result.failure).toBe(refused);
   });
 });
+
+describe("claudeMoveTargets with shared history only", () => {
+  const withStore = (instanceId: string, groupKey: string | undefined): ServerProvider => ({
+    ...provider(instanceId, "claudeAgent", true),
+    ...(groupKey === undefined ? {} : { continuation: { groupKey } }),
+  });
+  const providers = [
+    withStore("personal", "claude:store:a"),
+    withStore("work", "claude:store:a"),
+    withStore("client", "claude:store:b"),
+    withStore("unknown", undefined),
+  ];
+
+  it("offers every other account normally, and only those sharing history when asked", () => {
+    const ids = (shared: boolean) =>
+      claudeMoveTargets(providers, ProviderInstanceId.make("personal"), shared).map(
+        (target) => target.instanceId,
+      );
+    expect(ids(false)).toEqual(["work", "client", "unknown"]);
+    expect(ids(true)).toEqual(["work"]);
+  });
+});

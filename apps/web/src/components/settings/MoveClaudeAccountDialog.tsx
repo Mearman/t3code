@@ -13,6 +13,7 @@ import { T, useGT, useMessages, Var } from "gt-react";
 import { useState } from "react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
+import { useServerConfigs } from "../../state/entities";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { claudeMoveDialogAtom, type ClaudeMoveRequest } from "./claudeMoveDialogState";
 import { serverEnvironment } from "../../state/server";
@@ -61,7 +62,10 @@ function MoveClaudeAccountDialog({
   const move = useAtomCommand(serverEnvironment.moveClaudeThreads, { reportFailure: false });
   const list = useAtomCommand(serverEnvironment.listClaudeThreadsToMove, { reportFailure: false });
   const source = providers.find((provider) => provider.instanceId === request.sourceInstanceId);
-  const targets = claudeMoveTargets(providers, request.sourceInstanceId);
+  const sharedHistoryOnly =
+    useServerConfigs().get(request.environmentId)?.environment.capabilities
+      .claudeAccountMovesSharedHistoryOnly === true;
+  const targets = claudeMoveTargets(providers, request.sourceInstanceId, sharedHistoryOnly);
   const [targetId, setTargetId] = useState<string | undefined>(undefined);
   const target = targets.find((candidate) => candidate.instanceId === targetId) ?? targets[0];
   const [compact, setCompact] = useState<boolean | undefined>(undefined);

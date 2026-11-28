@@ -14,16 +14,24 @@ export function claudeAccountLabel(provider: Pick<ServerProvider, "displayName" 
   return email ? `${name} (${email})` : name;
 }
 
-/** The Claude accounts a thread on `sourceInstanceId` can move to: every other enabled one. */
+/**
+ * The Claude accounts a thread on `sourceInstanceId` can move to: every other enabled one, or,
+ * where the server moves only within shared history, those sharing the source's.
+ */
 export function claudeMoveTargets(
   providers: ReadonlyArray<ServerProvider>,
   sourceInstanceId: ProviderInstanceId,
+  sharedHistoryOnly = false,
 ): ReadonlyArray<ServerProvider> {
+  const source = providers.find((provider) => provider.instanceId === sourceInstanceId);
   return providers.filter(
     (provider) =>
       provider.driver === CLAUDE_DRIVER &&
       provider.enabled &&
-      provider.instanceId !== sourceInstanceId,
+      provider.instanceId !== sourceInstanceId &&
+      (!sharedHistoryOnly ||
+        (provider.continuation !== undefined &&
+          provider.continuation.groupKey === source?.continuation?.groupKey)),
   );
 }
 

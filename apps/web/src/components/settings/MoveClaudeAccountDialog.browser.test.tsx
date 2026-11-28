@@ -58,6 +58,7 @@ vi.mock("../../state/use-atom-command", () => ({
   useAtomCommand: (command: string) => (command === "move" ? state.move : state.list),
 }));
 vi.mock("../../hooks/useSettings", () => ({ useEnvironmentSettings: () => false }));
+vi.mock("../../state/entities", () => ({ useServerConfigs: () => new Map() }));
 vi.mock("../../rpc/atomRegistry", () => ({ appAtomRegistry: { set: state.close } }));
 vi.mock("../ui/toast", () => ({ toastManager: { add: state.toast } }));
 

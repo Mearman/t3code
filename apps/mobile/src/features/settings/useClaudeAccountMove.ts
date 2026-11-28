@@ -1,6 +1,5 @@
 import {
   claudeAccountLabel,
-  claudeMoveTargets,
   moveClaudeThreadsInTurn,
   summariseClaudeMove,
 } from "@t3tools/client-runtime/claudeAccountMove";
@@ -44,6 +43,8 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     readonly total: number;
   } | null>(null);
   const supported = config?.environment.capabilities.claudeAccountMoves === true;
+  const sharedHistoryOnly =
+    config?.environment.capabilities.claudeAccountMovesSharedHistoryOnly === true;
   const providers: ReadonlyArray<ServerProvider> = config?.providers ?? [];
   const compactByDefault = config?.settings.claudeSessionSync.compactBeforeAccountMove ?? true;
 
@@ -52,8 +53,7 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     canManage &&
     providers.some(
       (provider) => provider.instanceId === sourceInstanceId && provider.driver === "claudeAgent",
-    ) &&
-    claudeMoveTargets(providers, sourceInstanceId).length > 0;
+    );
 
   const describe = (failure: unknown) =>
     failure instanceof Error
@@ -104,14 +104,20 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
       moved.failure === undefined
         ? []
         : [describe(moved.failure), gt("The remaining threads were not moved.")];
+    const movedCount = gt(
+      "{count, plural, =0 {No threads moved} one {Moved {count} thread to {to}} other {Moved {count} threads to {to}}}",
+      { count: summary.moved, to },
+    );
     if (summary.uncompacted.length > 0) {
       Dialog.alert(
         gt("{from} could not compact", { from }),
         [
+          ...(summary.moved > 0 ? [`${movedCount}.`] : []),
           gt(
             "{count, plural, one {{count} thread stayed on {from}.} other {{count} threads stayed on {from}.}} Move without compacting to send the full history to {to}.",
             { count: summary.uncompacted.length, from, to },
           ),
+          ...refused,
           ...stopped,
         ].join("\n"),
         [
@@ -125,10 +131,7 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
       return;
     }
     Dialog.alert(
-      gt(
-        "{count, plural, =0 {No threads moved} one {Moved {count} thread to {to}} other {Moved {count} threads to {to}}}",
-        { count: summary.moved, to },
-      ),
+      movedCount,
       [...refused, ...stopped].length > 0 ? [...refused, ...stopped].join("\n") : undefined,
     );
   };
@@ -169,7 +172,9 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     sourceInstanceId: ProviderInstanceId,
     item: Omit<MenuAction, "id" | "subactions">,
   ): MenuAction | undefined =>
-    canMove(sourceInstanceId) ? claudeMoveMenuAction(providers, sourceInstanceId, item) : undefined;
+    canMove(sourceInstanceId)
+      ? claudeMoveMenuAction(providers, sourceInstanceId, item, sharedHistoryOnly)
+      : undefined;
 
   /** Starts the move a `menuAction` item names; false for any other menu id. */
   const handleMenuAction = (
@@ -177,7 +182,7 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     sourceInstanceId: ProviderInstanceId,
     threadId?: ThreadId,
   ): boolean => {
-    const target = claudeMoveMenuTarget(providers, sourceInstanceId, id);
+    const target = claudeMoveMenuTarget(providers, sourceInstanceId, id, sharedHistoryOnly);
     if (target === undefined) return false;
     const source = providers.find((provider) => provider.instanceId === sourceInstanceId);
     if (source === undefined || target === null) return true;

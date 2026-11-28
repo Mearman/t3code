@@ -1523,13 +1523,17 @@ function MoveClaudeThreadsRow(props: {
 }) {
   const gt = useGT();
   const providers = useAtomValue(serverEnvironment.providersValueAtom(props.environmentId)) ?? [];
-  const supported =
-    useServerConfigs().get(props.environmentId)?.environment.capabilities.claudeAccountMoves ===
-    true;
+  const capabilities = useServerConfigs().get(props.environmentId)?.environment.capabilities;
+  const supported = capabilities?.claudeAccountMoves === true;
   const permitted = useAtomValue(
     serverEnvironment.moveClaudeThreads.permissionAtom(props.environmentId),
   );
-  if (!supported || claudeMoveTargets(providers, props.instanceId).length === 0) return null;
+  const targets = claudeMoveTargets(
+    providers,
+    props.instanceId,
+    capabilities?.claudeAccountMovesSharedHistoryOnly === true,
+  );
+  if (!supported || targets.length === 0) return null;
   return (
     <SettingsSection title={gt("Threads")}>
       <SettingsRow

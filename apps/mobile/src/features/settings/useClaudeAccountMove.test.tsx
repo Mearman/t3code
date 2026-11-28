@@ -41,9 +41,15 @@ vi.mock("../../state/server", () => ({
 vi.mock("../../state/use-atom-command", () => ({
   useAtomCommand: (command: string) => (command === "list" ? state.list : state.move),
 }));
+const sharedHistory = vi.hoisted(() => ({ only: false }));
 vi.mock("../../state/entities", () => ({
   useEnvironmentServerConfig: () => ({
-    environment: { capabilities: { claudeAccountMoves: true } },
+    environment: {
+      capabilities: {
+        claudeAccountMoves: true,
+        claudeAccountMovesSharedHistoryOnly: sharedHistory.only,
+      },
+    },
     providers: [account("personal"), account("work")],
     settings: { claudeSessionSync: { compactBeforeAccountMove: false } },
   }),
@@ -135,4 +141,48 @@ it("says a request failed and the rest were not moved, even when some came back 
   expect(title).toBe("personal could not compact");
   expect(message).toContain("The server is not reachable.");
   expect(message).toContain("The remaining threads were not moved.");
+});
+
+it("keeps the moved count and each refusal beside the threads that came back uncompacted", async () => {
+  state.alert.mockReset();
+  state.move.mockReset();
+  state.list.mockReset();
+  const ids = ["one", "two", "three"].map((id) => ThreadId.make(id));
+  state.list.mockResolvedValueOnce(AsyncResult.success({ threadIds: ids }));
+  state.move
+    .mockResolvedValueOnce(
+      AsyncResult.success({ outcomes: [{ threadId: ids[0], status: "moved" }] }),
+    )
+    .mockResolvedValueOnce(
+      AsyncResult.success({
+        outcomes: [{ threadId: ids[1], status: "busy", detail: "The thread is working." }],
+      }),
+    )
+    .mockResolvedValueOnce(
+      AsyncResult.success({ outcomes: [{ threadId: ids[2], status: "compactionFailed" }] }),
+    );
+  using mounted = mount();
+  const action = mounted.hook().menuAction(source, { title: "Move" });
+  act(() => {
+    mounted.hook().handleMenuAction(action!.id!, source);
+  });
+  const [, , buttons] = state.alert.mock.calls[0] as [
+    string,
+    string,
+    ReadonlyArray<{ readonly text: string; readonly onPress?: () => void }>,
+  ];
+  await act(async () =>
+    buttons.find((button) => button.text === "Compact, then move")?.onPress?.(),
+  );
+  const [, message] = state.alert.mock.calls[1] as [string, string];
+  expect(message).toContain("Moved 1 thread to work");
+  expect(message).toContain("The thread is working.");
+  expect(message).toContain("1 thread stayed on personal");
+});
+
+it("offers only accounts that share history where the server moves only within one", () => {
+  sharedHistory.only = true;
+  using mounted = mount();
+  expect(mounted.hook().menuAction(source, { title: "Move" })).toBeUndefined();
+  sharedHistory.only = false;
 });

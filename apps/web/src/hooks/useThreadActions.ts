@@ -1098,6 +1098,11 @@ export function canMoveThreadAccount(
     config.providers;
   const source = providers.find((provider) => provider.instanceId === sourceInstanceId);
   return (
-    source?.driver === "claudeAgent" && claudeMoveTargets(providers, sourceInstanceId).length > 0
+    source?.driver === "claudeAgent" &&
+    claudeMoveTargets(
+      providers,
+      sourceInstanceId,
+      config.environment.capabilities.claudeAccountMovesSharedHistoryOnly === true,
+    ).length > 0
   );
 }
