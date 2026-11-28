@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest of a path, for a name.
+import * as NodeCrypto from "node:crypto";
+
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -75,9 +78,14 @@ const homeEnv = (home: Option.Option<string>) =>
     onSome: (value) => ({ CLAUDE_CONFIG_DIR: value }),
   });
 
-/** The directory a home's marketplace lives in: one per home, so removing one leaves the rest. */
+/**
+ * The directory a resolved home's marketplace lives in: one per home, so removing one leaves the
+ * rest. The slug is for people; the hash of the whole path keeps `.claude-work` and `.claude_work`
+ * apart.
+ */
 export function claudeBridgeMarketplaceDirectory(home: string): string {
-  return home.replaceAll(/[^A-Za-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
+  const slug = home.replaceAll(/[^A-Za-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
+  return `${slug}-${NodeCrypto.createHash("sha256").update(home).digest("hex").slice(0, 12)}`;
 }
 
 const marketplaceRoot = Effect.fn("claudeBridge.marketplaceRoot")(function* (
