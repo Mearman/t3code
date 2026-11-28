@@ -337,6 +337,19 @@ describe("systemNoticeLabel", () => {
     ).toContain("Its next prompt continues from before this reply");
   });
 
+  it("words the bridge failure note itself around the server's reason", () => {
+    expect(
+      systemNoticeLabel({
+        id: TurnItemId.make("x:bridge-failed:run-1"),
+        status: "failed",
+        title: "the terminal released the session",
+        message: "English.",
+      }),
+    ).toBe(
+      "The message handed to the terminal's claude did not reach it: the terminal released the session. Send it again, or fork.",
+    );
+  });
+
   it("keeps the reason a history load failed with, and the text of every other notice", () => {
     const reason = "History not loaded: the disk is below the 10 GB the sync keeps free.";
     expect(

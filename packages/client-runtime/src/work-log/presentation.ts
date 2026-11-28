@@ -24,6 +24,7 @@ import { formatTokens } from "@t3tools/shared/usageFormat";
 import { classifyToolActivity } from "@t3tools/shared/toolActivity";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
 import {
+  isClaudeBridgeFailureNoticeId,
   isClaudeHistoryNoticeId,
   isClaudeSecondWriterNoticeId,
 } from "@t3tools/shared/claudeSyncNotice";
@@ -91,10 +92,9 @@ export function contextCompactionLabel(
     : resolve(msg("Context compacted"));
 }
 
-type SystemNoticeLabelItem = Pick<
-  Extract<OrchestrationV2TurnItem, { type: "system_notice" }>,
-  "id" | "status" | "message"
->;
+type SystemNoticeItem = Extract<OrchestrationV2TurnItem, { type: "system_notice" }>;
+type SystemNoticeLabelItem = Pick<SystemNoticeItem, "id" | "status" | "message"> &
+  Partial<Pick<SystemNoticeItem, "title">>;
 
 /**
  * The text a system notice shows. The Claude session sync words its history notice in English
@@ -105,6 +105,13 @@ export function systemNoticeLabel(
   item: SystemNoticeLabelItem,
   resolve: MFunctionType = mFallback,
 ): string {
+  if (isClaudeBridgeFailureNoticeId(item.id) && item.title) {
+    return resolve(
+      msg("The message handed to the terminal's claude did not reach it: {reason}. Send it again, or fork.", {
+        reason: item.title,
+      }),
+    );
+  }
   if (isClaudeSecondWriterNoticeId(item.id)) {
     return resolve(
       msg(
