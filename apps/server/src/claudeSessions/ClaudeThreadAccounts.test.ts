@@ -109,7 +109,8 @@ it.effect("a process naming no account is a change the user can confirm on a thr
     yield* h.store.check(threadId, personal);
     const unnamed = yield* h.store.check(threadId, undefined).pipe(Effect.flip);
     assert.include(unnamed.message, "personal@example.com");
-    assert.include(unnamed.message, "an account it does not name");
+    assert.include(unnamed.message, "no longer says which account it is signed in as");
+    assert.notInclude(unnamed.message, "now signed in as");
     const offered = makeProviderFailure({ cause: unnamed }).accountChange?.current;
     assert.isDefined(offered);
     assert.strictEqual(yield* h.store.confirm(threadId, offered!), "confirmed");
