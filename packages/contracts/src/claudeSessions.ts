@@ -20,6 +20,19 @@ export const CLAUDE_HELD_SESSION_TERMINAL_CHOICES: ReadonlySet<ClaudeHeldSession
 ]);
 
 /**
+ * Whether the bridge submits a held session's prompt as the person's own words: only when a
+ * person chose `adopt` with terminal access and a person wrote the words, which on a resend are
+ * the refused message's, not the resend's.
+ */
+export function claudeBridgeSubmitsAsPerson(input: {
+  readonly choice: ClaudeHeldSessionSend | undefined;
+  readonly terminalAccess: boolean;
+  readonly submittedBy: "user" | "agent" | "system";
+}): boolean {
+  return input.choice === "adopt" && input.terminalAccess && input.submittedBy === "user";
+}
+
+/**
  * The choice a send to a held session takes when neither it nor the settings name one: `adopt`
  * where the holder runs the T3 bridge mod and the sender may act on its terminal, else `ask`.
  */

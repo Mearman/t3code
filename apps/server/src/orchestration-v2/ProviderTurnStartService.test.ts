@@ -492,6 +492,11 @@ function makeLocalCommandHarness(input: {
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly createdBy?: "agent" | "system";
+  /** Who wrote the earlier unsent message a manual continuation resends. */
+  readonly unsentResumeCreatedBy?: "user" | "agent" | "system";
+  /** The run's held-session choice, and whether its sender could use terminals. */
+  readonly heldSessionSend?: OrchestrationV2ThreadProjection["runs"][number]["heldSessionSend"];
+  readonly heldSessionTerminalAccess?: true;
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly logoutFailure?: string;
   readonly openFailure?: unknown;
@@ -553,6 +558,10 @@ function makeLocalCommandHarness(input: {
   const messageId = MessageId.make("message-native-account-command");
   const run: OrchestrationV2ThreadProjection["runs"][number] = {
     ...(input.manualContinuation ? { manualContinuationOfRunId: RunId.make("stopped-run") } : {}),
+    ...(input.heldSessionSend === undefined ? {} : { heldSessionSend: input.heldSessionSend }),
+    ...(input.heldSessionTerminalAccess === undefined
+      ? {}
+      : { heldSessionTerminalAccess: input.heldSessionTerminalAccess }),
     id: runId,
     threadId,
     ordinal: 2,
@@ -913,7 +922,14 @@ function makeLocalCommandHarness(input: {
         ...projection.runs,
       ],
       messages: [
-        { ...message, id: originalMessageId, text: "Original request" },
+        {
+          ...message,
+          id: originalMessageId,
+          text: "Original request",
+          ...(input.unsentResumeCreatedBy === undefined
+            ? {}
+            : { createdBy: input.unsentResumeCreatedBy }),
+        },
         ...projection.messages,
       ],
     };
@@ -2416,6 +2432,27 @@ it("finds abandoned turns in a long history reading each record a bounded number
   const records = runs.length + attempts.length + providerTurns.length;
   expect(reads).toBeLessThanOrEqual(4 * records);
 });
+
+effectIt.effect.each(["user", "agent", "system"] as const)(
+  "hands a resent %s message to the terminal as the person's words only if a person wrote it",
+  (author) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "",
+        manualContinuation: true,
+        heldSessionSend: "adopt",
+        heldSessionTerminalAccess: true,
+        unsentResumeCreatedBy: author,
+        sideChat: { contextRun: "delivered", unsentResume: true },
+      });
+
+      yield* harness.start;
+
+      const turn = harness.startTurn.mock.calls[0]?.[0];
+      expect(turn?.message.text).toBe("Original request");
+      expect(turn?.message.adoptAsUser === true).toBe(author === "user");
+    }),
+);
 
 effectIt.effect("sends new steering text when restarting a manual continuation", () =>
   Effect.gen(function* () {
