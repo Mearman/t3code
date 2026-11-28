@@ -99,10 +99,10 @@ export const claudeTranscriptEndsCompacted = Effect.fn("ClaudeSessionFiles.endsC
       Effect.gen(function* () {
         const file = yield* fileSystem.open(transcript, { flag: "r" });
         yield* file.seek(start, "start");
-        return yield* file.readAlloc(Number(size - start));
+        return yield* readFully(file, Number(size - start));
       }),
     );
-    const text = Option.isSome(bytes) ? new TextDecoder().decode(bytes.value) : "";
+    const text = new TextDecoder().decode(bytes);
     let compacted = false;
     // The first line of a tail may be cut mid-record, which simply fails to decode.
     for (const line of text.split("\n")) {
@@ -146,12 +146,34 @@ export class ClaudeSessionRollbackError extends Schema.TaggedError<ClaudeSession
   { part: Schema.String, cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return `The move stopped part-way and ${this.part} could not be put back; check both Claude folders before resuming the session.`;
+    return (
+      `The move stopped part-way and ${this.part} could not be put back; ` +
+      "check both Claude folders before resuming the session."
+    );
   }
 }
 
 // Files are compared and copied in pieces of this size, never read whole.
 const COMPARE_CHUNK_BYTES = 1024 * 1024;
+
+/** Reads up to `length` bytes, fewer only at the end of the file; one read may return less. */
+const readFully = Effect.fnUntraced(function* (file: FileSystem.File, length: number) {
+  const pieces: Array<Uint8Array> = [];
+  let read = 0;
+  while (read < length) {
+    const piece = yield* file.readAlloc(length - read);
+    if (Option.isNone(piece) || piece.value.length === 0) break;
+    pieces.push(piece.value);
+    read += piece.value.length;
+  }
+  const bytes = new Uint8Array(read);
+  let offset = 0;
+  for (const piece of pieces) {
+    bytes.set(piece, offset);
+    offset += piece.length;
+  }
+  return bytes;
+});
 
 const sameContents = Effect.fn("ClaudeSessionFiles.sameContents")(function* (
   left: string,
@@ -164,13 +186,10 @@ const sameContents = Effect.fn("ClaudeSessionFiles.sameContents")(function* (
       const a = yield* fileSystem.open(left, { flag: "r" });
       const b = yield* fileSystem.open(right, { flag: "r" });
       while (true) {
-        const chunkA = yield* a.readAlloc(COMPARE_CHUNK_BYTES);
-        const chunkB = yield* b.readAlloc(COMPARE_CHUNK_BYTES);
-        if (Option.isNone(chunkA) || Option.isNone(chunkB))
-          return Option.isNone(chunkA) && Option.isNone(chunkB);
-        const x = chunkA.value;
-        const y = chunkB.value;
+        const x = yield* readFully(a, COMPARE_CHUNK_BYTES);
+        const y = yield* readFully(b, COMPARE_CHUNK_BYTES);
         if (x.length !== y.length) return false;
+        if (x.length === 0) return true;
         for (let index = 0; index < x.length; index++) if (x[index] !== y[index]) return false;
       }
     }),
@@ -199,8 +218,8 @@ export const moveClaudeSessionParts = Effect.fn("ClaudeSessionFiles.moveParts")(
   readonly linkOriginals: boolean;
   /** Runs after each file is copied, before it is checked; tests corrupt or fail with it. */
   readonly afterCopy?: (copy: string) => Effect.Effect<void, PlatformError.PlatformError>;
-  /** Runs before each part is replaced; tests fail a later part with it. */
-  readonly beforeReplace?: (part: string) => Effect.Effect<void, PlatformError.PlatformError>;
+  /** Runs after each original is set aside and before its link is made; tests fail it. */
+  readonly afterSetAside?: (part: string) => Effect.Effect<void, PlatformError.PlatformError>;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -212,6 +231,7 @@ export const moveClaudeSessionParts = Effect.fn("ClaudeSessionFiles.moveParts")(
     readonly part: string;
     readonly original: string;
     readonly aside: string;
+    linked: boolean;
   }> = [];
   const moving: Array<string> = [];
 
@@ -232,9 +252,10 @@ export const moveClaudeSessionParts = Effect.fn("ClaudeSessionFiles.moveParts")(
       yield* fileSystem.remove(part, { recursive: true });
   });
   const putBack = Effect.gen(function* () {
-    for (const { part, original, aside } of replaced.toReversed()) {
+    for (const { part, original, aside, linked } of replaced.toReversed()) {
       yield* Effect.gen(function* () {
-        if (input.linkOriginals) yield* fileSystem.remove(original);
+        // A part whose link failed has nothing at its own path yet.
+        if (linked) yield* fileSystem.remove(original);
         yield* fileSystem.rename(aside, original);
       }).pipe(Effect.mapError((cause) => new ClaudeSessionRollbackError({ part, cause })));
     }
@@ -278,10 +299,14 @@ export const moveClaudeSessionParts = Effect.fn("ClaudeSessionFiles.moveParts")(
     for (const part of moving) {
       const original = path.join(input.source, part);
       const aside = `${original}.${input.linkOriginals ? "t3-move-original" : "t3-moved"}`;
-      if (input.beforeReplace !== undefined) yield* input.beforeReplace(part);
       yield* fileSystem.rename(original, aside);
-      replaced.push({ part, original, aside });
-      if (input.linkOriginals) yield* fileSystem.symlink(path.join(input.target, part), original);
+      const entry = { part, original, aside, linked: false };
+      replaced.push(entry);
+      if (input.afterSetAside !== undefined) yield* input.afterSetAside(part);
+      if (input.linkOriginals) {
+        yield* fileSystem.symlink(path.join(input.target, part), original);
+        entry.linked = true;
+      }
     }
   });
 
