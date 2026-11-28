@@ -131,13 +131,15 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("never reports lost a prompt acknowledged in the poll after its expiry", () =>
+  it.effect("times a handed-out prompt from its hand-out, so a late ack is not reported lost", () =>
     Effect.gen(function* () {
       const bridge = yield* ClaudeBridge;
       const key = yield* attach;
       yield* bridge.submit(prompt("run-slow"));
+      // Handed out late in its life, and acknowledged after it would have expired from queueing.
+      yield* TestClock.adjust("90 seconds");
       yield* bridge.poll(poll("a", key));
-      yield* TestClock.adjust(CLAUDE_BRIDGE_COMMAND_TTL);
+      yield* TestClock.adjust("60 seconds");
 
       yield* bridge.poll(poll("a", key, [{ commandId: "run-slow", submitted: true }]));
 
