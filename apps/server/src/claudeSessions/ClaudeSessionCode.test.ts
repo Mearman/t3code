@@ -9,6 +9,7 @@ import {
   claudeSessionCodeFiles,
   git,
   restoreClaudeSessionCode,
+  sameChanges,
 } from "./ClaudeSessionCode.ts";
 
 const IDENTITY = ["-c", "user.name=t3", "-c", "user.email=t3@example.com"];
@@ -229,6 +230,50 @@ it.layer(NodeServices.layer)("session code", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect("recreates a staged binary change byte for byte", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source, existing } = yield* makeRepos;
+      const bytes = new Uint8Array(Array.from({ length: 4096 }, (_, index) => (index * 7) % 256));
+      yield* fileSystem.writeFile(path.join(source, "blob.bin"), bytes);
+      yield* git(source, ["add", "blob.bin"]);
+      const packageDir = path.join(root, "package");
+      const code = yield* capture(source, packageDir);
+      if (code.kind !== "git") return expect.unreachable();
+      const worktreePath = path.join(root, "target", "worktrees", "binary-change");
+
+      yield* restoreClaudeSessionCode({
+        code,
+        checkout: existing,
+        worktreePath,
+        staging: packageDir,
+        moveId: MOVE,
+      });
+
+      expect([...(yield* fileSystem.readFile(path.join(worktreePath, "blob.bin")))]).toEqual([
+        ...bytes,
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("names every changed file's blobs in full in the patches it packs", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source } = yield* makeRepos;
+      yield* fileSystem.writeFileString(path.join(source, "README.md"), "changed\n");
+      yield* git(source, ["add", "README.md"]);
+      const packageDir = path.join(root, "package");
+      const code = yield* capture(source, packageDir);
+      if (code.kind !== "git" || code.staged === null) return expect.unreachable();
+
+      const patch = yield* fileSystem.readFileString(path.join(packageDir, code.staged.path));
+
+      expect(patch).toMatch(/^index [0-9a-f]{40}\.\.[0-9a-f]{40} /m);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps an untracked file executable", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -345,6 +390,7 @@ it.layer(NodeServices.layer)("session code", (it) => {
     { name: "a remote that is an option", tamper: { remoteUrl: "--upload-pack=touch x" } },
     { name: "a commit that is not one", tamper: { head: "HEAD~1" } },
     { name: "a branch git refuses", tamper: { branch: "-bad..name" } },
+    { name: "a branch git would expand", tamper: { branch: "@{-1}" } },
   ])("refuses a package with $name and writes nothing outside", ({ tamper }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -502,5 +548,42 @@ it.layer(NodeServices.layer)("session code", (it) => {
 describe("claudeSessionCodeFiles", () => {
   it("lists nothing for code outside git", () => {
     expect(claudeSessionCodeFiles({ kind: "none", cwd: "/tmp/x" })).toEqual([]);
+  });
+});
+
+describe("sameChanges", () => {
+  const patch = (index: string, payload: string, text: string) =>
+    new TextEncoder().encode(
+      [
+        "diff --git a/logo.png b/logo.png",
+        `index ${index}`,
+        "GIT binary patch",
+        "literal 12",
+        payload,
+        "",
+        "diff --git a/README.md b/README.md",
+        "index 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222 100644",
+        "--- a/README.md",
+        "+++ b/README.md",
+        "@@ -1 +1 @@",
+        "-one",
+        `+${text}`,
+        "",
+      ].join("\n"),
+    );
+  const blobs = `${"a".repeat(40)}..${"b".repeat(40)}`;
+
+  it("matches a binary change whose payload another zlib compressed differently", () => {
+    expect(
+      sameChanges(patch(blobs, "Mc${}compressed", "two"), patch(blobs, "Nd&+other", "two")),
+    ).toBe(true);
+  });
+
+  it("tells apart a binary change to other bytes, and any text change", () => {
+    const other = `${"a".repeat(40)}..${"c".repeat(40)}`;
+    expect(sameChanges(patch(blobs, "Mc${}x", "two"), patch(other, "Mc${}x", "two"))).toBe(false);
+    expect(sameChanges(patch(blobs, "Mc${}x", "two"), patch(blobs, "Mc${}x", "tw\u00e9"))).toBe(
+      false,
+    );
   });
 });

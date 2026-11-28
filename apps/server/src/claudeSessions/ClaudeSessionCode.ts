@@ -5,6 +5,7 @@ import {
   ClaudeSessionMoveError,
 } from "@t3tools/contracts";
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
+import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -66,8 +67,9 @@ export const git = Effect.fn("ClaudeSessionCode.git")(function* (
 
 /**
  * Writes the staged or unstaged changes as a binary patch straight to `file`, so their bytes are
- * never decoded. Every option a user's config could change is pinned, so two machines describing
- * the same changes write the same bytes.
+ * never decoded. The diff options a config could change are pinned, and `--full-index` names each
+ * file's full blob id, so two machines describe the same changes alike except a binary hunk's
+ * payload, whose zlib output differs by version and level (see `sameChanges`).
  */
 const diffTo = (cwd: string, staged: boolean, file: string) =>
   git(cwd, [
@@ -78,6 +80,7 @@ const diffTo = (cwd: string, staged: boolean, file: string) =>
     "diff",
     ...(staged ? ["--cached"] : []),
     "--binary",
+    "--full-index",
     "--no-color",
     "--no-ext-diff",
     "--no-textconv",
@@ -310,6 +313,24 @@ const branchName = (branch: string | null, moveId: string) => {
   return branch === null ? `t3code/moved-${tag}` : `${branch}-moved-${tag}`;
 };
 
+/**
+ * Whether `checkout` has a remote at `remoteUrl`, as git spells either, so a source cannot point a
+ * checkout chosen by its repository key at another repository.
+ */
+export const checkoutUsesRemote = Effect.fn("ClaudeSessionCode.checkoutUsesRemote")(function* (
+  checkout: string,
+  remoteUrl: string,
+) {
+  const urls = yield* git(checkout, ["config", "--get-regexp", "^remote\\..*\\.url$"], {
+    allowFailure: true,
+  });
+  const wanted = normalizeGitRemoteUrl(remoteUrl);
+  return urls.stdout
+    .split("\n")
+    .map((line) => line.slice(line.indexOf(" ") + 1).trim())
+    .some((url) => url !== "" && normalizeGitRemoteUrl(url) === wanted);
+});
+
 /** Applies a patch as written, whatever `apply.whitespace` the checkout's config sets. */
 const APPLY = ["apply", "--binary", "--whitespace=nowarn"];
 
@@ -357,7 +378,8 @@ export const checkClaudeSessionCodePackage = Effect.fn("checkClaudeSessionCodePa
       return yield* refuse(`a directory outside the repository (${code.relativeCwd})`);
     }
     if (code.branch !== null) {
-      const valid = yield* git(".", ["check-ref-format", "--branch", code.branch], {
+      // A ref check reads no repository, so the server's cwd never counts, and refuses `@{-1}`.
+      const valid = yield* git(".", ["check-ref-format", `refs/heads/${code.branch}`], {
         allowFailure: true,
       });
       if (valid.code !== 0 || code.branch.startsWith("-")) {
@@ -412,17 +434,42 @@ const directoryInside = Effect.fn("ClaudeSessionCode.directoryInside")(function*
 });
 
 /** Whether two files hold the same bytes. */
-const sameBytes = Effect.fn("ClaudeSessionCode.sameBytes")(function* (a: string, b: string) {
+const BINARY_PATCH = "GIT binary patch";
+const NEXT_FILE = "diff --git ";
+
+/**
+ * A patch's bytes, as one byte per character, with each binary hunk's compressed payload left out.
+ * The `index` line before it still names both blobs in full, so the content is still compared.
+ */
+const withoutBinaryPayloads = (bytes: Uint8Array) => {
+  const lines = Buffer.from(bytes).toString("latin1").split("\n");
+  const kept: Array<string> = [];
+  let inPayload = false;
+  for (const line of lines) {
+    if (line.startsWith(NEXT_FILE)) inPayload = false;
+    if (!inPayload) kept.push(line);
+    if (line === BINARY_PATCH) inPayload = true;
+  }
+  return kept.join("\n");
+};
+
+/** Whether two patches describe the same changes, byte for byte outside binary payloads. */
+export const sameChanges = (a: Uint8Array, b: Uint8Array) =>
+  withoutBinaryPayloads(a) === withoutBinaryPayloads(b);
+
+const sameChangesIn = Effect.fn("ClaudeSessionCode.sameChangesIn")(function* (
+  a: string,
+  b: string,
+) {
   const fileSystem = yield* FileSystem.FileSystem;
-  const [left, right] = [yield* fileSystem.readFile(a), yield* fileSystem.readFile(b)];
-  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+  return sameChanges(yield* fileSystem.readFile(a), yield* fileSystem.readFile(b));
 });
 
 /**
- * Recreates packed code in a new worktree of `checkout` at `worktreePath`, on a branch of its own,
- * and checks the staged and unstaged changes come out byte for byte. `staging` holds the fetched
- * package files. Only objects and the new branch are added to `checkout`; its working tree, index,
- * branches and remote-tracking refs are left as they are. A worktree that fails part-way is removed.
+ * Recreates packed code in a new worktree of `checkout` at `worktreePath`, on its own branch, and
+ * checks the changes come out the same (`sameChanges`). `staging` holds the fetched package files.
+ * Only objects and the new branch are added to `checkout`; its working tree, index, branches and
+ * remote-tracking refs stay as they are. A worktree that fails part-way is removed.
  */
 export const restoreClaudeSessionCode = Effect.fn("restoreClaudeSessionCode")(
   function* (input: {
@@ -436,6 +483,8 @@ export const restoreClaudeSessionCode = Effect.fn("restoreClaudeSessionCode")(
     const path = yield* Path.Path;
     const { code, checkout, worktreePath } = input;
     yield* checkClaudeSessionCodePackage({ code, moveId: input.moveId });
+    // The re-made patches are written here even when the package had no files.
+    yield* fileSystem.makeDirectory(input.staging, { recursive: true });
     const staged = (relative: string) => path.join(input.staging, relative);
     // Fetched commits land below this namespace only, never in the checkout's own refs.
     const moveRefs = `refs/t3code/moves/${input.moveId}`;
@@ -527,7 +576,7 @@ export const restoreClaudeSessionCode = Effect.fn("restoreClaudeSessionCode")(
           const same =
             patch === null
               ? Number((yield* fileSystem.stat(staged(again))).size) === 0
-              : yield* sameBytes(staged(again), staged(patch.path));
+              : yield* sameChangesIn(staged(again), staged(patch.path));
           if (!same) {
             return yield* moveError(
               "git",

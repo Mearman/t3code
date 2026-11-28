@@ -18,12 +18,13 @@ import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ClaudeLiveSessions } from "./ClaudeLiveSessions.ts";
+import { git } from "./ClaudeSessionCode.ts";
 import * as ClaudeSessionMove from "./ClaudeSessionMove.ts";
 import type { ClaudeSessionHolder } from "./ClaudeSessionRegistry.ts";
 import { ClaudeSessionReplication } from "./ClaudeSessionReplication.ts";
 
 const SESSION = "0b7f6a52-3c1d-4e8f-9a2b-5c6d7e8f9a0b";
-const { claudeResumeCommand, releaseClaudeSession } = ClaudeSessionMove;
+const { claudeResumeCommand, cloneDirectoryName, releaseClaudeSession } = ClaudeSessionMove;
 
 const holder = (status: string, confirmed: boolean): ClaudeSessionHolder => ({
   entry: { pid: 4242, sessionId: SESSION, cwd: "/work", status },
@@ -149,6 +150,9 @@ const movesWith = (options: {
   readonly linked?: ReadonlyArray<ReturnType<typeof summary>>;
   readonly takesMoves?: (environmentId: EnvironmentId) => boolean;
   readonly code?: ClaudeSessionCodePackage;
+  /** The checkout a repository key finds here, if any. */
+  readonly checkout?: string;
+  readonly takeIn?: Effect.Effect<{ readonly home: string }, ClaudeSessionReplicationError>;
 }) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -168,6 +172,8 @@ const movesWith = (options: {
             transcriptPath: `${root}/projects/-work/${SESSION}.jsonl`,
             cwd: null,
           }),
+        checkoutOf: () => Effect.succeed(options.checkout),
+        takeIn: () => options.takeIn ?? Effect.succeed({ home: root }),
       }),
       Layer.mock(PeerClaudeSessions.PeerClaudeSessions)({
         checkMoveTarget: (environmentId) =>
@@ -209,13 +215,103 @@ const movesWith = (options: {
     const moves = yield* ClaudeSessionMove.ClaudeSessionMove.pipe(
       Effect.provide(ClaudeSessionMove.layer.pipe(Layer.provide(dependencies))),
     );
-    return { moves, calls };
+    return { moves, calls, root };
+  });
+
+const IDENTITY = ["-c", "user.name=t3", "-c", "user.email=t3@example.com"];
+
+/** A checkout with one commit and `origin` at `remoteUrl`, and a package of that commit. */
+const checkoutWithRemote = (remoteUrl: string) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const dir = yield* fileSystem.makeTempDirectoryScoped();
+    yield* git(dir, ["init", "-q", "-b", "main"]);
+    yield* fileSystem.writeFileString(`${dir}/README.md`, "one\n");
+    yield* git(dir, ["add", "README.md"]);
+    yield* git(dir, [...IDENTITY, "commit", "-qm", "one"]);
+    yield* git(dir, ["remote", "add", "origin", remoteUrl]);
+    const head = (yield* git(dir, ["rev-parse", "HEAD"])).stdout.trim();
+    const code: ClaudeSessionCodePackage = {
+      kind: "git",
+      canonicalKey: "example.com/repo",
+      remoteUrl,
+      relativeCwd: "",
+      head,
+      branch: "main",
+      bundle: null,
+      staged: null,
+      unstaged: null,
+      untracked: [],
+    };
+    const refs = () =>
+      git(dir, ["for-each-ref", "--format=%(refname)"]).pipe(Effect.map((r) => r.stdout));
+    return { dir, code, refs };
   });
 
 const MOVE = "0123456789abcdef0123456789abcdef";
 const source = EnvironmentId.make("environment-source");
 
+describe("cloneDirectoryName", () => {
+  it.each([
+    ["https://example.com/team/app.git", "app"],
+    ["git@example.com:team/app.git", "app"],
+    ["https://example.com/team/app/", "app"],
+    ["https://example.com/a/..", "repository"],
+    ["https://example.com/a/.", "repository"],
+    ["https://example.com/a/x y;z", "x-y-z"],
+  ])("names a clone of %s %s", (remoteUrl, name) => {
+    expect(cloneDirectoryName(remoteUrl)).toBe(name);
+  });
+});
+
 it.layer(NodeServices.layer)("ClaudeSessionMove", (it) => {
+  it.effect("fetches nothing into a checkout whose remotes are not the one the source names", () =>
+    Effect.gen(function* () {
+      const repo = yield* checkoutWithRemote("https://example.com/repo.git");
+      const before = yield* repo.refs();
+      const { moves, calls } = yield* movesWith({
+        checkout: repo.dir,
+        code: { ...repo.code, remoteUrl: `file://${repo.dir}-elsewhere` },
+      });
+
+      const refused = yield* Effect.flip(
+        moves.accept({ moveId: MOVE, sessionId: SESSION, sourceEnvironmentId: source }),
+      );
+
+      expect(refused.reason).toBe("refused");
+      expect(refused.message).toContain("has no remote at");
+      expect(calls.chunks).toBe(0);
+      expect(yield* repo.refs()).toBe(before);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("removes the worktree and branch it made when the session cannot be taken in", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const repo = yield* checkoutWithRemote("https://example.com/repo.git");
+      const before = yield* repo.refs();
+      const { moves, root } = yield* movesWith({
+        checkout: repo.dir,
+        code: repo.code,
+        takeIn: Effect.fail(
+          new ClaudeSessionReplicationError({ reason: "refused", message: "held there" }),
+        ),
+      });
+
+      const refused = yield* Effect.flip(
+        moves.accept({ moveId: MOVE, sessionId: SESSION, sourceEnvironmentId: source }),
+      );
+
+      expect(refused.message).toBe("held there");
+      expect(yield* repo.refs()).toBe(before);
+      expect((yield* git(repo.dir, ["worktree", "list", "--porcelain"])).stdout).not.toContain(
+        `${root}/worktrees`,
+      );
+      const worktree = `${root}/worktrees/${repo.dir.split("/").at(-1)}/main-${MOVE.slice(0, 8)}`;
+      expect(yield* fileSystem.exists(worktree)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("asks the target before take over ends anyone's claude", () =>
     Effect.gen(function* () {
       const { moves, calls } = yield* movesWith({});

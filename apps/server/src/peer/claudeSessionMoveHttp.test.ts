@@ -30,7 +30,7 @@ const SESSION = "0b7f6a52-3c1d-4e8f-9a2b-5c6d7e8f9a0b";
 const MOVE = "0123456789abcdef0123456789abcdef";
 const BYTES = new TextEncoder().encode("bundle bytes");
 
-/** B, a move's source and target at once, through a move service that records what it is offered. */
+/** B, a move's source and target at once, through a move service recording what it is offered. */
 const serveBox = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

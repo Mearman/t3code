@@ -33,6 +33,7 @@ import { downloadVerifiedFile } from "./ClaudeReplicaTransfer.ts";
 import {
   captureClaudeSessionCode,
   checkClaudeSessionCodePackage,
+  checkoutUsesRemote,
   claudeSessionCodeFiles,
   git,
   isClaudeMoveId,
@@ -57,10 +58,12 @@ const ClaudeMoveCompaction = Context.Reference<
   }) => Effect.Effect<void, ClaudeSessionMoveError>
 >("t3/claudeSessions/ClaudeMoveCompaction", { defaultValue: () => () => Effect.void });
 
-/** A package the source keeps until its target has taken it. */
+/**
+ * A package the source keeps until its target has taken it. It is served to any full-access link
+ * that names its random id, since a link's session does not say which environment holds it.
+ */
 interface PendingMove {
   readonly sessionId: string;
-  readonly targetEnvironmentId: EnvironmentId;
   readonly packageDir: string;
   readonly code: ClaudeSessionCodePackage;
 }
@@ -71,7 +74,8 @@ export class ClaudeSessionMove extends Context.Service<
     /**
      * Moves a session this environment owns, with its code, to a linked environment, which then
      * owns it; this one keeps a replica. A held session is refused unless `takeOver` ends its idle
-     * holder. Nothing moves when any step fails.
+     * holder. When a step fails the session stays owned here, and the target removes the worktree,
+     * branch and clone it made; a copy it took may stay there as an ordinary replica.
      */
     readonly move: (
       input: ClaudeSessionMoveInput,
@@ -109,6 +113,20 @@ const fromReplication = (error: ClaudeSessionReplicationError) =>
     cause: error,
   });
 
+/**
+ * A folder name for a clone of `remoteUrl`: its last path segment without `.git`, in letters,
+ * digits, `.`, `_` and `-` only, and never `.` or `..`, so a peer-chosen URL cannot name a path.
+ */
+export const cloneDirectoryName = (remoteUrl: string) => {
+  const last =
+    remoteUrl
+      .replace(/[/\\:]+$/, "")
+      .split(/[/\\:]/)
+      .at(-1) ?? "";
+  const name = last.replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-");
+  return /^\.*$/.test(name) ? "repository" : name;
+};
+
 const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 
 /** A command that resumes the session with plain `claude` where it now is. */
@@ -135,7 +153,7 @@ export const releaseClaudeSession = Effect.fn("releaseClaudeSession")(function* 
   readonly takeOver: boolean;
   readonly holders: (
     sessionsDir: string,
-  ) => Effect.Effect<ReadonlyMap<string, ClaudeSessionHolder>>;
+  ) => Effect.Effect<ReadonlyMap<string, ClaudeSessionHolder>, ClaudeSessionMoveError>;
   readonly signal: (pid: number) => Effect.Effect<void, ClaudeSessionMoveError>;
   /** Waits between checks that the holder has gone. */
   readonly pause: Effect.Effect<void>;
@@ -209,7 +227,19 @@ const make = Effect.gen(function* () {
   }) =>
     releaseClaudeSession({
       ...input,
-      holders: liveSessions.holders,
+      // A holder an unreadable process table would hide is never assumed gone.
+      holders: (sessionsDir) =>
+        liveSessions.holders(sessionsDir).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ClaudeSessionMoveError({
+                reason: "held",
+                message:
+                  "This machine could not read which claude processes are running, so the session was not moved.",
+                cause,
+              }),
+          ),
+        ),
       pause: Effect.sleep(RELEASE_CHECK),
       signal: (pid) =>
         Effect.try({
@@ -247,7 +277,8 @@ const make = Effect.gen(function* () {
           message: "This environment is not linked to that one. Link them both ways first.",
         });
       }
-      // Every refusal foreseeable here comes before take over ends anyone's claude.
+      // Every refusal this side can foresee comes before take over ends anyone's claude. The
+      // target's own refusals come after it, and leave the session owned here.
       yield* peers
         .checkMoveTarget(input.targetEnvironmentId)
         .pipe(Effect.mapError(fromReplication));
@@ -280,7 +311,6 @@ const make = Effect.gen(function* () {
         yield* Ref.update(pending, (current) =>
           new Map(current).set(moveId, {
             sessionId: input.sessionId,
-            targetEnvironmentId: input.targetEnvironmentId,
             packageDir,
             code,
           }),
@@ -323,8 +353,7 @@ const make = Effect.gen(function* () {
   /** Where the target clones a repository it has no checkout of, beside its worktrees. */
   const cloneFor = Effect.fn("ClaudeSessionMove.cloneFor")(
     function* (code: Extract<ClaudeSessionCodePackage, { readonly kind: "git" }>, base: string) {
-      const name =
-        path.basename(code.remoteUrl.replace(/\/+$/, "")).replace(/\.git$/, "") || "repository";
+      const name = cloneDirectoryName(code.remoteUrl);
       let target = path.join(base, name, name);
       for (let suffix = 2; yield* fileSystem.exists(target); suffix++) {
         target = path.join(base, name, `${name}-${suffix}`);
@@ -341,8 +370,9 @@ const make = Effect.gen(function* () {
 
   const accept: ClaudeSessionMove["Service"]["accept"] = Effect.fn("ClaudeSessionMove.accept")(
     function* (offer) {
-      // The offer's body names the source; asking it, over this machine's own link, for a package
-      // under the offer's random id proves it began this move, as a claim's nonce does.
+      // The offer's body names the source. Fetching the package from it, over this machine's own
+      // link and under the offer's random id, proves that source began a move with that id; not
+      // that this machine is its target, which only the holder of the id could have told it.
       const source = offer.sourceEnvironmentId;
       if (!isClaudeMoveId(offer.moveId) || !isClaudeSessionId(offer.sessionId)) {
         return yield* new ClaudeSessionMoveError({
@@ -375,6 +405,9 @@ const make = Effect.gen(function* () {
           message: "The worktree location in Settings → Worktrees is not a folder on this machine.",
         });
       }
+      // What this offer made here, undone newest first when the session cannot be taken in.
+      const made: Array<Effect.Effect<void>> = [];
+      const undo = Effect.suspend(() => Effect.forEach(made.toReversed(), (step) => step));
       const placed = yield* Effect.gen(function* () {
         if (code.kind === "none") {
           warnings.push(
@@ -397,10 +430,25 @@ const make = Effect.gen(function* () {
           yield* fileSystem
             .makeDirectory(folder, { recursive: true })
             .pipe(Effect.mapError(storage(`Could not create ${folder}.`)));
+          made.push(
+            fileSystem.remove(folder, { recursive: true, force: true }).pipe(Effect.ignore),
+          );
           warnings.push(
             `${code.cwd} is not on this machine, so the session resumes from ${folder}.`,
           );
           return { cwd: folder, worktreePath: null, branch: null };
+        }
+        const found = yield* replication
+          .checkoutOf(code.canonicalKey)
+          .pipe(Effect.mapError(fromReplication));
+        if (
+          found !== undefined &&
+          !(yield* checkoutUsesRemote(found, code.remoteUrl).pipe(withHost))
+        ) {
+          return yield* new ClaudeSessionMoveError({
+            reason: "refused",
+            message: `The checkout here of ${code.canonicalKey} has no remote at ${code.remoteUrl}, so nothing was fetched into it.`,
+          });
         }
         const files = claudeSessionCodeFiles(code);
         yield* fileSystem
@@ -423,11 +471,13 @@ const make = Effect.gen(function* () {
           }).pipe(withHost, Effect.mapError(fromReplication));
           codeBytes += file.size;
         }
-        const found = yield* replication
-          .checkoutOf(code.canonicalKey)
-          .pipe(Effect.mapError(fromReplication));
         const checkout = found ?? (yield* cloneFor(code, base));
-        if (found === undefined) warnings.push(`The repository was cloned to ${checkout}.`);
+        if (found === undefined) {
+          made.push(
+            fileSystem.remove(checkout, { recursive: true, force: true }).pipe(Effect.ignore),
+          );
+          warnings.push(`The repository was cloned to ${checkout}.`);
+        }
         const worktreePath = path.join(
           base,
           path.basename(checkout),
@@ -440,15 +490,30 @@ const make = Effect.gen(function* () {
           staging,
           moveId: offer.moveId,
         }).pipe(withHost);
+        made.push(
+          git(checkout, ["worktree", "remove", "--force", worktreePath], {
+            allowFailure: true,
+          }).pipe(
+            Effect.andThen(
+              git(checkout, ["branch", "-D", restored.branch], { allowFailure: true }),
+            ),
+            withHost,
+            Effect.ignore,
+          ),
+        );
         return { cwd: restored.cwd, worktreePath, branch: restored.branch };
       }).pipe(
+        Effect.onError(() => undo),
         Effect.ensuring(
           fileSystem.remove(staging, { recursive: true, force: true }).pipe(Effect.ignore),
         ),
       );
       const taken = yield* replication
         .takeIn({ ownerEnvironmentId: source, sessionId: offer.sessionId, cwd: placed.cwd })
-        .pipe(Effect.mapError(fromReplication));
+        .pipe(
+          Effect.mapError(fromReplication),
+          Effect.onError(() => undo),
+        );
       return {
         targetEnvironmentId: yield* environment.getEnvironmentId,
         sessionId: offer.sessionId,
