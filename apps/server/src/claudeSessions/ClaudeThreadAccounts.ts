@@ -58,9 +58,7 @@ const sameClaudeAccount = (a: ClaudeAccountIdentity, b: ClaudeAccountIdentity) =
   a.credentialSource === b.credentialSource;
 
 const describeClaudeAccount = (account: ClaudeAccountIdentity) =>
-  sameClaudeAccount(account, UNNAMED_CLAUDE_ACCOUNT)
-    ? "an account it does not name"
-    : (account.email ?? account.organization ?? account.credentialSource ?? account.apiProvider);
+  account.email ?? account.organization ?? account.credentialSource ?? account.apiProvider;
 
 /** The recorded account differs from the one this thread's Claude process now reports. */
 export class ClaudeThreadAccountChangedError extends Schema.TaggedError<ClaudeThreadAccountChangedError>()(
@@ -69,6 +67,11 @@ export class ClaudeThreadAccountChangedError extends Schema.TaggedError<ClaudeTh
 ) {
   override get message(): string {
     const recorded = describeClaudeAccount(this.recorded);
+    if (sameClaudeAccount(this.current, UNNAMED_CLAUDE_ACCOUNT))
+      return (
+        `This thread was sent as ${recorded}, but Claude no longer says which account it is ` +
+        "signed in as, so nothing was sent. Choose Send as this account to continue anyway."
+      );
     const current = describeClaudeAccount(this.current);
     return (
       `This thread was sent as ${recorded}, but Claude is now signed in as ${current}, ` +
