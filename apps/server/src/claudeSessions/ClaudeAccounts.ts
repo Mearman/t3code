@@ -16,6 +16,7 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ServerConfig from "../config.ts";
+import { linkDirectory } from "../directoryLink.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -42,18 +43,25 @@ export const createManagedClaudeHome = Effect.fn("ClaudeAccounts.createManagedHo
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const parentExisted = yield* fileSystem.exists(path.dirname(home));
-  yield* fileSystem.makeDirectory(path.dirname(home), { recursive: true });
-  yield* fileSystem.makeDirectory(home, { mode: 0o700 });
+  // Only what this call made is removed: an existing home may hold another account's login.
+  let made: string | undefined;
   const madeInStore: Array<string> = [];
   // Removing the home removes its links, never what they point at.
   const rollback = Effect.gen(function* () {
-    yield* fileSystem.remove(parentExisted ? home : path.dirname(home), { recursive: true });
+    if (made !== undefined) yield* fileSystem.remove(made, { recursive: true });
     // A directory something wrote into since is left, so the rollback never deletes history.
     for (const directory of madeInStore)
       if ((yield* fileSystem.readDirectory(directory)).length === 0)
         yield* fileSystem.remove(directory, { recursive: true });
   }).pipe(Effect.ignore);
+  yield* Effect.gen(function* () {
+    if (!(yield* fileSystem.exists(path.dirname(home)))) {
+      yield* fileSystem.makeDirectory(path.dirname(home), { recursive: true });
+      made = path.dirname(home);
+    }
+    yield* fileSystem.makeDirectory(home, { mode: 0o700 });
+    made ??= home;
+  }).pipe(Effect.onError(() => rollback));
   if (store === undefined) return rollback;
   // A link or store directory failing part-way removes what this call made so far.
   yield* Effect.forEach(
@@ -65,7 +73,7 @@ export const createManagedClaudeHome = Effect.fn("ClaudeAccounts.createManagedHo
           yield* fileSystem.makeDirectory(target, { recursive: true });
           madeInStore.push(target);
         }
-        yield* fileSystem.symlink(yield* fileSystem.realPath(target), path.join(home, directory));
+        yield* linkDirectory(yield* fileSystem.realPath(target), path.join(home, directory));
       }),
     { discard: true },
   ).pipe(Effect.onError(() => rollback));

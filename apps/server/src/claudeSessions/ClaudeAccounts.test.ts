@@ -50,6 +50,11 @@ it.effect("links a managed home's history to the store so one transcript serves 
 
     const existing = yield* createManagedClaudeHome(home, store).pipe(Effect.asVoid, Effect.flip);
     assert.strictEqual(existing._tag, "PlatformError");
+    // Refusing an existing home leaves it, and the history it reaches, as it was.
+    assert.strictEqual(
+      yield* fileSystem.readFileString(path.join(home, transcript)),
+      '{"type":"user"}\n',
+    );
   }).pipe(Effect.scoped, Effect.provide(services)),
 );
 
@@ -244,5 +249,18 @@ it.effect("removes the half-made home when a link fails part-way", () =>
     assert.strictEqual(failed._tag, "PlatformError");
     assert.isFalse(yield* fileSystem.exists(path.join(root, "accounts", "work")));
     assert.deepEqual(yield* fileSystem.readDirectory(store), ["projects"]);
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("removes the folder it made for the home when the home itself cannot be made", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
+    // A name longer than any file system allows fails after its parent folder is made.
+    const home = path.join(root, "accounts", "work", "h".repeat(300));
+    const failed = yield* createManagedClaudeHome(home, undefined).pipe(Effect.asVoid, Effect.flip);
+    assert.strictEqual(failed._tag, "PlatformError");
+    assert.isFalse(yield* fileSystem.exists(path.join(root, "accounts", "work")));
   }).pipe(Effect.scoped, Effect.provide(services)),
 );
