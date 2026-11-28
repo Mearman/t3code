@@ -1012,7 +1012,7 @@ const threadSendCommand = Command.make("send", {
   message: messageArgument,
   heldSession: Flag.Literals("held-session", ClaudeHeldSessionAgentSend.literals).pipe(
     Flag.withDescription(
-      "What to do if a terminal has this Claude thread's session open: ask (send nothing), fork, or takeOver (stop that claude once it is idle, then send). Defaults to ask.",
+      "What to do if a terminal has this Claude thread's session open: ask (send nothing) or fork. Defaults to ask.",
     ),
     Flag.optional,
   ),
