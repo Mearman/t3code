@@ -14,6 +14,7 @@ import { CustomSnoozeSheet } from "./CustomSnoozeSheet";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
 import { threadEnvironment } from "../../state/threads";
+import { useClaudeReplica } from "../../state/claudeReplication";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import type { ThreadMoveDestination } from "./threadOrder";
@@ -883,6 +884,25 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       {gt("Terminal", { $context: "badge: the thread's latest run came from a terminal" })}
     </Text>
   ) : null;
+  const replica = useClaudeReplica(thread.environmentId, thread.id)?.status ?? null;
+  const replicaBadge =
+    replica === null ? null : (
+      <Text
+        className={cn(
+          "shrink-0 text-xs",
+          replica === "stale"
+            ? "text-warning-foreground"
+            : selected
+              ? selectedThreadRowColors.mutedForegroundClassName
+              : rowAppearance.tertiaryForegroundClassName,
+        )}
+        numberOfLines={1}
+      >
+        {replica === "stale"
+          ? gt("Stale copy", { $context: "badge: the thread's session is an out-of-date copy" })
+          : gt("Copy", { $context: "badge: the thread's session is a copy another machine owns" })}
+      </Text>
+    );
 
   const rawStatus = resolveThreadListV2Status(thread);
   const status = resolveThreadListV2RowStatus(thread);
@@ -926,6 +946,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       snoozeWakeLabel: snoozedRow && !pendingSync ? snoozeWakeLabelText : undefined,
       providerNameLabel,
       fromTerminal,
+      replica,
       hasQueuedMessages: props.hasQueuedMessages === true,
       regeneratingTitle: isRegeneratingTitle,
     },
@@ -1575,6 +1596,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           <View className="flex-1" />
         )}
         {terminalBadge}
+        {replicaBadge}
         {pr ? (
           <Pressable
             // Padding cancelled by negative margin grows the touch target into
@@ -1759,6 +1781,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               </Text>
             ) : null}
             {terminalBadge}
+            {replicaBadge}
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
                 sidebar={sidebarPane}

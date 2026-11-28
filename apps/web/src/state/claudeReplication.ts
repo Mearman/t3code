@@ -1,4 +1,5 @@
 import {
+  claudeReplicaOfThread,
   claudeSessionIdOfThread,
   createClaudeSessionReplicationAtoms,
 } from "@t3tools/client-runtime/state/claude-session-replication";
@@ -22,5 +23,5 @@ export function useClaudeReplica(environmentId: EnvironmentId, threadId: ThreadI
       ? null
       : claudeReplicationEnvironment.report({ environmentId, input: {} }),
   );
-  return report.data?.replicas.find((replica) => replica.sessionId === sessionId) ?? null;
+  return claudeReplicaOfThread(report.data, threadId);
 }

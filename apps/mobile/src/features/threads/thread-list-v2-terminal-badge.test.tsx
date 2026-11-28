@@ -56,6 +56,10 @@ vi.mock("../../state/session", () => ({
   useEnvironmentScope: () => true,
   useEnvironmentScopeDenied: () => false,
 }));
+const replica = vi.hoisted(() => ({ status: null as "current" | "stale" | null }));
+vi.mock("../../state/claudeReplication", () => ({
+  useClaudeReplica: () => (replica.status === null ? null : { status: replica.status }),
+}));
 vi.mock("../../state/atom-registry", () => ({ appAtomRegistry: {} }));
 vi.mock("../../state/thread-order", () => ({ threadArrangementOpenAtom: {} }));
 vi.mock("../../state/threads", () => ({ threadEnvironment: { pendingSyncAtom: () => ({}) } }));
@@ -181,5 +185,27 @@ it("shows no Terminal badge on a thread the app ran", () => {
   expect(host.querySelector("[data-testid=row]")?.getAttribute("data-label")).not.toContain(
     "from a terminal",
   );
+  unmount();
+});
+
+it.each([
+  ["current", "Copy", "copy of a session another machine owns"],
+  ["stale", "Stale copy", "stale copy of a session another machine owns"],
+] as const)(
+  "marks a %s copy of another machine's session, on screen and to VoiceOver",
+  (status, badge, spoken) => {
+    replica.status = status;
+    const { host, unmount } = renderRow(threadWith(false));
+    replica.status = null;
+    expect(host.textContent).toContain(badge);
+    expect(host.querySelector("[data-testid=row]")?.getAttribute("data-label")).toContain(spoken);
+    unmount();
+  },
+);
+
+it("shows no copy badge on a session this machine owns", () => {
+  const { host, unmount } = renderRow(threadWith(false));
+  expect(host.textContent).not.toContain("Copy");
+  expect(host.querySelector("[data-testid=row]")?.getAttribute("data-label")).not.toContain("copy");
   unmount();
 });

@@ -59,7 +59,7 @@ export function ClaudeSessionReplicationSettings(props: {
         settingKeys={["claudeSessionSync"]}
         {...setting("claude-session-replicate-pinned")}
         description={gt(
-          "Keep a copy of every session whose thread or project is pinned on a machine linked here with full access. A copy resumes with plain claude --resume on this machine.",
+          "Keep a copy of every session whose thread or project is pinned on a machine linked here with full access. A copy holds the conversation and backups of the files it edited, ignored files such as .env included, and resumes with plain claude --resume on this machine.",
         )}
         control={
           <ScopedSwitch

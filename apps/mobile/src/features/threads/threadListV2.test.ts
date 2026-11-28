@@ -255,6 +255,7 @@ describe("threadListV2RowAccessibilityLabel", () => {
     snoozeWakeLabel: undefined,
     providerNameLabel: "Codex",
     fromTerminal: false,
+    replica: null,
     hasQueuedMessages: false,
     regeneratingTitle: false,
   } as const;
@@ -280,6 +281,15 @@ describe("threadListV2RowAccessibilityLabel", () => {
   it("says a thread whose latest run came from a terminal", () => {
     expect(threadListV2RowAccessibilityLabel({ ...row, fromTerminal: true })).toBe(
       "Fix login, 5m, Codex, from a terminal",
+    );
+  });
+
+  it("says a thread whose session is a copy another machine owns, and when it is stale", () => {
+    expect(threadListV2RowAccessibilityLabel({ ...row, replica: "current" })).toBe(
+      "Fix login, 5m, Codex, copy of a session another machine owns",
+    );
+    expect(threadListV2RowAccessibilityLabel({ ...row, replica: "stale" })).toBe(
+      "Fix login, 5m, Codex, stale copy of a session another machine owns",
     );
   });
 });

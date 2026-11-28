@@ -1,4 +1,4 @@
-import { WS_METHODS } from "@t3tools/contracts";
+import { type ClaudeReplicationReport, WS_METHODS } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type { Atom } from "effect/reactivity";
 
@@ -43,4 +43,14 @@ export function createClaudeSessionReplicationAtoms<R, E>(
 export const claudeSessionIdOfThread = (threadId: string): string | null => {
   const [prefix, sessionId] = threadId.split(":");
   return prefix === "claude" && sessionId !== undefined && sessionId !== "" ? sessionId : null;
+};
+
+/** The copy a thread shows, when its Claude Code session is one a linked environment owns. */
+export const claudeReplicaOfThread = (
+  report: ClaudeReplicationReport | null | undefined,
+  threadId: string,
+) => {
+  const sessionId = claudeSessionIdOfThread(threadId);
+  if (sessionId === null) return null;
+  return report?.replicas.find((replica) => replica.sessionId === sessionId) ?? null;
 };
