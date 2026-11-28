@@ -1,4 +1,8 @@
-import { type ClaudeReplicationReport, WS_METHODS } from "@t3tools/contracts";
+import {
+  type ClaudeReplicationReport,
+  type ClaudeSessionReplica,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type { Atom } from "effect/reactivity";
 
@@ -45,12 +49,24 @@ export const claudeSessionIdOfThread = (threadId: string): string | null => {
   return prefix === "claude" && sessionId !== undefined && sessionId !== "" ? sessionId : null;
 };
 
-/** The copy a thread shows, when its Claude Code session is one a linked environment owns. */
+type CopyReport = Pick<ClaudeReplicationReport, "replicas">;
+
+const replicasBySession = new WeakMap<CopyReport, ReadonlyMap<string, ClaudeSessionReplica>>();
+
+/**
+ * The copy a thread shows, when its Claude Code session is one a linked environment owns. Each
+ * report is indexed once, so a list of threads costs one lookup per row.
+ */
 export const claudeReplicaOfThread = (
-  report: ClaudeReplicationReport | null | undefined,
+  report: CopyReport | null | undefined,
   threadId: string,
-) => {
+): ClaudeSessionReplica | null => {
   const sessionId = claudeSessionIdOfThread(threadId);
-  if (sessionId === null) return null;
-  return report?.replicas.find((replica) => replica.sessionId === sessionId) ?? null;
+  if (sessionId === null || report == null) return null;
+  let index = replicasBySession.get(report);
+  if (index === undefined) {
+    index = new Map(report.replicas.map((copy) => [copy.sessionId, copy]));
+    replicasBySession.set(report, index);
+  }
+  return index.get(sessionId) ?? null;
 };

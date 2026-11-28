@@ -1,4 +1,5 @@
 import { EnvironmentId } from "@t3tools/contracts";
+import * as Predicate from "effect/Predicate";
 import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -56,6 +57,20 @@ vi.mock("../../state/query", () => ({
     error: null,
   }),
 }));
+// The app's debounce, without the Expo modules its file also loads.
+vi.mock("../../state/queries", async () => {
+  const { useEffect, useState } = await import("react");
+  return {
+    useDebouncedValue: <A,>(value: A, delayMs: number) => {
+      const [settled, setSettled] = useState(value);
+      useEffect(() => {
+        const timer = setTimeout(() => setSettled(value), delayMs);
+        return () => clearTimeout(timer);
+      }, [delayMs, value]);
+      return settled;
+    },
+  };
+});
 vi.mock("../../state/session", () => ({ useEnvironmentScope: () => true }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
 vi.mock("../threads/useOpenLinkedThread", () => ({ useOpenLinkedThreadRead: () => vi.fn() }));
@@ -65,7 +80,8 @@ vi.mock("./components/SettingsSection", () => ({
 
 import { ClaudeReplicationSection } from "./ClaudeReplicationSection";
 
-it("searches the linked machine's sessions by what the user types", () => {
+it("searches the linked machine's sessions once typing settles", () => {
+  vi.useFakeTimers();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const host = document.createElement("div");
   const root = createRoot(host);
@@ -82,15 +98,32 @@ it("searches the linked machine's sessions by what the user types", () => {
   );
   if (search === null) return expect.unreachable();
 
-  act(() => {
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    setValue?.call(search, "login");
-    search.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  const type = (text: string) =>
+    act(() => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setValue?.call(search, text);
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  const listedBefore = remoteInputs.length;
+  for (const text of ["l", "lo", "log", "logi", "login"]) type(text);
+  const queried = () =>
+    remoteInputs
+      .slice(listedBefore)
+      .flatMap((input) =>
+        Predicate.hasProperty(input, "input") &&
+        Predicate.hasProperty(input.input, "query") &&
+        typeof input.input.query === "string"
+          ? [input.input.query]
+          : [],
+      );
+  expect(queried()).toEqual([]);
+  act(() => vi.advanceTimersByTime(300));
+  expect(new Set(queried())).toEqual(new Set(["login"]));
 
   expect(remoteInputs.at(-1)).toEqual({
     environmentId: "environment-here",
     input: { environmentId: "environment-box", query: "login" },
   });
   act(() => root.unmount());
+  vi.useRealTimers();
 });

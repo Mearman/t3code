@@ -10,11 +10,14 @@ import { Chip } from "../../components/ui/Chip";
 import { SearchField } from "../../components/ui/SearchField";
 import { claudeReplicationEnvironment } from "../../state/claudeReplication";
 import { peerLinkEnvironment } from "../../state/peerLinks";
+import { useDebouncedValue } from "../../state/queries";
 import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOpenLinkedThreadRead } from "../threads/useOpenLinkedThread";
 import { SettingsSection } from "./components/SettingsSection";
+
+const SEARCH_DEBOUNCE_MS = 300;
 
 const formatTime = (time: DateTime.Utc) => new Date(DateTime.toEpochMillis(time)).toLocaleString();
 
@@ -115,12 +118,14 @@ function LinkedSessions(props: { readonly environmentId: EnvironmentId }) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<TextInputInstance>(null);
   const linkId = selected ?? links.data?.links[0]?.environmentId ?? null;
+  // Each listing is a call to the linked machine, so typing settles before one is made.
+  const searched = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
   const sessions = useEnvironmentQuery(
     linkId === null
       ? null
       : claudeReplicationEnvironment.remoteSessions({
           environmentId,
-          input: { environmentId: linkId, ...(query === "" ? {} : { query }) },
+          input: { environmentId: linkId, ...(searched === "" ? {} : { query: searched }) },
         }),
   );
   if (links.data === null || links.data.links.length === 0) return null;
