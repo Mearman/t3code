@@ -45,25 +45,43 @@ it.layer(NodeServices.layer)("ClaudeBridgeHttp", (it) => {
     }).pipe(Effect.provide(bridge)),
   );
 
-  it.effect("refuses a request that did not come straight from this host", () =>
+  it.effect("answers through the route only a request straight from this host", () =>
     Effect.gen(function* () {
       const { token } = yield* ClaudeBridge;
-      // A web request carries no socket, as one through a proxy or a browser shows none to trust.
-      const request = HttpServerRequest.fromWeb(
-        new Request(`http://127.0.0.1${CLAUDE_BRIDGE_ROUTE_PREFIX}/poll`, {
+      const route = (headers: Record<string, string>, peer: string | undefined) => {
+        const web = new Request(`http://127.0.0.1${CLAUDE_BRIDGE_ROUTE_PREFIX}/poll`, {
           method: "POST",
-          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-          body: JSON.stringify({ schemaVersion: 1, sessionId: "a", acks: [] }),
-        }),
-      );
-      const response = HttpServerResponse.toWeb(
-        yield* handleClaudeBridgePoll.pipe(
-          Effect.provideService(HttpServerRequest.HttpServerRequest, request),
-        ),
-      );
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            ...headers,
+          },
+          body: JSON.stringify({ schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION, sessionId: "a", acks: [] }),
+        });
+        // Node's server request carries its socket; a web request has none unless given one.
+        if (peer !== undefined) {
+          Object.defineProperty(web, "socket", {
+            value: { remoteAddress: peer, localAddress: "127.0.0.1" },
+          });
+        }
+        return handleClaudeBridgePoll.pipe(
+          Effect.provideService(HttpServerRequest.HttpServerRequest, HttpServerRequest.fromWeb(web)),
+          Effect.map((response) => HttpServerResponse.toWeb(response).status),
+        );
+      };
+      const host = { host: "127.0.0.1:3774" };
 
-      assert.strictEqual(response.status, 403);
-      assert.isNull(response.headers.get(CLAUDE_BRIDGE_PROOF_HEADER));
+      const accepted = yield* route(host, "127.0.0.1");
+      // Each passes a check on the peer's address alone: only the whole same-host check refuses it.
+      const refused = [
+        yield* route({ ...host, origin: "https://evil.example" }, "127.0.0.1"),
+        yield* route({ ...host, "x-forwarded-for": "203.0.113.9" }, "127.0.0.1"),
+        yield* route({ host: "evil.example" }, "127.0.0.1"),
+        yield* route(host, undefined),
+      ];
+
+      assert.strictEqual(accepted, 200);
+      assert.deepStrictEqual(refused, [403, 403, 403, 403]);
     }).pipe(Effect.provide(bridge)),
   );
 });
