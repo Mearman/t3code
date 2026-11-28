@@ -8,6 +8,7 @@ import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as ChildProcess from "effect/process/ChildProcess";
 
@@ -22,6 +23,9 @@ const UNTRACKED_DIR = "untracked";
 const moveError = (reason: ClaudeSessionMoveError["reason"], message: string, cause?: unknown) =>
   new ClaudeSessionMoveError({ reason, message, ...(cause === undefined ? {} : { cause }) });
 
+/** Protocols a move may clone or fetch over; a peer-named `ext::` remote would run a command. */
+const ALLOWED_PROTOCOLS = "file:git:http:https:ssh";
+
 /** Runs git in `cwd`; output is returned as text, a non-zero exit is an error naming the call. */
 export const git = Effect.fn("ClaudeSessionCode.git")(function* (
   cwd: string,
@@ -32,10 +36,25 @@ export const git = Effect.fn("ClaudeSessionCode.git")(function* (
   const result = yield* spawnAndCollect(
     "git",
     ChildProcess.make("git", ["-C", cwd, ...args], {
-      env: { ...environment, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+      env: {
+        ...environment,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_ALLOW_PROTOCOL: ALLOWED_PROTOCOLS,
+        LC_ALL: "C",
+      },
     }),
     { maxStdoutBytes: 64 * 1024 * 1024 },
-  ).pipe(Effect.mapError((cause) => moveError("git", `git ${args[0]} could not run.`, cause)));
+  ).pipe(
+    Effect.mapError((cause) =>
+      moveError(
+        "git",
+        cause._tag === "ProviderProbeOutputLimitError"
+          ? `git ${args[0]} wrote more than a move reads, so it stopped.`
+          : `git ${args[0]} could not run.`,
+        cause,
+      ),
+    ),
+  );
   if (result.code !== 0 && options?.allowFailure !== true) {
     return yield* moveError(
       "git",
@@ -44,6 +63,34 @@ export const git = Effect.fn("ClaudeSessionCode.git")(function* (
   }
   return result;
 });
+
+/**
+ * Writes the staged or unstaged changes as a binary patch straight to `file`, so their bytes are
+ * never decoded. Every option a user's config could change is pinned, so two machines describing
+ * the same changes write the same bytes.
+ */
+const diffTo = (cwd: string, staged: boolean, file: string) =>
+  git(cwd, [
+    "-c",
+    "core.quotePath=true",
+    "-c",
+    "diff.suppressBlankEmpty=false",
+    "diff",
+    ...(staged ? ["--cached"] : []),
+    "--binary",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-relative",
+    "--no-renames",
+    "--diff-algorithm=myers",
+    "--no-indent-heuristic",
+    "--inter-hunk-context=0",
+    "-U3",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    `--output=${file}`,
+  ]);
 
 const describeFile = Effect.fn("ClaudeSessionCode.describeFile")(function* (
   packageDir: string,
@@ -60,17 +107,21 @@ const describeFile = Effect.fn("ClaudeSessionCode.describeFile")(function* (
   } satisfies ClaudeSessionFile;
 });
 
-/** Writes `text` as a package file, or nothing when it is empty. */
-const writePatch = Effect.fn("ClaudeSessionCode.writePatch")(function* (
+/** Packs the staged or unstaged changes as a package file, or nothing when there are none. */
+const capturePatch = Effect.fn("ClaudeSessionCode.capturePatch")(function* (
+  root: string,
   packageDir: string,
   relative: string,
-  text: string,
+  staged: boolean,
 ) {
-  if (text.length === 0) return null;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  yield* fileSystem.writeFileString(path.join(packageDir, relative), text);
-  return yield* describeFile(packageDir, relative);
+  const file = path.join(packageDir, relative);
+  yield* diffTo(root, staged, file);
+  if (Number((yield* fileSystem.stat(file)).size) > 0)
+    return yield* describeFile(packageDir, relative);
+  yield* fileSystem.remove(file);
+  return null;
 });
 
 const nulSeparated = (text: string) => text.split("\0").filter((entry) => entry.length > 0);
@@ -193,18 +244,17 @@ export const captureClaudeSessionCode = Effect.fn("captureClaudeSessionCode")(
       ]);
       bundle = yield* describeFile(input.packageDir, BUNDLE);
     }
-    const staged = yield* writePatch(
-      input.packageDir,
-      STAGED,
-      (yield* git(root, ["diff", "--cached", "--binary"])).stdout,
-    );
-    const unstaged = yield* writePatch(
-      input.packageDir,
-      UNSTAGED,
-      (yield* git(root, ["diff", "--binary"])).stdout,
-    );
+    const staged = yield* capturePatch(root, input.packageDir, STAGED, true);
+    const unstaged = yield* capturePatch(root, input.packageDir, UNSTAGED, false);
     const untracked: Array<ClaudeSessionCodeEntry> = [];
     for (const [index, relative] of untrackedFiles.entries()) {
+      // git lists an untracked repository inside the checkout as its directory.
+      if (relative.endsWith("/")) {
+        return yield* moveError(
+          "submodule",
+          `${relative} is a repository inside this one that git does not track, so a move cannot carry it. Add it as a submodule or move it out first.`,
+        );
+      }
       const source = path.join(root, relative);
       const link = yield* fileSystem.readLink(source).pipe(Effect.option);
       if (link._tag === "Some") {
@@ -220,6 +270,7 @@ export const captureClaudeSessionCode = Effect.fn("captureClaudeSessionCode")(
         kind: "file",
         path: relative,
         file: yield* describeFile(input.packageDir, packed),
+        executable: ((yield* fileSystem.stat(source)).mode & 0o111) !== 0,
       });
     }
     const relativeCwd = path.relative(root, yield* fileSystem.realPath(input.cwd));
@@ -259,11 +310,119 @@ const branchName = (branch: string | null, moveId: string) => {
   return branch === null ? `t3code/moved-${tag}` : `${branch}-moved-${tag}`;
 };
 
+/** Applies a patch as written, whatever `apply.whitespace` the checkout's config sets. */
+const APPLY = ["apply", "--binary", "--whitespace=nowarn"];
+
+/** A move id as `ClaudeSessionMove` mints it: 16 random bytes in hex. */
+export const isClaudeMoveId = (moveId: string) => /^[0-9a-f]{32}$/.test(moveId);
+
+const PACKAGE_FILE = /^(bundle|staged\.patch|unstaged\.patch|untracked\/\d+)$/;
+
+/** A relative path of plain segments that never enters a `.git` directory. */
+const isPlainRelativePath = (relative: string) =>
+  relative
+    .split("/")
+    .every(
+      (segment) =>
+        segment.length > 0 &&
+        segment !== "." &&
+        segment !== ".." &&
+        !segment.includes("\\") &&
+        segment.toLowerCase() !== ".git",
+    );
+
+/** A remote git reads as a URL or path, never as an option or a `<helper>::` transport. */
+const isCloneableRemote = (url: string) => !url.startsWith("-") && !url.includes("::");
+
+/**
+ * Checks everything a source sent before the target acts on it: the move id, the commit, the
+ * remote, the session directory and every package file and untracked path, which must stay below
+ * the staging directory and the new worktree.
+ */
+export const checkClaudeSessionCodePackage = Effect.fn("checkClaudeSessionCodePackage")(
+  function* (input: {
+    readonly code: Extract<ClaudeSessionCodePackage, { readonly kind: "git" }>;
+    readonly moveId: string;
+  }) {
+    const { code } = input;
+    const refuse = (what: string) =>
+      moveError("refused", `The source sent ${what}, so nothing was changed here.`);
+    if (!isClaudeMoveId(input.moveId)) return yield* refuse("a move id that is not one");
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(code.head))
+      return yield* refuse("a commit that is not one");
+    if (!isCloneableRemote(code.remoteUrl)) {
+      return yield* refuse(`a remote this machine does not clone (${code.remoteUrl.slice(0, 80)})`);
+    }
+    if (code.relativeCwd !== "" && !isPlainRelativePath(code.relativeCwd)) {
+      return yield* refuse(`a directory outside the repository (${code.relativeCwd})`);
+    }
+    if (code.branch !== null) {
+      const valid = yield* git(".", ["check-ref-format", "--branch", code.branch], {
+        allowFailure: true,
+      });
+      if (valid.code !== 0 || code.branch.startsWith("-")) {
+        return yield* refuse(`a branch name git does not accept (${code.branch.slice(0, 80)})`);
+      }
+    }
+    const files = claudeSessionCodeFiles(code).map((file) => file.path);
+    const expected = [
+      ...(code.bundle === null ? [] : [[code.bundle.path, BUNDLE]]),
+      ...(code.staged === null ? [] : [[code.staged.path, STAGED]]),
+      ...(code.unstaged === null ? [] : [[code.unstaged.path, UNSTAGED]]),
+    ];
+    if (
+      expected.some(([actual, name]) => actual !== name) ||
+      files.some((file) => !PACKAGE_FILE.test(file)) ||
+      new Set(files).size !== files.length
+    ) {
+      return yield* refuse("a package file outside its package");
+    }
+    const paths = code.untracked.map((entry) => entry.path);
+    const bad = paths.find((relative) => !isPlainRelativePath(relative));
+    if (bad !== undefined) return yield* refuse(`an untracked path outside the worktree (${bad})`);
+    if (new Set(paths).size !== paths.length) return yield* refuse("an untracked path twice");
+  },
+);
+
+/**
+ * Creates `relative`'s directories below `root` one at a time, refusing a symbolic link or file on
+ * the way, so nothing written below them can land outside `root`.
+ */
+const directoryInside = Effect.fn("ClaudeSessionCode.directoryInside")(function* (
+  root: string,
+  relative: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  let current = root;
+  for (const segment of relative === "" ? [] : relative.split("/")) {
+    current = path.join(current, segment);
+    if (Option.isSome(yield* fileSystem.readLink(current).pipe(Effect.option))) {
+      return yield* moveError(
+        "refused",
+        `${current} is a symbolic link, so nothing is written through it.`,
+      );
+    }
+    if (!(yield* fileSystem.exists(current))) yield* fileSystem.makeDirectory(current);
+    else if ((yield* fileSystem.stat(current)).type !== "Directory") {
+      return yield* moveError("refused", `${current} is not a directory.`);
+    }
+  }
+  return current;
+});
+
+/** Whether two files hold the same bytes. */
+const sameBytes = Effect.fn("ClaudeSessionCode.sameBytes")(function* (a: string, b: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const [left, right] = [yield* fileSystem.readFile(a), yield* fileSystem.readFile(b)];
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+});
+
 /**
  * Recreates packed code in a new worktree of `checkout` at `worktreePath`, on a branch of its own,
  * and checks the staged and unstaged changes come out byte for byte. `staging` holds the fetched
- * package files. Only refs and objects are added to `checkout`; its working tree, index and
- * branches are left as they are. A worktree that fails part-way is removed.
+ * package files. Only objects and the new branch are added to `checkout`; its working tree, index,
+ * branches and remote-tracking refs are left as they are. A worktree that fails part-way is removed.
  */
 export const restoreClaudeSessionCode = Effect.fn("restoreClaudeSessionCode")(
   function* (input: {
@@ -276,67 +435,120 @@ export const restoreClaudeSessionCode = Effect.fn("restoreClaudeSessionCode")(
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const { code, checkout, worktreePath } = input;
+    yield* checkClaudeSessionCodePackage({ code, moveId: input.moveId });
     const staged = (relative: string) => path.join(input.staging, relative);
-    // An unreachable remote is not fatal: the bundle or local objects may hold every commit, and
-    // the presence check below stops the move with the reason when they do not.
-    yield* git(checkout, ["fetch", "--quiet", "--all"], { allowFailure: true });
-    const moveRef = `refs/t3code/moves/${input.moveId}`;
-    if (code.bundle !== null) {
-      yield* git(checkout, ["bundle", "verify", "--quiet", staged(code.bundle.path)]);
-      yield* git(checkout, ["fetch", "--quiet", staged(code.bundle.path), `HEAD:${moveRef}`]);
-    }
-    const present = yield* git(checkout, ["cat-file", "-e", `${code.head}^{commit}`], {
-      allowFailure: true,
-    });
-    if (present.code !== 0) {
-      return yield* moveError(
-        "git",
-        `Commit ${code.head.slice(0, 12)} is on neither the remote nor the bundle the source sent.`,
-      );
-    }
-    const taken =
-      code.branch === null ||
-      (yield* git(checkout, ["show-ref", "--verify", "--quiet", `refs/heads/${code.branch}`], {
-        allowFailure: true,
-      })).code === 0;
-    const branch =
-      code.branch !== null && !taken ? code.branch : branchName(code.branch, input.moveId);
-    yield* fileSystem.makeDirectory(path.dirname(worktreePath), { recursive: true });
-    yield* git(checkout, ["worktree", "add", "--quiet", "-b", branch, worktreePath, code.head]);
-    const fill = Effect.gen(function* () {
-      if (code.staged !== null) {
-        yield* git(worktreePath, ["apply", "--index", "--binary", staged(code.staged.path)]);
+    // Fetched commits land below this namespace only, never in the checkout's own refs.
+    const moveRefs = `refs/t3code/moves/${input.moveId}`;
+    const dropMoveRefs = Effect.gen(function* () {
+      const refs = yield* git(checkout, ["for-each-ref", "--format=%(refname)", moveRefs]);
+      for (const ref of refs.stdout.split("\n").filter((name) => name !== "")) {
+        yield* git(checkout, ["update-ref", "-d", ref]);
       }
-      if (code.unstaged !== null) {
-        yield* git(worktreePath, ["apply", "--binary", staged(code.unstaged.path)]);
-      }
-      for (const entry of code.untracked) {
-        const target = path.join(worktreePath, entry.path);
-        yield* fileSystem.makeDirectory(path.dirname(target), { recursive: true });
-        if (entry.kind === "symlink") yield* fileSystem.symlink(entry.target, target);
-        else yield* fileSystem.copyFile(staged(entry.file.path), target);
-      }
-      // The changes are recreated exactly when git describes them with the same bytes.
-      for (const [patch, args] of [
-        [code.staged, ["diff", "--cached", "--binary"]],
-        [code.unstaged, ["diff", "--binary"]],
-      ] as const) {
-        const again = (yield* git(worktreePath, args)).stdout;
-        const expected = patch === null ? "" : yield* fileSystem.readFileString(staged(patch.path));
-        if (again !== expected) {
-          return yield* moveError("git", "The changes did not come out the same on this machine.");
-        }
-      }
-    });
-    yield* fill.pipe(
-      Effect.tapError(() =>
-        git(checkout, ["worktree", "remove", "--force", worktreePath], { allowFailure: true }).pipe(
-          Effect.andThen(git(checkout, ["branch", "-D", branch], { allowFailure: true })),
-          Effect.ignore,
-        ),
-      ),
+    }).pipe(Effect.ignore);
+    const commitHere = Effect.map(
+      git(checkout, ["cat-file", "-e", `${code.head}^{commit}`], { allowFailure: true }),
+      (result) => result.code === 0,
     );
-    yield* git(checkout, ["update-ref", "-d", moveRef], { allowFailure: true });
+    const restore = Effect.gen(function* () {
+      if (code.bundle !== null) {
+        yield* git(checkout, ["bundle", "verify", "--quiet", staged(code.bundle.path)]);
+        yield* git(checkout, [
+          "fetch",
+          "--quiet",
+          "--no-write-fetch-head",
+          staged(code.bundle.path),
+          `HEAD:${moveRefs}/bundle`,
+        ]);
+      }
+      if (!(yield* commitHere)) {
+        // An unreachable remote is not fatal yet: the check below names what is missing.
+        yield* git(
+          checkout,
+          [
+            "-c",
+            "fetch.recurseSubmodules=false",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--refmap=",
+            "--",
+            code.remoteUrl,
+            `+refs/heads/*:${moveRefs}/remote/*`,
+          ],
+          { allowFailure: true },
+        );
+      }
+      if (!(yield* commitHere)) {
+        return yield* moveError(
+          "git",
+          `Commit ${code.head.slice(0, 12)} is on neither the remote nor the bundle the source sent.`,
+        );
+      }
+      const taken =
+        code.branch === null ||
+        (yield* git(checkout, ["show-ref", "--verify", "--quiet", `refs/heads/${code.branch}`], {
+          allowFailure: true,
+        })).code === 0;
+      const branch =
+        code.branch !== null && !taken ? code.branch : branchName(code.branch, input.moveId);
+      yield* fileSystem.makeDirectory(path.dirname(worktreePath), { recursive: true });
+      yield* git(checkout, ["worktree", "add", "--quiet", "-b", branch, worktreePath, code.head]);
+      const fill = Effect.gen(function* () {
+        if (code.staged !== null) {
+          yield* git(worktreePath, [...APPLY, "--index", staged(code.staged.path)]);
+        }
+        if (code.unstaged !== null) {
+          yield* git(worktreePath, [...APPLY, staged(code.unstaged.path)]);
+        }
+        for (const entry of code.untracked) {
+          const segments = entry.path.split("/");
+          const directory = yield* directoryInside(worktreePath, segments.slice(0, -1).join("/"));
+          const target = path.join(directory, segments.at(-1) ?? entry.path);
+          if (
+            (yield* fileSystem.exists(target)) ||
+            Option.isSome(yield* fileSystem.readLink(target).pipe(Effect.option))
+          ) {
+            return yield* moveError("refused", `${entry.path} is already in the new worktree.`);
+          }
+          if (entry.kind === "symlink") {
+            yield* fileSystem.symlink(entry.target, target);
+            continue;
+          }
+          yield* fileSystem.copyFile(staged(entry.file.path), target);
+          yield* fileSystem.chmod(target, entry.executable ? 0o755 : 0o644);
+        }
+        // The changes are recreated exactly when git describes them with the same bytes.
+        for (const [patch, cached, again] of [
+          [code.staged, true, "staged.again"],
+          [code.unstaged, false, "unstaged.again"],
+        ] as const) {
+          yield* diffTo(worktreePath, cached, staged(again));
+          const same =
+            patch === null
+              ? Number((yield* fileSystem.stat(staged(again))).size) === 0
+              : yield* sameBytes(staged(again), staged(patch.path));
+          if (!same) {
+            return yield* moveError(
+              "git",
+              "The changes did not come out the same on this machine.",
+            );
+          }
+        }
+      });
+      yield* fill.pipe(
+        Effect.tapError(() =>
+          git(checkout, ["worktree", "remove", "--force", worktreePath], {
+            allowFailure: true,
+          }).pipe(
+            Effect.andThen(git(checkout, ["branch", "-D", branch], { allowFailure: true })),
+            Effect.ignore,
+          ),
+        ),
+      );
+      return branch;
+    });
+    const branch = yield* restore.pipe(Effect.ensuring(dropMoveRefs));
     return {
       branch,
       cwd:

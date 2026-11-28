@@ -15,6 +15,8 @@ export const ClaudeSessionCodeEntry = Schema.Union([
     kind: Schema.Literal("file"),
     path: TrimmedNonEmptyString,
     file: ClaudeSessionFile,
+    /** Whether any execute bit is set; git keeps only that of a file's mode. */
+    executable: Schema.Boolean,
   }),
   Schema.Struct({
     kind: Schema.Literal("symlink"),

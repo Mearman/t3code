@@ -12,6 +12,7 @@ import {
 } from "./ClaudeSessionCode.ts";
 
 const IDENTITY = ["-c", "user.name=t3", "-c", "user.email=t3@example.com"];
+const MOVE = "0123456789abcdef0123456789abcdef";
 
 /** A bare remote with one commit, a clone `source` of it and a clone `existing` elsewhere. */
 const makeRepos = Effect.gen(function* () {
@@ -107,7 +108,7 @@ it.layer(NodeServices.layer)("session code", (it) => {
           checkout: existing,
           worktreePath,
           staging: packageDir,
-          moveId: "0123456789abcdef",
+          moveId: MOVE,
         });
 
         expect(restored.cwd).toBe(path.join(worktreePath, "src"));
@@ -133,6 +134,299 @@ it.layer(NodeServices.layer)("session code", (it) => {
         const refs = (yield* git(existing, ["for-each-ref", "refs/t3code"])).stdout;
         expect(refs).toBe("");
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("recreates changes to a file in a legacy encoding byte for byte", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source, existing } = yield* makeRepos;
+      // "café" and "naïve" in Latin-1: text to git, but not UTF-8.
+      const stagedBytes = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]);
+      const unstagedBytes = new Uint8Array([0x6e, 0x61, 0xef, 0x76, 0x65, 0x0a]);
+      yield* fileSystem.writeFile(path.join(source, "README.md"), stagedBytes);
+      yield* git(source, ["add", "README.md"]);
+      yield* fileSystem.writeFile(path.join(source, "src", "app.ts"), unstagedBytes);
+      const packageDir = path.join(root, "package");
+      const code = yield* capture(source, packageDir);
+      if (code.kind !== "git") return expect.unreachable();
+      const worktreePath = path.join(root, "target", "worktrees", "latin1");
+
+      yield* restoreClaudeSessionCode({
+        code,
+        checkout: existing,
+        worktreePath,
+        staging: packageDir,
+        moveId: MOVE,
+      });
+
+      expect([...(yield* fileSystem.readFile(path.join(worktreePath, "README.md")))]).toEqual([
+        ...stagedBytes,
+      ]);
+      expect([...(yield* fileSystem.readFile(path.join(worktreePath, "src", "app.ts")))]).toEqual([
+        ...unstagedBytes,
+      ]);
+      expect((yield* git(worktreePath, ["diff", "--cached", "--name-only"])).stdout).toBe(
+        "README.md\n",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("applies the changes as written whatever the checkout's whitespace config", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source, existing } = yield* makeRepos;
+      yield* git(existing, ["config", "apply.whitespace", "fix"]);
+      const edited = "one\ntrailing   \n";
+      yield* fileSystem.writeFileString(path.join(source, "README.md"), edited);
+      const packageDir = path.join(root, "package");
+      const code = yield* capture(source, packageDir);
+      if (code.kind !== "git") return expect.unreachable();
+      const worktreePath = path.join(root, "target", "worktrees", "spaces");
+
+      yield* restoreClaudeSessionCode({
+        code,
+        checkout: existing,
+        worktreePath,
+        staging: packageDir,
+        moveId: MOVE,
+      });
+
+      expect(yield* fileSystem.readFileString(path.join(worktreePath, "README.md"))).toBe(edited);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "refuses changes this checkout describes differently, such as a file it marks binary",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { root, source, existing } = yield* makeRepos;
+        yield* fileSystem.writeFileString(
+          path.join(existing, ".git", "info", "attributes"),
+          "README.md -diff\n",
+        );
+        yield* fileSystem.writeFileString(path.join(source, "README.md"), "one\ntwo\n");
+        const packageDir = path.join(root, "package");
+        const code = yield* capture(source, packageDir);
+        if (code.kind !== "git") return expect.unreachable();
+        const worktreePath = path.join(root, "target", "worktrees", "binary");
+
+        const refused = yield* Effect.flip(
+          restoreClaudeSessionCode({
+            code,
+            checkout: existing,
+            worktreePath,
+            staging: packageDir,
+            moveId: MOVE,
+          }),
+        );
+
+        expect(refused.message).toContain("did not come out the same");
+        expect(yield* fileSystem.exists(worktreePath)).toBe(false);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps an untracked file executable", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source, existing } = yield* makeRepos;
+      yield* fileSystem.writeFileString(path.join(source, "run.sh"), "#!/bin/sh\n");
+      yield* fileSystem.chmod(path.join(source, "run.sh"), 0o755);
+      const packageDir = path.join(root, "package");
+      const code = yield* capture(source, packageDir);
+      if (code.kind !== "git") return expect.unreachable();
+      const worktreePath = path.join(root, "target", "worktrees", "exec");
+
+      yield* restoreClaudeSessionCode({
+        code,
+        checkout: existing,
+        worktreePath,
+        staging: packageDir,
+        moveId: MOVE,
+      });
+
+      expect((yield* fileSystem.stat(path.join(worktreePath, "run.sh"))).mode & 0o111).not.toBe(0);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("stops a move that would carry a repository git does not track", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source } = yield* makeRepos;
+      const nested = path.join(source, "nested");
+      yield* fileSystem.makeDirectory(nested);
+      yield* git(nested, ["init", "-q", "-b", "main"]);
+      yield* fileSystem.writeFileString(path.join(nested, "a"), "a\n");
+      yield* git(nested, ["add", "a"]);
+      yield* git(nested, [...IDENTITY, "commit", "-qm", "a"]);
+      const stopped = yield* Effect.flip(capture(source, path.join(root, "package")));
+      expect(stopped.reason).toBe("submodule");
+      expect(stopped.message).toContain("nested/");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "fetches a commit only the remote has without touching the checkout's remote-tracking refs",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { root, source, existing } = yield* makeRepos;
+        yield* fileSystem.writeFileString(path.join(source, "README.md"), "pushed\n");
+        yield* git(source, ["add", "README.md"]);
+        yield* git(source, [...IDENTITY, "commit", "-qm", "pushed"]);
+        yield* git(source, ["push", "-q", "origin", "main"]);
+        const remoteRefs = () => git(existing, ["for-each-ref", "refs/remotes"]);
+        const before = (yield* remoteRefs()).stdout;
+        const packageDir = path.join(root, "package");
+        const code = yield* capture(source, packageDir);
+        if (code.kind !== "git") return expect.unreachable();
+        expect(code.bundle).toBeNull();
+
+        yield* restoreClaudeSessionCode({
+          code,
+          checkout: existing,
+          worktreePath: path.join(root, "target", "worktrees", "pushed"),
+          staging: packageDir,
+          moveId: MOVE,
+        });
+
+        expect((yield* remoteRefs()).stdout).toBe(before);
+        expect(yield* fileSystem.exists(path.join(existing, ".git", "FETCH_HEAD"))).toBe(false);
+        expect((yield* git(existing, ["for-each-ref", "refs/t3code"])).stdout).toBe("");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("leaves no move refs behind when the changes cannot be recreated", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source, existing } = yield* makeRepos;
+      yield* fileSystem.writeFileString(
+        path.join(source, "src", "app.ts"),
+        "export const b = 2;\n",
+      );
+      yield* git(source, ["add", "src/app.ts"]);
+      yield* git(source, [...IDENTITY, "commit", "-qm", "unpushed"]);
+      yield* fileSystem.writeFileString(path.join(source, "README.md"), "one\nedit\n");
+      const packageDir = path.join(root, "package");
+      const code = yield* capture(source, packageDir);
+      if (code.kind !== "git" || code.unstaged === null) return expect.unreachable();
+      yield* fileSystem.writeFileString(path.join(packageDir, code.unstaged.path), "not a patch\n");
+      const worktreePath = path.join(root, "target", "worktrees", "broken");
+
+      const failed = yield* Effect.flip(
+        restoreClaudeSessionCode({
+          code,
+          checkout: existing,
+          worktreePath,
+          staging: packageDir,
+          moveId: MOVE,
+        }),
+      );
+
+      expect(failed.reason).toBe("git");
+      expect((yield* git(existing, ["for-each-ref", "refs/t3code"])).stdout).toBe("");
+      expect(yield* fileSystem.exists(worktreePath)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { name: "an untracked path climbing out", tamper: { untrackedPath: "../outside/x" } },
+    { name: "an untracked path into a .git", tamper: { untrackedPath: "vendor/.git/config" } },
+    { name: "a package file outside its package", tamper: { packagePath: "../../outside/x" } },
+    { name: "a move id that climbs out", tamper: { moveId: "../.." } },
+    { name: "a directory outside the repository", tamper: { relativeCwd: "../../outside" } },
+    { name: "a remote that is an option", tamper: { remoteUrl: "--upload-pack=touch x" } },
+    { name: "a commit that is not one", tamper: { head: "HEAD~1" } },
+    { name: "a branch git refuses", tamper: { branch: "-bad..name" } },
+  ])("refuses a package with $name and writes nothing outside", ({ tamper }) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source, existing } = yield* makeRepos;
+      yield* fileSystem.writeFileString(path.join(source, "x"), "x\n");
+      const packageDir = path.join(root, "package");
+      const code = yield* capture(source, packageDir);
+      if (code.kind !== "git") return expect.unreachable();
+      const outside = path.join(root, "outside");
+      yield* fileSystem.makeDirectory(outside);
+      const forged = {
+        ...code,
+        ...("remoteUrl" in tamper ? { remoteUrl: tamper.remoteUrl } : {}),
+        ...("head" in tamper ? { head: tamper.head } : {}),
+        ...("branch" in tamper ? { branch: tamper.branch } : {}),
+        ...("relativeCwd" in tamper ? { relativeCwd: tamper.relativeCwd } : {}),
+        untracked: code.untracked.map((entry) =>
+          entry.kind !== "file"
+            ? entry
+            : {
+                ...entry,
+                ...("untrackedPath" in tamper ? { path: tamper.untrackedPath } : {}),
+                ...("packagePath" in tamper
+                  ? { file: { ...entry.file, path: tamper.packagePath } }
+                  : {}),
+              },
+        ),
+      };
+      const worktreePath = path.join(root, "target", "worktrees", "forged");
+
+      const refused = yield* Effect.flip(
+        restoreClaudeSessionCode({
+          code: forged,
+          checkout: existing,
+          worktreePath,
+          staging: packageDir,
+          moveId: "moveId" in tamper ? tamper.moveId : MOVE,
+        }),
+      );
+
+      expect(refused.reason).toBe("refused");
+      expect(yield* fileSystem.readDirectory(outside)).toEqual([]);
+      expect(yield* fileSystem.exists(worktreePath)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("never writes an untracked file through a symbolic link it made", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, source, existing } = yield* makeRepos;
+      const outside = path.join(root, "outside");
+      yield* fileSystem.makeDirectory(outside);
+      yield* fileSystem.writeFileString(path.join(source, "x"), "x\n");
+      const packageDir = path.join(root, "package");
+      const code = yield* capture(source, packageDir);
+      if (code.kind !== "git") return expect.unreachable();
+      const file = code.untracked.find((entry) => entry.kind === "file");
+      if (file === undefined) return expect.unreachable();
+      // A link to a folder outside, then a file below the link.
+      const forged = {
+        ...code,
+        untracked: [
+          { kind: "symlink" as const, path: "link", target: outside },
+          { ...file, path: "link/authorized_keys" },
+        ],
+      };
+
+      const refused = yield* Effect.flip(
+        restoreClaudeSessionCode({
+          code: forged,
+          checkout: existing,
+          worktreePath: path.join(root, "target", "worktrees", "linked"),
+          staging: packageDir,
+          moveId: MOVE,
+        }),
+      );
+
+      expect(refused.reason).toBe("refused");
+      expect(yield* fileSystem.readDirectory(outside)).toEqual([]);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("carries nothing but a warning for a directory outside git", () =>
