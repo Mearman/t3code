@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -16,6 +16,7 @@ it.layer(layer)("ClaudeSessionReplicaRepository", (it) => {
       yield* replicas.upsert({
         sessionId: "s-1",
         ownerEnvironmentId: EnvironmentId.make("environment-owner"),
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
         transcriptPath: "/home/me/.claude/projects/-checkouts-repo/s-1.jsonl",
         cwd: "/checkouts/repo",
         syncedBytes: 10,

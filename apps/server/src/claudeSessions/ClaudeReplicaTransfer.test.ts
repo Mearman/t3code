@@ -144,6 +144,15 @@ it.layer(NodeServices.layer)("copyClaudeSessionFiles", (it) => {
       });
     });
 
+  /** The local transcript as the planner saw it: its size and hash, or undefined when absent. */
+  const localTranscriptOf = (file: string) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      if (!(yield* fileSystem.exists(file))) return undefined;
+      const bytes = yield* fileSystem.readFile(file);
+      return { size: bytes.byteLength, sha256: sha256OfBytes(bytes) };
+    });
+
   const intoSlug = (relative: string) =>
     relative.replace("projects/-owner-repo/", "projects/-here/");
 
@@ -152,10 +161,15 @@ it.layer(NodeServices.layer)("copyClaudeSessionFiles", (it) => {
     readonly targetHome: string;
     readonly manifest: Effect.Success<ReturnType<typeof manifestOf>>;
     readonly seed?: number;
+    readonly beforeReplace?: Effect.Effect<void, ClaudeSessionReplicationError>;
   }) =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
       return yield* copyClaudeSessionFiles({
+        localTranscript: yield* localTranscriptOf(
+          path.join(input.targetHome, intoSlug(input.manifest.transcript.path)),
+        ),
+        beforeReplace: input.beforeReplace ?? Effect.void,
         source: input.source,
         layout: { projectsDir: path.join(input.targetHome, "projects"), home: input.targetHome },
         sessionId: SESSION,
@@ -301,6 +315,215 @@ it.layer(NodeServices.layer)("copyClaudeSessionFiles", (it) => {
       expect(
         yield* fileSystem.exists(`${target}/projects/-here/${SESSION}/tool-results/gone.txt`),
       ).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    {
+      name: "a transcript path climbing out of projects",
+      transcript: `projects/../../outside/${SESSION}.jsonl`,
+      sidecar: undefined,
+      sessionId: SESSION,
+    },
+    {
+      name: "a sidecar path climbing out",
+      transcript: undefined,
+      sidecar: `projects/-owner-repo/${SESSION}/../../../../outside/x`,
+      sessionId: SESSION,
+    },
+    {
+      name: "a sidecar in another project folder",
+      transcript: undefined,
+      sidecar: `projects/-elsewhere/${SESSION}/x`,
+      sessionId: SESSION,
+    },
+    {
+      name: "a transcript placed where a sidecar goes",
+      transcript: `projects/-here/${SESSION}/x.jsonl`,
+      sidecar: undefined,
+      sessionId: SESSION,
+    },
+    {
+      name: "a sidecar that is the transcript",
+      transcript: undefined,
+      sidecar: `projects/-here/${SESSION}.jsonl`,
+      sessionId: SESSION,
+    },
+    {
+      name: "a credential file as a sidecar",
+      transcript: undefined,
+      sidecar: ".credentials.json",
+      sessionId: SESSION,
+    },
+    {
+      name: "a session id that climbs out",
+      transcript: undefined,
+      sidecar: undefined,
+      sessionId: "../..",
+    },
+  ])(
+    "refuses an owner that names $name, writing and deleting nothing",
+    ({ transcript, sidecar, sessionId }) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { root, owner, target, write } = yield* homes;
+        yield* write(owner, `projects/-owner-repo/${SESSION}.jsonl`, bytesOf(300, 20));
+        const manifest = yield* manifestOf(owner);
+        const keep = path.join(root, "outside", "keep");
+        yield* fileSystem.makeDirectory(path.dirname(keep), { recursive: true });
+        yield* fileSystem.writeFileString(keep, "keep");
+        const { source, counts } = yield* ownerSource(owner);
+        const forged = {
+          path: "",
+          size: 3,
+          sha256: sha256OfBytes(new TextEncoder().encode("abc")),
+        };
+
+        const refused = yield* Effect.flip(
+          copyClaudeSessionFiles({
+            source,
+            layout: { projectsDir: path.join(target, "projects"), home: target },
+            sessionId,
+            transcript:
+              transcript === undefined
+                ? { file: manifest.transcript, target: intoSlug(manifest.transcript.path) }
+                : { file: { ...manifest.transcript, path: transcript }, target: transcript },
+            sidecars:
+              sidecar === undefined
+                ? []
+                : [{ file: { ...forged, path: sidecar }, target: sidecar }],
+            seedTranscriptBytes: 0,
+            localTranscript: undefined,
+            beforeReplace: Effect.void,
+          }),
+        );
+
+        expect(refused.reason).toBe("refused");
+        expect(counts.requests).toBe(0);
+        expect(yield* fileSystem.readFileString(keep)).toBe("keep");
+        expect(yield* fileSystem.exists(path.join(root, "outside", `${SESSION}.jsonl`))).toBe(
+          false,
+        );
+        expect(yield* fileSystem.exists(path.join(target, ".t3code-replicas"))).toBe(false);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses a target that a symlink in the home would carry outside it", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, owner, target, write } = yield* homes;
+      yield* write(owner, `projects/-owner-repo/${SESSION}.jsonl`, bytesOf(300, 21));
+      yield* write(owner, `file-history/${SESSION}/f@v1`, bytesOf(30, 22));
+      yield* fileSystem.makeDirectory(path.join(root, "elsewhere"));
+      yield* fileSystem.makeDirectory(path.join(target, "file-history"), { recursive: true });
+      yield* fileSystem.symlink(
+        path.join(root, "elsewhere"),
+        path.join(target, "file-history", SESSION),
+      );
+      const manifest = yield* manifestOf(owner);
+      const { source } = yield* ownerSource(owner);
+
+      const refused = yield* Effect.flip(copy({ source, targetHome: target, manifest }));
+
+      expect(refused.reason).toBe("refused");
+      expect(yield* fileSystem.readDirectory(path.join(root, "elsewhere"))).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps lines Claude appends to the copy while it is being updated", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const { owner, target, write } = yield* homes;
+      const older = bytesOf(1000, 23);
+      const newer = new Uint8Array([...older, ...bytesOf(500, 24)]);
+      yield* write(owner, `projects/-owner-repo/${SESSION}.jsonl`, newer);
+      yield* write(target, `projects/-here/${SESSION}.jsonl`, older);
+      const manifest = yield* manifestOf(owner);
+      const here = `${target}/projects/-here/${SESSION}.jsonl`;
+      const appended = new TextEncoder().encode('{"type":"user","resumed":"here"}\n');
+      const { source } = yield* ownerSource(owner);
+      // A resumed claude writes to the copy after the plan was made, during the fetch.
+      const writing: ClaudeReplicaSource = {
+        readChunk: (chunk) =>
+          source
+            .readChunk(chunk)
+            .pipe(
+              Effect.tap(() =>
+                fileSystem.writeFile(here, appended, { flag: "a" }).pipe(Effect.orDie),
+              ),
+            ),
+      };
+
+      const refused = yield* Effect.flip(copy({ source: writing, targetHome: target, manifest }));
+
+      expect(refused.reason).toBe("refused");
+      expectSameBytes(yield* fileSystem.readFile(here), new Uint8Array([...older, ...appended]));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps lines Claude appends while the sidecars move into place", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const { owner, target, write } = yield* homes;
+      const older = bytesOf(600, 27);
+      yield* write(owner, `projects/-owner-repo/${SESSION}.jsonl`, new Uint8Array([...older, 3]));
+      yield* write(owner, `tasks/${SESSION}/1.json`, bytesOf(40, 28));
+      yield* write(target, `projects/-here/${SESSION}.jsonl`, older);
+      const manifest = yield* manifestOf(owner);
+      const here = `${target}/projects/-here/${SESSION}.jsonl`;
+      const appended = new TextEncoder().encode('{"type":"user","resumed":"here"}\n');
+      const { source } = yield* ownerSource(owner);
+      let checks = 0;
+      // The first check passes; claude writes before the second, made at the transcript's rename.
+      const beforeReplace = Effect.suspend(() =>
+        ++checks === 2
+          ? fileSystem.writeFile(here, appended, { flag: "a" }).pipe(Effect.orDie)
+          : Effect.void,
+      );
+
+      const refused = yield* Effect.flip(
+        copy({ source, targetHome: target, manifest, beforeReplace }),
+      );
+
+      expect(refused.reason).toBe("refused");
+      expectSameBytes(yield* fileSystem.readFile(here), new Uint8Array([...older, ...appended]));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("replaces nothing when the check before replacing refuses", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const { owner, target, write } = yield* homes;
+      const older = bytesOf(700, 25);
+      yield* write(
+        owner,
+        `projects/-owner-repo/${SESSION}.jsonl`,
+        new Uint8Array([...older, 1, 2]),
+      );
+      yield* write(owner, `tasks/${SESSION}/1.json`, bytesOf(40, 26));
+      yield* write(target, `projects/-here/${SESSION}.jsonl`, older);
+      const manifest = yield* manifestOf(owner);
+      const { source } = yield* ownerSource(owner);
+
+      const refused = yield* Effect.flip(
+        copy({
+          source,
+          targetHome: target,
+          manifest,
+          beforeReplace: Effect.fail(
+            new ClaudeSessionReplicationError({ reason: "refused", message: "held" }),
+          ),
+        }),
+      );
+
+      expect(refused.message).toBe("held");
+      expectSameBytes(
+        yield* fileSystem.readFile(`${target}/projects/-here/${SESSION}.jsonl`),
+        older,
+      );
+      expect(yield* fileSystem.exists(`${target}/tasks/${SESSION}/1.json`)).toBe(false);
     }).pipe(Effect.scoped),
   );
 });

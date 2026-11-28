@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -22,6 +22,7 @@ const recordReplica = (sessionId: string) =>
     yield* replicas.upsert({
       sessionId,
       ownerEnvironmentId: OWNER,
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
       transcriptPath: `/home/me/.claude/projects/-work/${sessionId}.jsonl`,
       cwd: "/work",
       syncedBytes: 10,

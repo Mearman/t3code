@@ -12,6 +12,7 @@ import {
   type ClaudeSessionClaimInput,
   type ClaudeSessionManifest,
   type ClaudeSessionReplicationRules,
+  CLAUDE_REMOTE_SESSION_PAGE_LIMIT,
   ClaudeSessionReplicationError,
   type EnvironmentId,
   ProviderInstanceId,
@@ -21,7 +22,9 @@ import {
 } from "@t3tools/contracts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -50,7 +53,9 @@ import { ClaudeLiveSessions } from "./ClaudeLiveSessions.ts";
 import { copyClaudeSessionFiles, planClaudeReplica } from "./ClaudeReplicaTransfer.ts";
 import {
   claudeProjectSlug,
+  claudeReplicaBytesNeeded,
   claudeReplicaFitsReserve,
+  likeContaining,
   resolveServedClaudeSessionFile,
   claudeSessionFileAbsolutePath,
   type ClaudeSessionLayout,
@@ -66,8 +71,13 @@ import {
 /** How often every linked environment's sessions are checked against the rules. */
 const PASS_INTERVAL = "5 minutes";
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** The most sessions one listing returns to a client; a query narrows it further. */
-const CLAUDE_REMOTE_SESSION_LIST_LIMIT = 200;
+/**
+ * A pass asks each owner only for what changed since its last full listing, with this overlap
+ * for clock and commit order, and lists everything every `FULL_LIST_EVERY` passes since a pin
+ * may not change what a session's change time reads.
+ */
+const LIST_OVERLAP_MS = 60_000;
+const FULL_LIST_EVERY = 12;
 
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 
@@ -80,8 +90,25 @@ interface OwnedSession {
   readonly filePath: string;
   readonly fileSize: number;
   readonly fileMtimeMs: number;
+  readonly changeMs: number;
   readonly pinned: number;
 }
+
+/** Where a listing page starts: just after this change time and session id. */
+interface ListCursor {
+  readonly changeMs: number;
+  readonly sessionId: string;
+}
+
+const encodeCursor = (cursor: ListCursor) => `${cursor.changeMs}:${cursor.sessionId}`;
+
+/** A cursor `listOwned` wrote, or undefined for anything else. */
+export const decodeListCursor = (text: string): ListCursor | undefined => {
+  const match = /^(\d{1,16}):([0-9a-f-]{36})$/.exec(text);
+  return match?.[1] === undefined || match[2] === undefined
+    ? undefined
+    : { changeMs: Number(match[1]), sessionId: match[2] };
+};
 
 /** A session's files as served: its layout and its transcript's path. */
 interface LocatedSession {
@@ -99,10 +126,15 @@ export interface ClaudeSessionChunk {
 export class ClaudeSessionReplication extends Context.Service<
   ClaudeSessionReplication,
   {
-    /** Sessions this environment owns, newest first; `query` matches title or folder. */
+    /**
+     * One page of the sessions this environment owns, most recently changed first: `query`
+     * matches title or folder, `changedSinceMs` keeps those changed since, `cursor` continues.
+     */
     readonly listOwned: (input: {
       readonly limit?: number;
       readonly query?: string;
+      readonly changedSinceMs?: number;
+      readonly cursor?: string;
     }) => Effect.Effect<ClaudeRemoteSessionList, ClaudeSessionReplicationError>;
     /** Every file of an owned session; with `prefixBytes`, the transcript's prefix hash too. */
     readonly manifest: (input: {
@@ -124,6 +156,11 @@ export class ClaudeSessionReplication extends Context.Service<
     readonly claim: (
       input: ClaudeSessionClaimInput,
     ) => Effect.Effect<void, ClaudeSessionReplicationError>;
+    /** Whether this environment sent the claim an owner asks about: its session and nonce. */
+    readonly confirmClaim: (input: {
+      readonly sessionId: string;
+      readonly nonce: string;
+    }) => Effect.Effect<boolean>;
     /** A linked environment's own sessions, for a client to list and open there. */
     readonly listRemote: (input: {
       readonly environmentId: EnvironmentId;
@@ -171,7 +208,15 @@ const make = Effect.gen(function* () {
   const liveSessions = yield* ClaudeLiveSessions;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const hostEnvironment = yield* HostProcess.Environment;
+  const random = yield* SecureRandom.SecureRandom;
   const passLock = yield* Semaphore.make(1);
+  // One step at a time per session: a send's claim waits only for that session, never a pass.
+  const sessionLocks = yield* KeyedLock.make<string>();
+  const pendingClaims = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
+  const listStates = yield* Ref.make<
+    ReadonlyMap<string, { readonly sinceMs: number; readonly rulesKey: string }>
+  >(new Map());
+  const passCount = yield* Ref.make(0);
   const lastPass = yield* Ref.make<{
     readonly lastRunAt: DateTime.Utc | null;
     readonly sources: ReadonlyArray<ClaudeReplicationSource>;
@@ -191,31 +236,66 @@ const make = Effect.gen(function* () {
     return { projectsDir, home: path.dirname(projectsDir) };
   };
 
-  const ownedRows = (filter: { readonly sessionId?: string; readonly query?: string }) =>
+  const msOf = (column: string) =>
+    sql.literal(`COALESCE(CAST((julianday(${column}) - 2440587.5) * 86400000 AS INTEGER), 0)`);
+
+  const ownedRows = (filter: {
+    readonly sessionId?: string;
+    readonly query?: string;
+    readonly changedSinceMs?: number;
+    readonly cursor?: ListCursor;
+    readonly limit?: number;
+  }) =>
     sql<OwnedSession>`
+    WITH owned AS (
+      SELECT
+        s.session_id,
+        s.thread_id,
+        t.title,
+        s.cwd,
+        s.file_path,
+        s.file_size,
+        s.file_mtime_ms,
+        MAX(s.file_mtime_ms, ${msOf("t.updated_at")}, ${msOf("p.updated_at")}) AS change_ms,
+        CASE WHEN json_extract(t.payload_json, '$.pinnedAt') IS NOT NULL
+          OR p.pinned_at IS NOT NULL THEN 1 ELSE 0 END AS pinned,
+        -- A session in two stores is the one changed last, as the sync shows it.
+        ROW_NUMBER() OVER (PARTITION BY s.session_id ORDER BY s.file_mtime_ms DESC) AS rank
+      FROM fork_claude_session_sync_state s
+      LEFT JOIN orchestration_v2_projection_threads t
+        ON t.thread_id = s.thread_id AND t.deleted_at IS NULL
+      LEFT JOIN projection_projects p ON p.project_id = t.project_id AND p.deleted_at IS NULL
+      WHERE s.hydration_state NOT IN ('pending', 'deleted', 'excluded') AND s.file_path <> ''
+        AND s.session_id NOT IN (SELECT session_id FROM fork_claude_session_replicas)
+        ${filter.sessionId === undefined ? sql`` : sql`AND s.session_id = ${filter.sessionId}`}
+        ${
+          filter.query === undefined
+            ? sql``
+            : sql`AND (t.title LIKE ${likeContaining(filter.query)} ESCAPE '!'
+                OR s.cwd LIKE ${likeContaining(filter.query)} ESCAPE '!')`
+        }
+    )
     SELECT
-      s.session_id AS "sessionId",
-      s.thread_id AS "threadId",
-      t.title AS title,
-      s.cwd AS cwd,
-      s.file_path AS "filePath",
-      s.file_size AS "fileSize",
-      s.file_mtime_ms AS "fileMtimeMs",
-      CASE WHEN json_extract(t.payload_json, '$.pinnedAt') IS NOT NULL
-        OR p.pinned_at IS NOT NULL THEN 1 ELSE 0 END AS pinned
-    FROM fork_claude_session_sync_state s
-    LEFT JOIN orchestration_v2_projection_threads t
-      ON t.thread_id = s.thread_id AND t.deleted_at IS NULL
-    LEFT JOIN projection_projects p ON p.project_id = t.project_id AND p.deleted_at IS NULL
-    WHERE s.hydration_state NOT IN ('pending', 'deleted', 'excluded') AND s.file_path <> ''
-      AND s.session_id NOT IN (SELECT session_id FROM fork_claude_session_replicas)
-      ${filter.sessionId === undefined ? sql`` : sql`AND s.session_id = ${filter.sessionId}`}
+      session_id AS "sessionId",
+      thread_id AS "threadId",
+      title,
+      cwd,
+      file_path AS "filePath",
+      file_size AS "fileSize",
+      file_mtime_ms AS "fileMtimeMs",
+      change_ms AS "changeMs",
+      pinned
+    FROM owned
+    WHERE rank = 1
+      ${filter.changedSinceMs === undefined ? sql`` : sql`AND change_ms >= ${filter.changedSinceMs}`}
       ${
-        filter.query === undefined
+        filter.cursor === undefined
           ? sql``
-          : sql`AND (t.title LIKE ${`%${filter.query}%`} OR s.cwd LIKE ${`%${filter.query}%`})`
+          : sql`AND (change_ms < ${filter.cursor.changeMs}
+              OR (change_ms = ${filter.cursor.changeMs} AND session_id < ${filter.cursor.sessionId}))`
       }
-    ORDER BY s.file_mtime_ms DESC
+    ORDER BY change_ms DESC, session_id DESC
+    ${filter.limit === undefined ? sql`` : sql`LIMIT ${filter.limit}`}
   `.pipe(Effect.mapError(storage("Could not read this environment's Claude sessions.")));
 
   const locate = Effect.fn("ClaudeSessionReplication.locate")(function* (sessionId: string) {
@@ -250,26 +330,43 @@ const make = Effect.gen(function* () {
 
   const listOwned: ClaudeSessionReplication["Service"]["listOwned"] = Effect.fn(
     "ClaudeSessionReplication.listOwned",
-  )(function* ({ limit, query }) {
-    const rows = yield* ownedRows(query === undefined || query === "" ? {} : { query });
-    const seen = new Set<string>();
-    const sessions: Array<ClaudeRemoteSession> = [];
-    for (const row of rows) {
-      // A session in two stores is the one changed last, as the sync shows it.
-      if (seen.has(row.sessionId)) continue;
-      seen.add(row.sessionId);
-      sessions.push({
+  )(function* (input) {
+    const listedAt = yield* DateTime.now;
+    const limit = Math.min(
+      Math.max(input.limit ?? CLAUDE_REMOTE_SESSION_PAGE_LIMIT, 1),
+      CLAUDE_REMOTE_SESSION_PAGE_LIMIT,
+    );
+    const cursor = input.cursor === undefined ? undefined : decodeListCursor(input.cursor);
+    if (input.cursor !== undefined && cursor === undefined) {
+      return yield* new ClaudeSessionReplicationError({
+        reason: "refused",
+        message: "That listing cursor is not one this environment wrote.",
+      });
+    }
+    const rows = yield* ownedRows({
+      ...(input.query === undefined || input.query === "" ? {} : { query: input.query }),
+      ...(input.changedSinceMs === undefined ? {} : { changedSinceMs: input.changedSinceMs }),
+      ...(cursor === undefined ? {} : { cursor }),
+      limit: limit + 1,
+    });
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      sessions: page.map((row) => ({
         sessionId: row.sessionId,
         threadId: row.threadId === null ? null : ThreadId.make(row.threadId),
         title: row.title,
         cwd: row.cwd,
-        updatedAt: DateTime.makeUnsafe(row.fileMtimeMs),
+        updatedAt: DateTime.makeUnsafe(row.changeMs),
         pinned: row.pinned === 1,
         transcriptBytes: row.fileSize,
-      });
-      if (limit !== undefined && sessions.length >= limit) break;
-    }
-    return { sessions };
+      })),
+      nextCursor:
+        rows.length > limit && last !== undefined
+          ? encodeCursor({ changeMs: last.changeMs, sessionId: last.sessionId })
+          : null,
+      listedAt,
+    };
   });
 
   const repositoryPlace = Effect.fn("ClaudeSessionReplication.repositoryPlace")(function* (
@@ -348,12 +445,72 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.mapError(storage(`Could not read ${input.path}.`)));
   });
 
+  /** Every enabled Claude instance and its home, the default instance first. */
+  const claudeInstances = Effect.gen(function* () {
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.mapError(storage("Could not read settings.")),
+    );
+    const defaultId = ProviderInstanceId.make(CLAUDE_PROVIDER);
+    const configured = Object.entries(settings.providerInstances)
+      .filter(([, instance]) => instance.driver === CLAUDE_PROVIDER)
+      .map(([id, instance]) => ({ id: ProviderInstanceId.make(id), instance }));
+    const ordered = [
+      ...(Object.hasOwn(settings.providerInstances, defaultId)
+        ? []
+        : [{ id: defaultId, instance: undefined }]),
+      ...configured.toSorted((a, b) => (a.id === defaultId ? -1 : b.id === defaultId ? 1 : 0)),
+    ];
+    const homes: Array<{ readonly instanceId: ProviderInstanceId; readonly home: string }> = [];
+    for (const { id, instance } of ordered) {
+      const decoded = decodeClaudeSettings(instance?.config ?? {});
+      if (Option.isNone(decoded)) continue;
+      const instanceEnvironment = yield* mergeProviderInstanceEnvironment(
+        instance?.environment,
+        hostEnvironment,
+      );
+      homes.push({
+        instanceId: id,
+        home: yield* resolveClaudeHomePath(decoded.value, instanceEnvironment).pipe(withHost),
+      });
+    }
+    return homes;
+  });
+
+  /** The instance whose home's `projects/` is this layout's, so a send there finds the session. */
+  const instanceFor = Effect.fn("ClaudeSessionReplication.instanceFor")(function* (
+    layout: ClaudeSessionLayout,
+  ) {
+    for (const { instanceId, home } of yield* claudeInstances) {
+      const projects = yield* fileSystem
+        .realPath(path.join(home, "projects"))
+        .pipe(Effect.orElseSucceed(() => undefined));
+      if (projects === layout.projectsDir) return instanceId;
+    }
+    return yield* new ClaudeSessionReplicationError({
+      reason: "storage",
+      message: `No Claude instance here uses ${layout.projectsDir}, so the session has no home to run in.`,
+    });
+  });
+
   const claim: ClaudeSessionReplication["Service"]["claim"] = Effect.fn(
     "ClaudeSessionReplication.claim",
   )(function* (input) {
-    const located = yield* locate(input.sessionId);
+    if (!isClaudeSessionId(input.sessionId)) return yield* notFound(input.sessionId);
     const keep = (message: string) =>
       new ClaudeSessionReplicationError({ reason: "refused", message });
+    const held = yield* replicas
+      .get(input.sessionId)
+      .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
+    // A claim accepted before is accepted again, so a claimant that lost the answer recovers.
+    if (
+      held !== undefined &&
+      held.ownerEnvironmentId === input.claimantEnvironmentId &&
+      held.syncedBytes === input.size &&
+      held.syncedSha256 === input.sha256
+    ) {
+      return;
+    }
+    const located = yield* locate(input.sessionId);
     const link = yield* links
       .get(input.claimantEnvironmentId)
       .pipe(Effect.mapError(storage("Could not read this environment's links.")));
@@ -361,6 +518,19 @@ const make = Effect.gen(function* () {
     if (Option.isNone(link)) {
       return yield* keep(
         "The owner has no link back to the environment asking for this session, so it kept it. Link them both ways.",
+      );
+    }
+    // The body names the claimant, so the claimant itself is asked over the owner's own link.
+    const confirmed = yield* peers
+      .confirmClaim({
+        environmentId: input.claimantEnvironmentId,
+        sessionId: input.sessionId,
+        nonce: input.nonce,
+      })
+      .pipe(Effect.orElseSucceed(() => false));
+    if (!confirmed) {
+      return yield* keep(
+        "The environment named in the claim did not confirm asking for this session, so the owner kept it.",
       );
     }
     const live = yield* liveSessions.read(path.join(located.layout.home, "sessions"));
@@ -389,6 +559,7 @@ const make = Effect.gen(function* () {
       .upsert({
         sessionId: input.sessionId,
         ownerEnvironmentId: input.claimantEnvironmentId,
+        providerInstanceId: yield* instanceFor(located.layout),
         transcriptPath: located.transcriptPath,
         cwd: located.cwd,
         syncedBytes: size,
@@ -402,32 +573,66 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(storage("Could not record the session's new owner.")));
   });
 
-  /** Where replicas go: the default Claude instance's home, with its `projects/` created. */
+  const confirmClaim: ClaudeSessionReplication["Service"]["confirmClaim"] = Effect.fn(
+    "ClaudeSessionReplication.confirmClaim",
+  )(function* (input) {
+    return (yield* Ref.get(pendingClaims)).get(input.sessionId) === input.nonce;
+  });
+
+  /**
+   * Asks a replica's owner to hand the session over, then forgets the replica. The nonce is held
+   * only while the claim is in flight, so an owner asking later is told no.
+   */
+  const claimFrom = Effect.fn("ClaudeSessionReplication.claimFrom")(function* (
+    row: ClaudeSessionReplicas.ClaudeSessionReplicaRow,
+  ) {
+    const nonce = Buffer.from(yield* random.randomBytes(16)).toString("hex");
+    yield* Ref.update(pendingClaims, (current) => new Map(current).set(row.sessionId, nonce));
+    yield* peers
+      .claim({
+        environmentId: row.ownerEnvironmentId,
+        claim: {
+          sessionId: row.sessionId,
+          claimantEnvironmentId: yield* environment.getEnvironmentId,
+          size: row.syncedBytes,
+          sha256: row.syncedSha256,
+          nonce,
+        },
+      })
+      .pipe(
+        Effect.ensuring(
+          Ref.update(pendingClaims, (current) => {
+            const next = new Map(current);
+            next.delete(row.sessionId);
+            return next;
+          }),
+        ),
+      );
+    yield* replicas
+      .remove(row.sessionId)
+      .pipe(Effect.mapError(storage("Could not record that this environment owns the session.")));
+  });
+
+  /** Where new replicas go: the default Claude instance's home, with its `projects/` created. */
   const targetLayout = Effect.gen(function* () {
-    const settings = yield* settingsService.getSettings.pipe(
-      Effect.mapError(storage("Could not read settings.")),
-    );
-    const instance = settings.providerInstances[ProviderInstanceId.make(CLAUDE_PROVIDER)];
-    const decoded = decodeClaudeSettings(instance?.config ?? {});
-    if (Option.isNone(decoded)) {
+    const target = (yield* claudeInstances)[0];
+    if (target === undefined) {
       return yield* new ClaudeSessionReplicationError({
         reason: "storage",
         message: "The Claude settings here could not be read, so no copy has a home to go to.",
       });
     }
-    const instanceEnvironment = yield* mergeProviderInstanceEnvironment(
-      instance?.environment,
-      hostEnvironment,
-    );
-    const home = yield* resolveClaudeHomePath(decoded.value, instanceEnvironment).pipe(withHost);
-    const projects = path.join(home, "projects");
+    const projects = path.join(target.home, "projects");
     yield* fileSystem
       .makeDirectory(projects, { recursive: true })
       .pipe(Effect.mapError(storage(`Could not create ${projects}.`)));
     const projectsDir = yield* fileSystem
       .realPath(projects)
       .pipe(Effect.mapError(storage(`Could not read ${projects}.`)));
-    return { projectsDir, home: path.dirname(projectsDir) } satisfies ClaudeSessionLayout;
+    return {
+      layout: { projectsDir, home: path.dirname(projectsDir) } satisfies ClaudeSessionLayout,
+      instanceId: target.instanceId,
+    };
   });
 
   /** A checkout here of the repository a session ran in, found by its remote. */
@@ -475,218 +680,274 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.map((stats) => Number(stats.bavail) * Number(stats.bsize)));
 
   /** Brings one session's copy up to date with its owner, or reports why it did not. */
-  const replicateOne = Effect.fn("ClaudeSessionReplication.replicateOne")(function* (input: {
-    readonly ownerEnvironmentId: EnvironmentId;
-    readonly sessionId: string;
-    readonly title: string | null;
-    readonly rules: ClaudeSessionReplicationRules;
-  }): Effect.fn.Return<
-    "current" | "copied" | "claimed" | ClaudeReplicationSkip,
-    ClaudeSessionReplicationError
-  > {
-    const { ownerEnvironmentId, sessionId } = input;
-    const skip = (
-      reason: ClaudeReplicationSkip["reason"],
-      message: string,
-      bytes = 0,
-    ): ClaudeReplicationSkip => ({
-      ownerEnvironmentId,
-      sessionId,
-      title: input.title,
-      bytes,
-      reason,
-      message,
-    });
-    const row = yield* replicas
-      .get(sessionId)
-      .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
-    // A copy stays where it is; only a new one is placed by the rules below.
-    const layout = row === undefined ? yield* targetLayout : layoutOf(row.transcriptPath);
-    if (row !== undefined && row.ownerEnvironmentId !== ownerEnvironmentId) {
-      return skip(
-        "owned_here",
-        "This environment holds a copy of that session from another owner.",
+  const replicateOneUnlocked = Effect.fn("ClaudeSessionReplication.replicateOne")(
+    function* (input: {
+      readonly ownerEnvironmentId: EnvironmentId;
+      readonly sessionId: string;
+      readonly title: string | null;
+      readonly rules: ClaudeSessionReplicationRules;
+    }): Effect.fn.Return<
+      "current" | "copied" | "claimed" | ClaudeReplicationSkip,
+      ClaudeSessionReplicationError
+    > {
+      const { ownerEnvironmentId, sessionId } = input;
+      const skip = (
+        reason: ClaudeReplicationSkip["reason"],
+        message: string,
+        bytes = 0,
+      ): ClaudeReplicationSkip => ({
+        ownerEnvironmentId,
+        sessionId,
+        title: input.title,
+        bytes,
+        reason,
+        message,
+      });
+      const row = yield* replicas
+        .get(sessionId)
+        .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
+      // A copy stays where it is; only a new one is placed by the rules below.
+      const target =
+        row === undefined
+          ? yield* targetLayout
+          : { layout: layoutOf(row.transcriptPath), instanceId: row.providerInstanceId };
+      const { layout } = target;
+      if (row !== undefined && row.ownerEnvironmentId !== ownerEnvironmentId) {
+        return skip(
+          "owned_here",
+          "This environment holds a copy of that session from another owner.",
+        );
+      }
+      const localPath = row?.transcriptPath;
+      const localSize =
+        localPath === undefined
+          ? undefined
+          : yield* fileSystem.stat(localPath).pipe(
+              Effect.map((info) => Number(info.size)),
+              Effect.option,
+              Effect.map(Option.getOrUndefined),
+            );
+      const asked = yield* Effect.result(
+        peers.manifest({
+          environmentId: ownerEnvironmentId,
+          sessionId,
+          ...(localSize === undefined ? {} : { prefixBytes: localSize }),
+        }),
       );
-    }
-    const localPath = row?.transcriptPath;
-    const localSize =
-      localPath === undefined
-        ? undefined
-        : yield* fileSystem.stat(localPath).pipe(
-            Effect.map((info) => Number(info.size)),
-            Effect.option,
-            Effect.map(Option.getOrUndefined),
-          );
-    const remote = yield* peers.manifest({
-      environmentId: ownerEnvironmentId,
-      sessionId,
-      ...(localSize === undefined ? {} : { prefixBytes: localSize }),
-    });
-    const placed =
-      row === undefined
-        ? yield* placement(remote)
-        : { cwd: row.cwd, slug: path.basename(path.dirname(row.transcriptPath)) };
-    const transcriptTarget = `projects/${placed.slug}/${sessionId}.jsonl`;
-    const transcriptPath =
-      localPath ?? claudeSessionFileAbsolutePath(path, layout, transcriptTarget);
-    if (row === undefined) {
-      const ownHere = yield* sql<{ readonly found: number }>`
+      if (asked._tag === "Failure") {
+        // An owner that accepted this copy's claim no longer serves it; claiming again finishes it.
+        if (row !== undefined && asked.failure.reason === "not_found") {
+          const recovered = yield* Effect.result(claimFrom(row));
+          if (recovered._tag === "Success") return "claimed";
+        }
+        return yield* asked.failure;
+      }
+      const remote = asked.success;
+      const placed =
+        row === undefined
+          ? yield* placement(remote)
+          : { cwd: row.cwd, slug: path.basename(path.dirname(row.transcriptPath)) };
+      const transcriptTarget = `projects/${placed.slug}/${sessionId}.jsonl`;
+      const transcriptPath =
+        localPath ?? claudeSessionFileAbsolutePath(path, layout, transcriptTarget);
+      if (row === undefined) {
+        const ownHere = yield* sql<{ readonly found: number }>`
         SELECT 1 AS found FROM fork_claude_session_sync_state WHERE session_id = ${sessionId}
         LIMIT 1
       `.pipe(Effect.mapError(storage("Could not read this environment's Claude sessions.")));
-      const exists = yield* fileSystem
+        const exists = yield* fileSystem
+          .exists(transcriptPath)
+          .pipe(Effect.orElseSucceed(() => false));
+        if (ownHere.length > 0 && !exists) {
+          return skip("owned_here", "This environment has its own session with that id.");
+        }
+      }
+      const live = yield* liveSessions.read(path.join(layout.home, "sessions"));
+      if (live.has(sessionId)) {
+        return skip("held", "A claude here has this copy open; it is copied again once that ends.");
+      }
+      const localExists = yield* fileSystem
         .exists(transcriptPath)
         .pipe(Effect.orElseSucceed(() => false));
-      if (ownHere.length > 0 && !exists) {
+      const local = localExists
+        ? yield* Effect.gen(function* () {
+            const sha256 = yield* sha256OfFile(transcriptPath);
+            const size = Number((yield* fileSystem.stat(transcriptPath)).size);
+            return {
+              size,
+              sha256,
+              prefixOfOwner:
+                remote.transcriptPrefix?.size === size && remote.transcriptPrefix.sha256 === sha256,
+              alreadyKept: row?.keptSha256 === sha256,
+              keepsSyncedPrefix:
+                row !== undefined &&
+                size >= row.syncedBytes &&
+                (yield* sha256OfFile(transcriptPath, row.syncedBytes)) === row.syncedSha256,
+            };
+          }).pipe(withHost, Effect.mapError(storage(`Could not read ${transcriptPath}.`)))
+        : undefined;
+      const plan = planClaudeReplica({
+        local,
+        synced: row === undefined ? undefined : { size: row.syncedBytes, sha256: row.syncedSha256 },
+        owner: remote.transcript,
+      });
+      if (
+        row === undefined &&
+        local !== undefined &&
+        plan.kind !== "fast-forward" &&
+        plan.kind !== "current"
+      ) {
         return skip("owned_here", "This environment has its own session with that id.");
       }
-    }
-    const live = yield* liveSessions.read(path.join(layout.home, "sessions"));
-    if (live.has(sessionId)) {
-      return skip("held", "A claude here has this copy open; it is copied again once that ends.");
-    }
-    const localExists = yield* fileSystem
-      .exists(transcriptPath)
-      .pipe(Effect.orElseSucceed(() => false));
-    const local = localExists
-      ? yield* Effect.gen(function* () {
-          const sha256 = yield* sha256OfFile(transcriptPath);
-          const size = Number((yield* fileSystem.stat(transcriptPath)).size);
-          return {
-            size,
-            sha256,
-            prefixOfOwner:
-              remote.transcriptPrefix?.size === size && remote.transcriptPrefix.sha256 === sha256,
-            alreadyKept: row?.keptSha256 === sha256,
-            keepsSyncedPrefix:
-              row !== undefined &&
-              size >= row.syncedBytes &&
-              (yield* sha256OfFile(transcriptPath, row.syncedBytes)) === row.syncedSha256,
-          };
-        }).pipe(withHost, Effect.mapError(storage(`Could not read ${transcriptPath}.`)))
-      : undefined;
-    const plan = planClaudeReplica({
-      local,
-      synced: row === undefined ? undefined : { size: row.syncedBytes, sha256: row.syncedSha256 },
-      owner: remote.transcript,
-    });
-    if (
-      row === undefined &&
-      local !== undefined &&
-      plan.kind !== "fast-forward" &&
-      plan.kind !== "current"
-    ) {
-      return skip("owned_here", "This environment has its own session with that id.");
-    }
-    const ownerSlugDir = remote.transcript.path.split("/").slice(0, 2).join("/");
-    const retarget = (owned: string) =>
-      owned.startsWith(`${ownerSlugDir}/`)
-        ? `projects/${placed.slug}/${owned.slice(ownerSlugDir.length + 1)}`
-        : owned;
-    const now = yield* DateTime.now;
-    const record = (forked: ReadonlyArray<string>) =>
-      replicas
-        .upsert({
-          sessionId,
-          ownerEnvironmentId,
-          transcriptPath,
-          cwd: placed.cwd,
-          syncedBytes: remote.transcript.size,
-          syncedSha256: remote.transcript.sha256,
-          syncedAt: now,
-          status: "current",
-          forkedSessionIds: forked,
-          lastError: null,
-          keptSha256: null,
-        })
-        .pipe(Effect.mapError(storage("Could not record the copy.")));
-    if (plan.kind === "current") {
-      yield* record(row?.forkedSessionIds ?? []);
-      return "current";
-    }
-    if (plan.kind === "local-ahead" && row !== undefined) {
-      yield* peers.claim({
-        environmentId: ownerEnvironmentId,
-        claim: {
-          sessionId,
-          claimantEnvironmentId: yield* environment.getEnvironmentId,
-          size: row.syncedBytes,
-          sha256: row.syncedSha256,
-        },
-      });
-      yield* replicas
-        .remove(sessionId)
-        .pipe(Effect.mapError(storage("Could not record that this environment owns the session.")));
-      return "claimed";
-    }
-    const seed = plan.kind === "fast-forward" ? plan.seedBytes : 0;
-    let needed = remote.transcript.size - seed;
-    for (const file of remote.sidecars) {
-      const here = claudeSessionFileAbsolutePath(path, layout, retarget(file.path));
-      const size = yield* fileSystem.stat(here).pipe(
-        Effect.map((info) => Number(info.size)),
-        Effect.orElseSucceed(() => -1),
-      );
-      if (size !== file.size) needed += file.size;
-    }
-    const free = yield* freeBytes(layout.home);
-    if (
-      !claudeReplicaFitsReserve({
-        freeBytes: free,
-        neededBytes: needed,
-        reserveGiB: input.rules.reserveGiB,
-      })
-    ) {
-      return skip(
-        "disk_reserve",
-        `Copying it would leave less than ${input.rules.reserveGiB} GB free here.`,
-        needed,
-      );
-    }
-    let forked = row?.forkedSessionIds ?? [];
-    if (plan.kind === "diverged") {
-      // The owner keeps the id; lines appended only here become their own session through the SDK's
-      // fork, before the owner's copy replaces this one. No line is merged by hand.
-      const fork = yield* queryRunner
-        .forkSession({
-          sessionId,
-          options: placed.cwd === null ? {} : { dir: placed.cwd },
-          environment: { ...hostEnvironment, CLAUDE_CONFIG_DIR: layout.home },
-          threadId: ThreadId.make(`claude:${sessionId}`),
-          providerSessionId: ProviderSessionId.make(`claude-replica:${sessionId}`),
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ClaudeSessionReplicationError({
-                reason: "storage",
-                message:
-                  "This copy and its owner both moved on, and the lines added here could not be kept as a session of their own, so the copy was left as it is.",
-                cause,
-              }),
-          ),
-        );
-      forked = [...forked, fork.sessionId];
-      // Recorded before the copy, so a copy cut short is retried by replacing, never forked again.
-      if (row !== undefined && local !== undefined) {
-        yield* replicas
-          .upsert({ ...row, forkedSessionIds: forked, keptSha256: local.sha256 })
-          .pipe(Effect.mapError(storage("Could not record the fork.")));
+      const ownerSlugDir = remote.transcript.path.split("/").slice(0, 2).join("/");
+      const retarget = (owned: string) =>
+        owned.startsWith(`${ownerSlugDir}/`)
+          ? `projects/${placed.slug}/${owned.slice(ownerSlugDir.length + 1)}`
+          : owned;
+      const files = {
+        layout,
+        sessionId,
+        transcript: { file: remote.transcript, target: transcriptTarget },
+        sidecars: remote.sidecars.map((file) => ({ file, target: retarget(file.path) })),
+      };
+      const now = yield* DateTime.now;
+      const record = (forked: ReadonlyArray<string>) =>
+        replicas
+          .upsert({
+            sessionId,
+            ownerEnvironmentId,
+            providerInstanceId: target.instanceId,
+            transcriptPath,
+            cwd: placed.cwd,
+            syncedBytes: remote.transcript.size,
+            syncedSha256: remote.transcript.sha256,
+            syncedAt: now,
+            status: "current",
+            forkedSessionIds: forked,
+            lastError: null,
+            keptSha256: null,
+          })
+          .pipe(Effect.mapError(storage("Could not record the copy.")));
+      if (plan.kind === "current") {
+        yield* record(row?.forkedSessionIds ?? []);
+        return "current";
       }
-    }
-    yield* copyClaudeSessionFiles({
-      source: {
-        readChunk: (chunk) =>
-          peers.readChunk({ environmentId: ownerEnvironmentId, sessionId, ...chunk }),
-      },
-      layout,
-      sessionId,
-      transcript: { file: remote.transcript, target: transcriptTarget },
-      sidecars: remote.sidecars.map((file) => ({ file, target: retarget(file.path) })),
-      seedTranscriptBytes: seed,
-    }).pipe(withHost);
-    yield* record(forked);
-    return "copied";
+      if (plan.kind === "local-ahead" && row !== undefined) {
+        yield* claimFrom(row);
+        return "claimed";
+      }
+      const seed = plan.kind === "fast-forward" ? plan.seedBytes : 0;
+      const sidecars: Array<{ readonly size: number; readonly presentSize: number | undefined }> =
+        [];
+      for (const { file, target: sidecarTarget } of files.sidecars) {
+        const here = claudeSessionFileAbsolutePath(path, layout, sidecarTarget);
+        sidecars.push({
+          size: file.size,
+          presentSize: yield* fileSystem.stat(here).pipe(
+            Effect.map((info) => Number(info.size)),
+            Effect.orElseSucceed(() => undefined),
+          ),
+        });
+      }
+      const needed = claudeReplicaBytesNeeded({
+        transcriptBytes: remote.transcript.size,
+        sidecars,
+      });
+      const free = yield* freeBytes(layout.home);
+      if (
+        !claudeReplicaFitsReserve({
+          freeBytes: free,
+          neededBytes: needed,
+          reserveGiB: input.rules.reserveGiB,
+        })
+      ) {
+        return skip(
+          "disk_reserve",
+          `Copying it would leave less than ${input.rules.reserveGiB} GB free here.`,
+          needed,
+        );
+      }
+      let forked = row?.forkedSessionIds ?? [];
+      if (plan.kind === "diverged") {
+        // The owner keeps the id; lines appended only here become their own session through the SDK's
+        // fork, before the owner's copy replaces this one. No line is merged by hand.
+        const fork = yield* queryRunner
+          .forkSession({
+            sessionId,
+            options: placed.cwd === null ? {} : { dir: placed.cwd },
+            environment: { ...hostEnvironment, CLAUDE_CONFIG_DIR: layout.home },
+            threadId: ThreadId.make(`claude:${sessionId}`),
+            providerSessionId: ProviderSessionId.make(`claude-replica:${sessionId}`),
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ClaudeSessionReplicationError({
+                  reason: "storage",
+                  message:
+                    "This copy and its owner both moved on, and the lines added here could not be kept as a session of their own, so the copy was left as it is.",
+                  cause,
+                }),
+            ),
+          );
+        forked = [...forked, fork.sessionId];
+        // Recorded before the copy, so a copy cut short is retried by replacing, never forked again.
+        if (row !== undefined && local !== undefined) {
+          yield* replicas
+            .upsert({ ...row, forkedSessionIds: forked, keptSha256: local.sha256 })
+            .pipe(Effect.mapError(storage("Could not record the fork.")));
+        }
+      }
+      yield* copyClaudeSessionFiles({
+        ...files,
+        source: {
+          readChunk: (chunk) =>
+            peers.readChunk({ environmentId: ownerEnvironmentId, sessionId, ...chunk }),
+        },
+        seedTranscriptBytes: seed,
+        localTranscript:
+          local === undefined ? undefined : { size: local.size, sha256: local.sha256 },
+        // A claude that opened the copy since the plan would write lines the rename would drop.
+        beforeReplace: liveSessions.read(path.join(layout.home, "sessions")).pipe(
+          Effect.flatMap((open) =>
+            open.has(sessionId)
+              ? Effect.fail(
+                  new ClaudeSessionReplicationError({
+                    reason: "refused",
+                    message:
+                      "A claude here opened this copy while it was being updated, so it was left as it is.",
+                  }),
+                )
+              : Effect.void,
+          ),
+        ),
+      }).pipe(withHost);
+      yield* record(forked);
+      return "copied";
+    },
+  );
+
+  const replicateOne = (input: Parameters<typeof replicateOneUnlocked>[0]) =>
+    sessionLocks.withLock(input.sessionId, replicateOneUnlocked(input));
+
+  /** Every page of an owner's sessions, or only those changed since `sinceMs`. */
+  const listAll = Effect.fn("ClaudeSessionReplication.listAll")(function* (
+    environmentId: EnvironmentId,
+    sinceMs: number | undefined,
+  ) {
+    const sessions: Array<ClaudeRemoteSession> = [];
+    let cursor: string | null = null;
+    let listedAt: DateTime.Utc | undefined;
+    do {
+      const page: ClaudeRemoteSessionList = yield* peers.list(environmentId, {
+        ...(sinceMs === undefined ? {} : { changedSinceMs: sinceMs }),
+        ...(cursor === null ? {} : { cursor }),
+      });
+      listedAt ??= page.listedAt;
+      sessions.push(...page.sessions);
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    return { sessions, listedAt };
   });
 
   const runPass = Effect.gen(function* () {
@@ -702,10 +963,22 @@ const make = Effect.gen(function* () {
       ? yield* links.list.pipe(Effect.mapError(storage("Could not read this environment's links.")))
       : [];
     const held = yield* replicas.list.pipe(Effect.mapError(storage("Could not read replicas.")));
+    const rulesKey = `${rules.pinned}:${rules.activeWithinDays}:${rules.everything}`;
+    const fullPass =
+      (yield* Ref.getAndUpdate(passCount, (count) => count + 1)) % FULL_LIST_EVERY === 0;
+    const forgetListing = (environmentId: EnvironmentId) =>
+      Ref.update(listStates, (current) => {
+        const next = new Map(current);
+        next.delete(environmentId);
+        return next;
+      });
     for (const link of linked) {
       if (link.access !== "full-access" || link.status === "expired") continue;
-      const listed = yield* Effect.result(peers.list(link.environmentId));
+      const state = (yield* Ref.get(listStates)).get(link.environmentId);
+      const sinceMs = fullPass || state?.rulesKey !== rulesKey ? undefined : state.sinceMs;
+      const listed = yield* Effect.result(listAll(link.environmentId, sinceMs));
       if (listed._tag === "Failure") {
+        yield* forgetListing(link.environmentId);
         const error = listed.failure;
         yield* replicas
           .markOwnerStale({ ownerEnvironmentId: link.environmentId, error: error.message })
@@ -728,6 +1001,37 @@ const make = Effect.gen(function* () {
           .filter((row) => row.ownerEnvironmentId === link.environmentId)
           .map((row) => row.sessionId),
       );
+      const skippedBefore = skipped.length;
+      // A full listing that leaves out a copy held here means the owner gave it up: it accepted
+      // this copy's claim, which finishes it, or it is gone there, which the report shows.
+      const listedIds = new Set(listed.success.sessions.map((session) => session.sessionId));
+      const unlisted =
+        sinceMs === undefined
+          ? held.filter(
+              (row) =>
+                row.ownerEnvironmentId === link.environmentId && !listedIds.has(row.sessionId),
+            )
+          : [];
+      for (const row of unlisted) {
+        const outcome = yield* Effect.result(
+          replicateOne({
+            ownerEnvironmentId: link.environmentId,
+            sessionId: row.sessionId,
+            title: null,
+            rules,
+          }),
+        );
+        if (outcome._tag === "Failure") {
+          skipped.push({
+            ownerEnvironmentId: link.environmentId,
+            sessionId: row.sessionId,
+            title: null,
+            bytes: row.syncedBytes,
+            reason: "failed",
+            message: outcome.failure.message,
+          });
+        }
+      }
       for (const session of listed.success.sessions) {
         if (!ours.has(session.sessionId) && !claudeReplicationRuleMatches(rules, session, nowMs)) {
           continue;
@@ -758,6 +1062,18 @@ const make = Effect.gen(function* () {
           skipped.push(outcome.success);
         }
       }
+      // A session skipped now is listed again in full next pass, changed or not.
+      const { listedAt } = listed.success;
+      if (skipped.length > skippedBefore || listedAt === undefined) {
+        yield* forgetListing(link.environmentId);
+      } else {
+        yield* Ref.update(listStates, (current) =>
+          new Map(current).set(link.environmentId, {
+            sinceMs: DateTime.toEpochMillis(listedAt) - LIST_OVERLAP_MS,
+            rulesKey,
+          }),
+        );
+      }
       sources.push({
         environmentId: link.environmentId,
         label: link.label,
@@ -783,10 +1099,15 @@ const make = Effect.gen(function* () {
   const claimForSend: ClaudeReplicaClaimer = Effect.fn("ClaudeSessionReplication.claimForSend")(
     function* (input: Parameters<ClaudeReplicaClaimer>[0]) {
       const { ownerEnvironmentId } = input;
+      // A pass may have claimed it while this send waited for the session's lock.
+      const before = yield* replicas
+        .get(input.sessionId)
+        .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
+      if (before === undefined) return undefined;
       const settings = yield* settingsService.getSettings.pipe(
         Effect.mapError(storage("Could not read settings.")),
       );
-      const outcome = yield* replicateOne({
+      const outcome = yield* replicateOneUnlocked({
         ownerEnvironmentId,
         sessionId: input.sessionId,
         title: null,
@@ -802,24 +1123,11 @@ const make = Effect.gen(function* () {
       const row = yield* replicas
         .get(input.sessionId)
         .pipe(Effect.mapError(storage("Could not read this environment's replicas.")));
-      if (row === undefined) return undefined;
-      yield* peers.claim({
-        environmentId: ownerEnvironmentId,
-        claim: {
-          sessionId: input.sessionId,
-          claimantEnvironmentId: yield* environment.getEnvironmentId,
-          size: row.syncedBytes,
-          sha256: row.syncedSha256,
-        },
-      });
-      yield* replicas
-        .remove(input.sessionId)
-        .pipe(Effect.mapError(storage("Could not record that this environment owns the session.")));
+      if (row !== undefined) yield* claimFrom(row);
       return undefined;
     },
     (effect, input) =>
-      effect.pipe(
-        passLock.withPermits(1),
+      sessionLocks.withLock(input.sessionId, effect).pipe(
         Effect.catch((error) =>
           Effect.succeed({
             _tag: "replica" as const,
@@ -834,19 +1142,10 @@ const make = Effect.gen(function* () {
     environmentId,
     query,
   }) =>
-    peers.list(environmentId).pipe(
-      Effect.map(({ sessions }) => ({
-        sessions: sessions
-          .filter(
-            (session) =>
-              query === undefined ||
-              query === "" ||
-              (session.title ?? "").toLowerCase().includes(query.toLowerCase()) ||
-              (session.cwd ?? "").toLowerCase().includes(query.toLowerCase()),
-          )
-          .slice(0, CLAUDE_REMOTE_SESSION_LIST_LIMIT),
-      })),
-    );
+    peers.list(environmentId, {
+      limit: CLAUDE_REMOTE_SESSION_PAGE_LIMIT,
+      ...(query === undefined || query === "" ? {} : { query }),
+    });
 
   const start = Effect.fn("ClaudeSessionReplication.start")(function* () {
     yield* gate.install(claimForSend);
@@ -864,6 +1163,7 @@ const make = Effect.gen(function* () {
     manifest,
     readFile,
     claim,
+    confirmClaim,
     listRemote,
     replicateNow,
     report,

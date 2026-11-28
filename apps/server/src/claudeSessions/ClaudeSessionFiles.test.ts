@@ -6,6 +6,7 @@ import * as Path from "effect/Path";
 
 import {
   claudeProjectSlug,
+  claudeReplicaBytesNeeded,
   claudeReplicaFitsReserve,
   isClaudeSessionFilePath,
   listClaudeSessionFiles,
@@ -70,6 +71,20 @@ it("keeps the reserve: a copy fits only while the reserve stays free", () => {
   expect(
     claudeReplicaFitsReserve({ freeBytes: 21 * gib, neededBytes: gib + 1, reserveGiB: 20 }),
   ).toBe(false);
+});
+
+it("counts the whole transcript and every sidecar not already present toward the reserve", () => {
+  // A fast-forward stages a full copy, seeded with the local prefix, beside the old one.
+  expect(
+    claudeReplicaBytesNeeded({
+      transcriptBytes: 1000,
+      sidecars: [
+        { size: 10, presentSize: 10 },
+        { size: 20, presentSize: 5 },
+        { size: 30, presentSize: undefined },
+      ],
+    }),
+  ).toBe(1050);
 });
 
 it.layer(NodeServices.layer)("session files on disk", (it) => {
@@ -143,6 +158,12 @@ it.layer(NodeServices.layer)("session files on disk", (it) => {
       expect(yield* serve(`file-history/${SESSION}/escape`)).toBeUndefined();
       expect(yield* serve(`projects/-elsewhere/${SESSION}.jsonl`)).toBeUndefined();
       expect(yield* serve(".credentials.json")).toBeUndefined();
+      // A sidecar may not reach another session's transcript in the same project folder.
+      yield* fileSystem.symlink(
+        path.join(home, "projects", "-repo", `${OTHER}.jsonl`),
+        path.join(home, "projects", "-repo", SESSION, "other.jsonl"),
+      );
+      expect(yield* serve(`projects/-repo/${SESSION}/other.jsonl`)).toBeUndefined();
       expect(yield* serve(`projects/-repo/${OTHER}.jsonl`)).toBeUndefined();
     }).pipe(Effect.scoped),
   );

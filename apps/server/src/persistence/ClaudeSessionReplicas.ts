@@ -59,6 +59,7 @@ const make = Effect.gen(function* () {
     SELECT
       session_id AS "sessionId",
       owner_environment_id AS "ownerEnvironmentId",
+      provider_instance_id AS "providerInstanceId",
       transcript_path AS "transcriptPath",
       cwd,
       synced_size AS "syncedBytes",
@@ -85,16 +86,19 @@ const make = Effect.gen(function* () {
     Request: ClaudeSessionReplicaRow,
     execute: (row) => sql`
       INSERT INTO fork_claude_session_replicas (
-        session_id, owner_environment_id, transcript_path, cwd, synced_size, synced_sha256,
+        session_id, owner_environment_id, provider_instance_id, transcript_path, cwd,
+        synced_size, synced_sha256,
         synced_at, status, forked_session_ids_json, last_error, kept_sha256
       )
       VALUES (
-        ${row.sessionId}, ${row.ownerEnvironmentId}, ${row.transcriptPath}, ${row.cwd},
+        ${row.sessionId}, ${row.ownerEnvironmentId}, ${row.providerInstanceId},
+        ${row.transcriptPath}, ${row.cwd},
         ${row.syncedBytes}, ${row.syncedSha256}, ${row.syncedAt}, ${row.status},
         ${row.forkedSessionIds}, ${row.lastError}, ${row.keptSha256}
       )
       ON CONFLICT (session_id) DO UPDATE SET
         owner_environment_id = excluded.owner_environment_id,
+        provider_instance_id = excluded.provider_instance_id,
         transcript_path = excluded.transcript_path,
         cwd = excluded.cwd,
         synced_size = excluded.synced_size,

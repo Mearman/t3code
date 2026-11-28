@@ -11,6 +11,8 @@ import * as Path from "effect/Path";
 import {
   claudeSessionFileAbsolutePath,
   type ClaudeSessionLayout,
+  claudeSessionWriteStaysInside,
+  isClaudeSessionTranscriptPath,
   sha256OfFile,
 } from "./ClaudeSessionFiles.ts";
 
@@ -78,6 +80,49 @@ export interface ClaudeReplicaFile {
 const storageError = (message: string) => (cause: unknown) =>
   new ClaudeSessionReplicationError({ reason: "storage", message, cause });
 
+const refusedFile = (what: string) =>
+  new ClaudeSessionReplicationError({
+    reason: "refused",
+    message: `The owner named ${what}, which is not one of the session's files here, so nothing was copied.`,
+  });
+
+/**
+ * Checks every target an owner's manifest leads to before a byte is written: the transcript goes
+ * to the session's transcript path, each sidecar to one of its other files in the same project
+ * folder, and no target resolves outside the home through a symlink.
+ */
+const checkClaudeReplicaFiles = Effect.fn("checkClaudeReplicaFiles")(function* (input: {
+  readonly layout: ClaudeSessionLayout;
+  readonly sessionId: string;
+  readonly transcript: ClaudeReplicaFile;
+  readonly sidecars: ReadonlyArray<ClaudeReplicaFile>;
+}) {
+  const { sessionId } = input;
+  // Also proves the session id is one, which the staging directory's name relies on.
+  if (!isClaudeSessionTranscriptPath(sessionId, input.transcript.target)) {
+    return yield* refusedFile(input.transcript.target);
+  }
+  const slug = input.transcript.target.split("/")[1];
+  for (const { target } of input.sidecars) {
+    const segments = target.split("/");
+    if (
+      isClaudeSessionTranscriptPath(sessionId, target) ||
+      (segments[0] === "projects" && segments[1] !== slug)
+    ) {
+      return yield* refusedFile(target);
+    }
+  }
+  for (const { target } of [input.transcript, ...input.sidecars]) {
+    // Proves each target is one of the session's files, then that symlinks keep it in the home.
+    const inside = yield* claudeSessionWriteStaysInside({
+      layout: input.layout,
+      sessionId,
+      relativePath: target,
+    }).pipe(Effect.mapError(storageError(`Could not check where ${target} would be written.`)));
+    if (!inside) return yield* refusedFile(target);
+  }
+});
+
 /**
  * Copies a manifest's files into a home, sidecars first and the transcript last. Bytes collect in
  * `<home>/.t3code-replicas/<sessionId>/`; a file moves into place by one rename once its hash
@@ -92,9 +137,14 @@ export const copyClaudeSessionFiles = Effect.fn("copyClaudeSessionFiles")(functi
   readonly sidecars: ReadonlyArray<ClaudeReplicaFile>;
   /** The local transcript's first bytes to start from instead of fetching them. */
   readonly seedTranscriptBytes: number;
+  /** The local transcript the copy was planned against; undefined when there was none. */
+  readonly localTranscript: ClaudeReplicaSyncPoint | undefined;
+  /** Runs just before anything is replaced, as a check that nothing holds the copy now. */
+  readonly beforeReplace: Effect.Effect<void, ClaudeSessionReplicationError>;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  yield* checkClaudeReplicaFiles(input);
   const stagingRoot = path.join(input.layout.home, ".t3code-replicas", input.sessionId);
   const exists = (target: string) =>
     fileSystem.exists(target).pipe(Effect.mapError(storageError(`Could not read ${target}.`)));
@@ -168,7 +218,31 @@ export const copyClaudeSessionFiles = Effect.fn("copyClaudeSessionFiles")(functi
     staged.push({ part, target });
   }
 
+  const transcriptTarget = claudeSessionFileAbsolutePath(
+    path,
+    input.layout,
+    input.transcript.target,
+  );
+  // Claude may have appended to the copy since it was planned; its lines are never overwritten.
+  const unchangedHere = Effect.gen(function* () {
+    yield* input.beforeReplace;
+    const present = yield* exists(transcriptTarget);
+    const now =
+      present === false
+        ? undefined
+        : { size: yield* sizeOf(transcriptTarget), sha256: yield* hashOf(transcriptTarget) };
+    const expected = input.localTranscript;
+    if (now?.size !== expected?.size || now?.sha256 !== expected?.sha256) {
+      return yield* new ClaudeSessionReplicationError({
+        reason: "refused",
+        message:
+          "Lines were added to this copy while it was being updated, so it was left as it is. The next pass keeps them as a session of their own.",
+      });
+    }
+  });
+  yield* unchangedHere;
   for (const { part, target } of staged) {
+    if (target === transcriptTarget) yield* unchangedHere;
     yield* fileSystem
       .makeDirectory(path.dirname(target), { recursive: true })
       .pipe(Effect.mapError(storageError(`Could not create ${path.dirname(target)}.`)));

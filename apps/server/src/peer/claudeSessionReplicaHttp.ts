@@ -6,6 +6,7 @@ import {
   ClaudeSessionManifest,
   type ClaudeSessionReplicationError,
   PEER_LINK_CLAUDE_SESSIONS_CLAIM_ROUTE,
+  PEER_LINK_CLAUDE_SESSIONS_CLAIM_CONFIRM_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_FILE_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_LIST_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_MANIFEST_ROUTE,
@@ -57,7 +58,7 @@ const admitLink = Effect.fn("claudeSessionReplicaHttp.admitLink")(function* (ful
   if (current._tag === "None" || !current.value.linkedEnvironmentsEnabled) {
     return refusal(403, "linked_environments_off");
   }
-  if (!current.value.claudeSessionSync.enabled) return refusal(404, "session_not_found");
+  if (!current.value.claudeSessionSync.enabled) return refusal(403, "claude_sessions_off");
   if (fullAccess && client.value.access !== "full-access") {
     return refusal(403, "full_access_required");
   }
@@ -95,12 +96,18 @@ const listRoute = HttpRouter.add(
     const replication = yield* ClaudeSessionReplication.ClaudeSessionReplication;
     const limit = nonNegativeInt(admitted.params.get("limit"));
     const query = admitted.params.get("query") ?? undefined;
-    const body = yield* replication
-      .listOwned({
+    const changedSinceMs = nonNegativeInt(admitted.params.get("changedSince"));
+    const cursor = admitted.params.get("cursor") ?? undefined;
+    const listed = yield* Effect.result(
+      replication.listOwned({
         ...(limit === undefined ? {} : { limit }),
         ...(query === undefined ? {} : { query }),
-      })
-      .pipe(Effect.flatMap(encodeList), Effect.option);
+        ...(changedSinceMs === undefined ? {} : { changedSinceMs }),
+        ...(cursor === undefined ? {} : { cursor }),
+      }),
+    );
+    if (listed._tag === "Failure") return fromReplicationError(listed.failure);
+    const body = yield* encodeList(listed.success).pipe(Effect.option);
     if (body._tag === "None") return refusal(500, "session_read_failed");
     return withLinkExpiry(
       HttpServerResponse.jsonUnsafe(body.value, { headers: NO_STORE }),
@@ -189,5 +196,31 @@ const claimRoute = HttpRouter.add(
   }),
 );
 
+// An owner checking a claim asks the claimant here whether it sent it; any link may ask, and it
+// learns only whether it already holds the right nonce.
+const claimConfirmRoute = HttpRouter.add(
+  "GET",
+  PEER_LINK_CLAUDE_SESSIONS_CLAIM_CONFIRM_ROUTE,
+  Effect.gen(function* () {
+    const admitted = yield* admitLink(false);
+    if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
+    const sessionId = admitted.params.get("session");
+    const nonce = admitted.params.get("nonce");
+    if (!sessionId || !nonce) return refusal(400, "invalid_request");
+    const replication = yield* ClaudeSessionReplication.ClaudeSessionReplication;
+    const confirmed = yield* replication.confirmClaim({ sessionId, nonce });
+    return withLinkExpiry(
+      HttpServerResponse.jsonUnsafe({ confirmed }, { headers: NO_STORE }),
+      admitted.linkExpiresAt,
+    );
+  }),
+);
+
 /** What an environment serves of the Claude sessions it owns to the environments linked to it. */
-export const layer = Layer.mergeAll(listRoute, manifestRoute, fileRoute, claimRoute);
+export const layer = Layer.mergeAll(
+  listRoute,
+  manifestRoute,
+  fileRoute,
+  claimRoute,
+  claimConfirmRoute,
+);

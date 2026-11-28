@@ -9,6 +9,7 @@ export default Effect.gen(function* () {
     CREATE TABLE IF NOT EXISTS fork_claude_session_replicas (
       session_id TEXT PRIMARY KEY,
       owner_environment_id TEXT NOT NULL,
+      provider_instance_id TEXT NOT NULL,
       transcript_path TEXT NOT NULL,
       cwd TEXT,
       synced_size INTEGER NOT NULL,

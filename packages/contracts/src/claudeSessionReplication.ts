@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 
 /**
  * Where an environment serves the Claude Code sessions it owns to environments linked to it, signed
@@ -13,6 +14,10 @@ export const PEER_LINK_CLAUDE_SESSIONS_LIST_ROUTE = `${PEER_LINK_CLAUDE_SESSIONS
 export const PEER_LINK_CLAUDE_SESSIONS_MANIFEST_ROUTE = `${PEER_LINK_CLAUDE_SESSIONS_ROUTE_PREFIX}/manifest`;
 export const PEER_LINK_CLAUDE_SESSIONS_FILE_ROUTE = `${PEER_LINK_CLAUDE_SESSIONS_ROUTE_PREFIX}/file`;
 export const PEER_LINK_CLAUDE_SESSIONS_CLAIM_ROUTE = `${PEER_LINK_CLAUDE_SESSIONS_ROUTE_PREFIX}/claim`;
+/** The owner asks the claimant, over its own link, whether it really sent a claim. */
+export const PEER_LINK_CLAUDE_SESSIONS_CLAIM_CONFIRM_ROUTE = `${PEER_LINK_CLAUDE_SESSIONS_ROUTE_PREFIX}/claim-confirm`;
+/** The most sessions one listing page holds; a page past it carries `nextCursor`. */
+export const CLAUDE_REMOTE_SESSION_PAGE_LIMIT = 200;
 
 /** The most bytes one file request returns; a larger file is fetched in several. */
 export const CLAUDE_SESSION_FILE_CHUNK_BYTES = 4 * 1024 * 1024;
@@ -74,6 +79,10 @@ export type ClaudeRemoteSession = typeof ClaudeRemoteSession.Type;
 
 export const ClaudeRemoteSessionList = Schema.Struct({
   sessions: Schema.Array(ClaudeRemoteSession),
+  /** Where the next page starts; null on the last page. */
+  nextCursor: Schema.NullOr(TrimmedNonEmptyString),
+  /** The owner's clock when it read the list, for asking what changed since. */
+  listedAt: Schema.DateTimeUtc,
 });
 export type ClaudeRemoteSessionList = typeof ClaudeRemoteSessionList.Type;
 
@@ -87,6 +96,8 @@ export const ClaudeSessionClaimInput = Schema.Struct({
   claimantEnvironmentId: EnvironmentId,
   size: NonNegativeInt,
   sha256: Sha256Hex,
+  /** Known only to the claimant, which confirms it when the owner asks over its own link. */
+  nonce: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/)),
 });
 export type ClaudeSessionClaimInput = typeof ClaudeSessionClaimInput.Type;
 
@@ -104,6 +115,8 @@ export type ClaudeSessionReplicaStatus = typeof ClaudeSessionReplicaStatus.Type;
 export const ClaudeSessionReplica = Schema.Struct({
   sessionId: TrimmedNonEmptyString,
   ownerEnvironmentId: EnvironmentId,
+  /** The Claude instance whose home holds the copy. */
+  providerInstanceId: ProviderInstanceId,
   /** Where the copy's transcript is, so `claude --resume` finds it from `cwd`. */
   transcriptPath: Schema.String,
   cwd: Schema.NullOr(Schema.String),

@@ -9,6 +9,7 @@ import {
   PEER_LINK_CLAUDE_SESSIONS_CLAIM_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_FILE_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_LIST_ROUTE,
+  PEER_LINK_CLAUDE_SESSIONS_CLAIM_CONFIRM_ROUTE,
   PEER_LINK_CLAUDE_SESSIONS_MANIFEST_ROUTE,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -30,6 +31,7 @@ const TRANSFER_TIMEOUT = Duration.minutes(2);
 const decodeList = Schema.decodeUnknownEffect(Schema.toCodecJson(ClaudeRemoteSessionList));
 const decodeManifest = Schema.decodeUnknownEffect(Schema.toCodecJson(ClaudeSessionManifest));
 const decodeClaim = Schema.decodeUnknownEffect(ClaudeSessionClaimResult);
+const decodeConfirm = Schema.decodeUnknownEffect(Schema.Struct({ confirmed: Schema.Boolean }));
 const decodeRefusal = Schema.decodeUnknownOption(
   Schema.Struct({ error: Schema.String, message: Schema.optionalKey(Schema.String) }),
 );
@@ -42,9 +44,22 @@ const decodeRefusal = Schema.decodeUnknownOption(
 export class PeerClaudeSessions extends Context.Service<
   PeerClaudeSessions,
   {
+    /** One page of the peer's own sessions; see `ClaudeSessionReplication.listOwned`. */
     readonly list: (
       environmentId: EnvironmentId,
+      options?: {
+        readonly limit?: number;
+        readonly query?: string;
+        readonly changedSinceMs?: number;
+        readonly cursor?: string;
+      },
     ) => Effect.Effect<ClaudeRemoteSessionList, ClaudeSessionReplicationError>;
+    /** Asks the peer whether it sent the claim with this session and nonce. */
+    readonly confirmClaim: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly sessionId: string;
+      readonly nonce: string;
+    }) => Effect.Effect<boolean, ClaudeSessionReplicationError>;
     readonly manifest: (input: {
       readonly environmentId: EnvironmentId;
       readonly sessionId: string;
@@ -80,7 +95,18 @@ const fromLinkError = (error: { readonly reason: string; readonly message: strin
     cause: error,
   });
 
-const fromStatus = (status: number, code: string | undefined, label: string, detail?: string) => {
+export const fromStatus = (
+  status: number,
+  code: string | undefined,
+  label: string,
+  detail?: string,
+) => {
+  if (code === "claude_sessions_off") {
+    return new ClaudeSessionReplicationError({
+      reason: "refused",
+      message: `${label} has Claude Code sessions turned off, so it shares none.`,
+    });
+  }
   if (status === 404 && code === "session_not_found") {
     return new ClaudeSessionReplicationError({
       reason: "not_found",
@@ -189,12 +215,42 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const list = Effect.fn("PeerClaudeSessions.list")(function* (environmentId: EnvironmentId) {
+  const list = Effect.fn("PeerClaudeSessions.list")(function* (
+    environmentId: EnvironmentId,
+    options?: {
+      readonly limit?: number;
+      readonly query?: string;
+      readonly changedSinceMs?: number;
+      readonly cursor?: string;
+    },
+  ) {
+    const query = new URLSearchParams();
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    if (options?.query !== undefined) query.set("query", options.query);
+    if (options?.changedSinceMs !== undefined) {
+      query.set("changedSince", String(options.changedSinceMs));
+    }
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
     return yield* readJson(
       environmentId,
-      (url) => HttpClientRequest.get(`${url}${PEER_LINK_CLAUDE_SESSIONS_LIST_ROUTE}`),
+      (url) => HttpClientRequest.get(`${url}${PEER_LINK_CLAUDE_SESSIONS_LIST_ROUTE}?${query}`),
       decodeList,
     );
+  });
+
+  const confirmClaim = Effect.fn("PeerClaudeSessions.confirmClaim")(function* (input: {
+    readonly environmentId: EnvironmentId;
+    readonly sessionId: string;
+    readonly nonce: string;
+  }) {
+    const query = new URLSearchParams({ session: input.sessionId, nonce: input.nonce });
+    const answer = yield* readJson(
+      input.environmentId,
+      (url) =>
+        HttpClientRequest.get(`${url}${PEER_LINK_CLAUDE_SESSIONS_CLAIM_CONFIRM_ROUTE}?${query}`),
+      decodeConfirm,
+    );
+    return answer.confirmed;
   });
 
   const manifest = Effect.fn("PeerClaudeSessions.manifest")(function* (input: {
@@ -264,7 +320,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return PeerClaudeSessions.of({ list, manifest, readChunk, claim });
+  return PeerClaudeSessions.of({ list, confirmClaim, manifest, readChunk, claim });
 });
 
 export const layer = Layer.effect(PeerClaudeSessions, make);

@@ -53,6 +53,25 @@ export const isClaudeSessionFilePath = (sessionId: string, relativePath: string)
   return false;
 };
 
+/** Whether `relativePath` is `sessionId`'s transcript: `projects/<slug>/<sessionId>.jsonl`. */
+export const isClaudeSessionTranscriptPath = (sessionId: string, relativePath: string) => {
+  const segments = relativePath.split("/");
+  return (
+    segments.length === 3 &&
+    segments[0] === "projects" &&
+    isClaudeSessionFilePath(sessionId, relativePath)
+  );
+};
+
+/**
+ * The directory that must contain a session file once symlinks are resolved: the project folder
+ * for its transcript, its own sidecar directory, or its `file-history/` or `tasks/` entry.
+ */
+const containingRoot = (relativePath: string) => {
+  const segments = relativePath.split("/");
+  return segments.slice(0, segments[0] === "projects" && segments.length > 3 ? 3 : 2).join("/");
+};
+
 /** The absolute path of a session file named by `isClaudeSessionFilePath`. */
 export const claudeSessionFileAbsolutePath = (
   path: Path.Path,
@@ -167,13 +186,56 @@ export const resolveServedClaudeSessionFile = Effect.fn("resolveServedClaudeSess
     const slug = path.basename(path.dirname(input.transcriptPath));
     if (!isClaudeSessionFilePath(input.sessionId, input.relativePath)) return undefined;
     if (segments[0] === "projects" && segments[1] !== slug) return undefined;
-    const root = claudeSessionFileAbsolutePath(path, input.layout, segments.slice(0, 2).join("/"));
+    const root = claudeSessionFileAbsolutePath(
+      path,
+      input.layout,
+      containingRoot(input.relativePath),
+    );
     const absolute = claudeSessionFileAbsolutePath(path, input.layout, input.relativePath);
     const realRoot = yield* fileSystem.realPath(root).pipe(Effect.option);
     const realFile = yield* fileSystem.realPath(absolute).pipe(Effect.option);
     if (Option.isNone(realRoot) || Option.isNone(realFile)) return undefined;
-    // The transcript is the root itself's child; every sidecar sits below the session's directory.
     return realFile.value.startsWith(`${realRoot.value}${path.sep}`) ? realFile.value : undefined;
+  },
+);
+
+/** The real path of `target`, or of its nearest existing ancestor joined to the rest of it. */
+const realPathOrPending = Effect.fn("realPathOrPending")(function* (target: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const missing: Array<string> = [];
+  let current = target;
+  for (;;) {
+    const real = yield* fileSystem.realPath(current).pipe(Effect.option);
+    if (Option.isSome(real)) return path.join(real.value, ...missing.toReversed());
+    const parent = path.dirname(current);
+    if (parent === current) return target;
+    missing.push(path.basename(current));
+    current = parent;
+  }
+});
+
+/**
+ * Whether writing `relativePath` (a session file) lands inside its own root under `layout` once
+ * every existing symlink on the way is resolved. Fails closed: a path that is not one of the
+ * session's files never lands.
+ */
+export const claudeSessionWriteStaysInside = Effect.fn("claudeSessionWriteStaysInside")(
+  function* (input: {
+    readonly layout: ClaudeSessionLayout;
+    readonly sessionId: string;
+    readonly relativePath: string;
+  }) {
+    const path = yield* Path.Path;
+    if (!isClaudeSessionFilePath(input.sessionId, input.relativePath)) return false;
+    const base = input.relativePath.startsWith("projects/")
+      ? input.layout.projectsDir
+      : input.layout.home;
+    const realBase = yield* realPathOrPending(base);
+    const target = yield* realPathOrPending(
+      claudeSessionFileAbsolutePath(path, input.layout, input.relativePath),
+    );
+    return target.startsWith(`${realBase}${path.sep}`);
   },
 );
 
@@ -183,3 +245,23 @@ export const claudeReplicaFitsReserve = (input: {
   readonly neededBytes: number;
   readonly reserveGiB: number;
 }) => input.freeBytes - input.neededBytes >= input.reserveGiB * 1024 ** 3;
+
+/**
+ * Bytes a copy needs while it is made: the whole transcript (its staged copy holds every byte,
+ * the local prefix included, while the old copy stays until the rename) and each sidecar not
+ * already present at its size.
+ */
+export const claudeReplicaBytesNeeded = (input: {
+  readonly transcriptBytes: number;
+  readonly sidecars: ReadonlyArray<{
+    readonly size: number;
+    readonly presentSize: number | undefined;
+  }>;
+}) =>
+  input.sidecars.reduce(
+    (total, sidecar) => (sidecar.presentSize === sidecar.size ? total : total + sidecar.size),
+    input.transcriptBytes,
+  );
+
+/** `text` for a SQL `LIKE ... ESCAPE '!'` pattern that matches it literally anywhere. */
+export const likeContaining = (text: string) => `%${text.replace(/[!%_]/g, (c) => `!${c}`)}%`;

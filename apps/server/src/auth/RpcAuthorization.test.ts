@@ -28,6 +28,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -1104,8 +1105,9 @@ it.effect("lists linked sessions for thread readers, but copies them only for op
     );
     const passes: Array<string> = [];
     const report = { lastRunAt: null, sources: [], replicas: [], skipped: [] };
+    const listing = { sessions: [], nextCursor: null, listedAt: DateTime.makeUnsafe(0) };
     const handlers = group.toLayer({
-      [WS_METHODS.claudeSessionsListRemote]: () => Effect.succeed({ sessions: [] }),
+      [WS_METHODS.claudeSessionsListRemote]: () => Effect.succeed(listing),
       [WS_METHODS.claudeSessionsReplicationReport]: () => Effect.succeed(report),
       [WS_METHODS.claudeSessionsReplicateNow]: () =>
         Effect.sync(() => passes.push("pass")).pipe(Effect.as(report)),
@@ -1115,9 +1117,7 @@ it.effect("lists linked sessions for thread readers, but copies them only for op
     );
     const environmentId = EnvironmentId.make("environment-box");
 
-    expect(yield* reader[WS_METHODS.claudeSessionsListRemote]({ environmentId })).toEqual({
-      sessions: [],
-    });
+    expect(yield* reader[WS_METHODS.claudeSessionsListRemote]({ environmentId })).toEqual(listing);
     expect(yield* reader[WS_METHODS.claudeSessionsReplicationReport]({})).toEqual(report);
     expect(
       yield* reader[WS_METHODS.claudeSessionsReplicateNow]({}).pipe(Effect.flip),

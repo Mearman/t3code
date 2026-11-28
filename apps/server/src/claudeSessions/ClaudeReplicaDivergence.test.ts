@@ -19,7 +19,7 @@ import {
 import * as PortScanner from "../preview/PortScanner.ts";
 
 import { copyClaudeSessionFiles } from "./ClaudeReplicaTransfer.ts";
-import { listClaudeSessionFiles } from "./ClaudeSessionFiles.ts";
+import { listClaudeSessionFiles, sha256OfBytes } from "./ClaudeSessionFiles.ts";
 import { claudeTranscriptFixture } from "./ClaudeTranscriptTestLines.ts";
 
 const SESSION = "0b7f6a52-3c1d-4e8f-9a2b-5c6d7e8f9a0b";
@@ -126,6 +126,13 @@ it.layer(
           transcript: { file: manifest.transcript, target: transcript },
           sidecars: [],
           seedTranscriptBytes: 0,
+          // The fork read the copy as it stood, so the copy is replaced only while it still does.
+          localTranscript: yield* fileSystem
+            .readFile(path.join(replica, transcript))
+            .pipe(
+              Effect.map((bytes) => ({ size: bytes.byteLength, sha256: sha256OfBytes(bytes) })),
+            ),
+          beforeReplace: Effect.void,
         });
 
         expect(forked.sessionId).not.toBe(SESSION);
