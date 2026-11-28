@@ -258,7 +258,7 @@ jobs:
         if: env.DEBUG_SIGNED != 'true'
         run: |
           if ! bash scripts/check-apk-signer.sh "$RELEASE_CERT_SHA256" < "$RUNNER_TEMP/certs"; then
-            echo "::error::The APK is not signed with the ExaCode release certificate."
+            echo "::error::The APK is not signed with the MearCode release certificate."
             exit 1
           fi
 
