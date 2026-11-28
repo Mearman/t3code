@@ -969,6 +969,7 @@
   "2605da0149cd15f1": "Compactage du contexte",
   "39a82db18ca50c21": "Contexte compacté de {before} → {after} tokens",
   "885ae08a2160a158": "Contexte compacté",
+  "38f2bf3794b38f19": "Le message confié au claude du terminal ne lui est pas parvenu : {reason}. Renvoyez-le ou bifurquez.",
   "404da0acd158332d": "Envoyé à côté d’un autre processus Claude Code qui a cette session ouverte. Son prochain prompt reprend avant cette réponse, donc `claude --resume` ne suit qu’un côté de la bifurcation ; bifurquez ou reprenez la main pour garder une seule ligne.",
   "4d4981a1c5bd9728": "Exécution de la commande",
   "a078225c5f197cd2": "Commande en échec",

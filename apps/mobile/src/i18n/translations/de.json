@@ -969,6 +969,7 @@
   "2605da0149cd15f1": "Kontext wird komprimiert",
   "39a82db18ca50c21": "Kontext komprimiert: {before} → {after} Tokens",
   "885ae08a2160a158": "Kontext komprimiert",
+  "38f2bf3794b38f19": "Die an das claude im Terminal übergebene Nachricht ist dort nicht angekommen: {reason}. Sende sie erneut oder forke.",
   "404da0acd158332d": "Neben einem anderen Claude Code-Prozess gesendet, der diese Sitzung geöffnet hat. Dessen nächster Prompt setzt vor dieser Antwort an, daher folgt `claude --resume` nur einer Seite der Verzweigung; forke oder übernimm, um einen einzigen Verlauf zu behalten.",
   "4d4981a1c5bd9728": "Befehl läuft",
   "a078225c5f197cd2": "Befehl fehlgeschlagen",
