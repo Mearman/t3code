@@ -99,13 +99,21 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     }
     const summary = summariseClaudeMove(moved.outcomes);
     const refused = summary.refused.map((outcome) => outcome.detail).filter(Boolean);
+    // A request that failed part-way left the rest untried, which the reader must also see.
+    const stopped =
+      moved.failure === undefined
+        ? []
+        : [describe(moved.failure), gt("The remaining threads were not moved.")];
     if (summary.uncompacted.length > 0) {
       Dialog.alert(
         gt("{from} could not compact", { from }),
-        gt(
-          "{count, plural, one {{count} thread stayed on {from}.} other {{count} threads stayed on {from}.}} Move without compacting to send the full history to {to}.",
-          { count: summary.uncompacted.length, from, to },
-        ),
+        [
+          gt(
+            "{count, plural, one {{count} thread stayed on {from}.} other {{count} threads stayed on {from}.}} Move without compacting to send the full history to {to}.",
+            { count: summary.uncompacted.length, from, to },
+          ),
+          ...stopped,
+        ].join("\n"),
         [
           { text: gt("Cancel"), style: "cancel" },
           {
@@ -116,7 +124,6 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
       );
       return;
     }
-    const stopped = moved.failure === undefined ? [] : [describe(moved.failure)];
     Dialog.alert(
       gt(
         "{count, plural, =0 {No threads moved} one {Moved {count} thread to {to}} other {Moved {count} threads to {to}}}",
