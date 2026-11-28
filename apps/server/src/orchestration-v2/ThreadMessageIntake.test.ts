@@ -548,7 +548,6 @@ it.effect("records terminal access on a queued edit from the editor's scopes alo
           threadId: ThreadId.make("thread-edit-access"),
           runId: RunId.make("run-edit-access"),
           text: "edited",
-          attachments: [],
           ...(claimed ? { heldSessionTerminalAccess: true as const } : {}),
         },
         { managesProviders: true, operatesTerminal },
