@@ -3229,10 +3229,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "sur l’ordinateur qui a ouvert cette page"
-      ]
+      "c": [" ", "sur l’ordinateur qui a ouvert cette page"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3244,10 +3241,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· quiconque l’exécute obtient cet accès"
-      ]
+      "c": [" ", "· quiconque l’exécute obtient cet accès"]
     }
   ],
   "c54cc9c75db9dc58": "N’approuvez qu’une connexion que vous venez de lancer.",
@@ -3469,6 +3463,26 @@
     }
   ],
   "1b1131295f62c44c": "Le processus du fournisseur n’existe plus. Interrompez ou redémarrez le fil enfant pour répondre.",
+  "efac0e9dbb4b2100": [
+    "Une copie d’une session qui appartient à une autre machine. Cette machine ne répond plus depuis ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", elle peut donc avoir des lignes plus récentes ; envoyer ici déplace d’abord la session vers cette machine."
+  ],
+  "c98bb5c47f908908": [
+    "Une copie d’une session qui appartient à une autre machine, à jour au ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Envoyer ici déplace d’abord la session vers cette machine."
+  ],
+  "cfcc829832d9bdf0": "Copie périmée",
+  "ffd3cdd328e21c9d": "Copie",
   "da66023072c473d1": [
     "Impossible de charger la sortie : ",
     {
@@ -7945,6 +7959,40 @@
       "v": "v"
     }
   ],
+  "5e86fd5b8fda3d35": "Conserver une copie de chaque session dont le fil ou le projet est épinglé sur une machine liée ici avec un accès complet. Une copie contient la conversation et des sauvegardes des fichiers modifiés, y compris les fichiers ignorés comme .env, et se reprend avec un simple claude --resume sur cette machine.",
+  "844c32db6fd476e0": "Conserver les sessions épinglées des machines liées",
+  "1ffad146a191b5be": "Copier les sessions actives depuis (jours)",
+  "14c344353bbaebae": "Copier aussi les sessions modifiées dans ce nombre de jours. 0 désactive cette option.",
+  "aae7e17a73bcc94f": "Copier toutes les sessions des machines liées. Les copies contiennent tout ce que leurs conversations ont fait, secrets et documents clients compris.",
+  "62a64590137da3c1": "Conserver toutes les sessions des machines liées",
+  "84bf7b8a3e54efaa": "Espace à garder libre pour les copies (Go)",
+  "8d211c657d3e02cf": "Une session n’est pas copiée tant que la copier laisserait moins d’espace libre que cela sur le disque qui contient le dossier Claude.",
+  "302d87882761c40f": "Rétablir l’espace réservé aux copies par défaut",
+  "f05fad95eac949e7": "Copies des machines liées",
+  "b71858f60946d0ad": "Pas encore vérifié depuis le démarrage de ce serveur.",
+  "ed6d25e478d8e2b0": "Copie…",
+  "f8a2e8b1fded8548": "Copier maintenant",
+  "228022b34db63655": "vérifié",
+  "c083303e13d6d989": "ne partage pas de sessions",
+  "ef0c2a8c1ab7b88e": "refusé",
+  "176b736661a0af3a": "n’a pas répondu ; ses copies sont marquées comme périmées",
+  "13c4766a5b0c7ac1": "périmée depuis {time}, appartient à {owner}",
+  "6140fe53442d425d": "à jour au {time}, appartient à {owner}",
+  "aaa04f7e7c6d2227": "lignes ajoutées ici conservées comme {sessions}",
+  "fc0555e901deafd4": "Rechercher un titre ou un dossier",
+  "7bbf4d6c9eae88c0": "Rechercher des sessions sur la machine liée",
+  "9890d5a89e23e8d9": [
+    "Dernière vérification : ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "56d09bbb0cd3a7d8": "Aucune copie sur cette machine.",
+  "a6406061a28035f1": "Non copiées",
+  "3c0fb2338f009c09": "Sessions sur les machines liées",
   "d0e747ae0c4f68a5": "Impossible d’installer t3",
   "ba3ac338f36cba74": "Impossible de supprimer t3",
   "9c942b53b58119b8": "Impossible d’ajouter t3 au PATH",
@@ -13067,6 +13115,8 @@
   "a863c1fb1edfc155": "Lire en arrière-plan les sessions non ouvertes",
   "ac9f7d647fde336a": "claude code terminal sessions transcriptions importer synchroniser historique",
   "c6ca82dcbd99e23b": "claude code sessions récupérer restaurer supprimé fil",
+  "82d1d9b107471d5e": "claude code sessions répliquer copie synchroniser machines épinglées reprendre",
+  "e27fd544c642d3b0": "claude code sessions répliquer copie synchroniser machines toutes",
   "d7bd140afc367aef": "claude code sessions espace disque stockage seuil",
   "e2ba25992774347f": "Dossiers Claude supplémentaires",
   "f04c3d73e1bc1bb1": "claude code sessions historique remplissage inactif",

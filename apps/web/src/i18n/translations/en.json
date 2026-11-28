@@ -3229,10 +3229,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "on the computer that opened this page"
-      ]
+      "c": [" ", "on the computer that opened this page"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3244,10 +3241,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· whoever runs it gets this access"
-      ]
+      "c": [" ", "· whoever runs it gets this access"]
     }
   ],
   "c54cc9c75db9dc58": "Only approve a sign-in you just started.",
@@ -3469,6 +3463,27 @@
     }
   ],
   "1b1131295f62c44c": "Provider process is gone. Interrupt or restart the child thread to respond.",
+  "efac0e9dbb4b2100": [
+    "A copy of a session another machine owns. That machine has not answered since",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", so it may have newer lines; sending here first moves the session to this machine."
+  ],
+  "c98bb5c47f908908": [
+    "A copy of a session another machine owns, current at ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Sending here first moves the session to this machine."
+  ],
+  "cfcc829832d9bdf0": "Stale copy",
+  "ffd3cdd328e21c9d": "Copy",
   "da66023072c473d1": [
     "Couldn't load output: ",
     {
@@ -7952,6 +7967,40 @@
       "v": "v"
     }
   ],
+  "5e86fd5b8fda3d35": "Keep a copy of every session whose thread or project is pinned on a machine linked here with full access. A copy holds the conversation and backups of the files it edited, ignored files such as .env included, and resumes with plain claude --resume on this machine.",
+  "844c32db6fd476e0": "Keep pinned sessions from linked machines",
+  "1ffad146a191b5be": "Copy sessions active within (days)",
+  "14c344353bbaebae": "Also copy sessions changed within this many days. 0 turns this off.",
+  "aae7e17a73bcc94f": "Copy every session linked machines own. Copies hold whatever their conversations did, secrets and client material included.",
+  "62a64590137da3c1": "Keep every session from linked machines",
+  "84bf7b8a3e54efaa": "Keep free for copies (GB)",
+  "8d211c657d3e02cf": "A session is not copied while copying it would leave less free space than this on the disk holding the Claude home.",
+  "302d87882761c40f": "Reset free space kept for copies to default",
+  "f05fad95eac949e7": "Copies from linked machines",
+  "b71858f60946d0ad": "Not checked yet since this server started.",
+  "ed6d25e478d8e2b0": "Copying…",
+  "f8a2e8b1fded8548": "Copy now",
+  "228022b34db63655": "checked",
+  "c083303e13d6d989": "does not share sessions",
+  "ef0c2a8c1ab7b88e": "refused",
+  "176b736661a0af3a": "did not answer; its copies are marked stale",
+  "13c4766a5b0c7ac1": "stale since {time}, owned by {owner}",
+  "6140fe53442d425d": "current at {time}, owned by {owner}",
+  "aaa04f7e7c6d2227": "lines added here kept as {sessions}",
+  "fc0555e901deafd4": "Search title or folder",
+  "7bbf4d6c9eae88c0": "Search sessions on the linked machine",
+  "9890d5a89e23e8d9": [
+    "Last checked ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "56d09bbb0cd3a7d8": "No copies on this machine.",
+  "a6406061a28035f1": "Not copied",
+  "3c0fb2338f009c09": "Sessions on linked machines",
   "d0e747ae0c4f68a5": "Could not install t3",
   "ba3ac338f36cba74": "Could not remove t3",
   "9c942b53b58119b8": "Could not add t3 to PATH",
@@ -13076,6 +13125,8 @@
   "a863c1fb1edfc155": "Read unopened sessions in the background",
   "ac9f7d647fde336a": "claude code terminal sessions transcripts import sync history",
   "c6ca82dcbd99e23b": "claude code sessions undelete restore deleted thread",
+  "82d1d9b107471d5e": "claude code sessions replicate replica sync machines pinned resume",
+  "e27fd544c642d3b0": "claude code sessions replicate replica sync machines all",
   "d7bd140afc367aef": "claude code sessions disk space storage floor",
   "e2ba25992774347f": "Additional Claude homes",
   "f04c3d73e1bc1bb1": "claude code sessions history backfill fill idle",

@@ -3229,10 +3229,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "en el ordenador que abrió esta página"
-      ]
+      "c": [" ", "en el ordenador que abrió esta página"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3244,10 +3241,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· quien lo ejecute obtiene este acceso"
-      ]
+      "c": [" ", "· quien lo ejecute obtiene este acceso"]
     }
   ],
   "c54cc9c75db9dc58": "Aprueba solo un inicio de sesión que acabes de iniciar.",
@@ -3469,6 +3463,26 @@
     }
   ],
   "1b1131295f62c44c": "El proceso del proveedor ya no existe. Interrumpe o reinicia el hilo secundario para responder.",
+  "efac0e9dbb4b2100": [
+    "Una copia de una sesión que pertenece a otra máquina. Esa máquina no responde desde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", así que puede tener líneas más recientes; al enviar aquí, la sesión se mueve primero a esta máquina."
+  ],
+  "c98bb5c47f908908": [
+    "Una copia de una sesión que pertenece a otra máquina, actualizada a las ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Al enviar aquí, la sesión se mueve primero a esta máquina."
+  ],
+  "cfcc829832d9bdf0": "Copia desactualizada",
+  "ffd3cdd328e21c9d": "Copia",
   "da66023072c473d1": [
     "No se pudo cargar la salida: ",
     {
@@ -7944,6 +7958,40 @@
       "v": "v"
     }
   ],
+  "5e86fd5b8fda3d35": "Guarda una copia de cada sesión cuyo hilo o proyecto esté fijado en una máquina vinculada aquí con acceso completo. Una copia contiene la conversación y copias de seguridad de los archivos que editó, incluidos archivos ignorados como .env, y se reanuda con un simple claude --resume en esta máquina.",
+  "844c32db6fd476e0": "Guardar las sesiones fijadas de máquinas vinculadas",
+  "1ffad146a191b5be": "Copiar sesiones activas en los últimos (días)",
+  "14c344353bbaebae": "Copia también las sesiones modificadas en este número de días. 0 lo desactiva.",
+  "aae7e17a73bcc94f": "Copia todas las sesiones de las máquinas vinculadas. Las copias contienen todo lo que hicieron sus conversaciones, incluidos secretos y material de clientes.",
+  "62a64590137da3c1": "Guardar todas las sesiones de máquinas vinculadas",
+  "84bf7b8a3e54efaa": "Espacio libre a reservar para copias (GB)",
+  "8d211c657d3e02cf": "Una sesión no se copia mientras copiarla dejaría menos espacio libre que este en el disco que contiene el directorio de Claude.",
+  "302d87882761c40f": "Restablecer el espacio reservado para copias",
+  "f05fad95eac949e7": "Copias de máquinas vinculadas",
+  "b71858f60946d0ad": "Aún no se ha comprobado desde que se inició este servidor.",
+  "ed6d25e478d8e2b0": "Copiando…",
+  "f8a2e8b1fded8548": "Copiar ahora",
+  "228022b34db63655": "comprobado",
+  "c083303e13d6d989": "no comparte sesiones",
+  "ef0c2a8c1ab7b88e": "rechazado",
+  "176b736661a0af3a": "no respondió; sus copias se marcan como desactualizadas",
+  "13c4766a5b0c7ac1": "desactualizada desde {time}, de {owner}",
+  "6140fe53442d425d": "actualizada a las {time}, de {owner}",
+  "aaa04f7e7c6d2227": "líneas añadidas aquí guardadas como {sessions}",
+  "fc0555e901deafd4": "Buscar por título o carpeta",
+  "7bbf4d6c9eae88c0": "Buscar sesiones en la máquina vinculada",
+  "9890d5a89e23e8d9": [
+    "Última comprobación: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "56d09bbb0cd3a7d8": "No hay copias en esta máquina.",
+  "a6406061a28035f1": "Sin copiar",
+  "3c0fb2338f009c09": "Sesiones en máquinas vinculadas",
   "d0e747ae0c4f68a5": "No se pudo instalar t3",
   "ba3ac338f36cba74": "No se pudo quitar t3",
   "9c942b53b58119b8": "No se pudo añadir t3 al PATH",
@@ -13062,6 +13110,8 @@
   "a863c1fb1edfc155": "Leer en segundo plano las sesiones no abiertas",
   "ac9f7d647fde336a": "claude code terminal sesiones transcripciones importar sincronizar historial",
   "c6ca82dcbd99e23b": "claude code sesiones recuperar restaurar eliminado hilo",
+  "82d1d9b107471d5e": "claude code sesiones replicar copia sincronizar máquinas fijadas reanudar",
+  "e27fd544c642d3b0": "claude code sesiones replicar copia sincronizar máquinas todas",
   "d7bd140afc367aef": "claude code sesiones espacio disco almacenamiento límite",
   "e2ba25992774347f": "Carpetas de Claude adicionales",
   "f04c3d73e1bc1bb1": "claude code sesiones historial relleno inactivo",
