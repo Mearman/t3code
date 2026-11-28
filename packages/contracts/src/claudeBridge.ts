@@ -32,6 +32,8 @@ export const ClaudeBridgeConnection = Schema.Struct({
   url: Schema.String,
   token: Schema.String,
   proof: Schema.String,
+  /** The server's process, so a later server removes the file of one that did not stop cleanly. */
+  pid: Schema.Int,
 });
 export type ClaudeBridgeConnection = typeof ClaudeBridgeConnection.Type;
 
@@ -79,8 +81,8 @@ export function claudeBridgeIsCommandText(text: string): boolean {
   return text.trimStart().startsWith("/");
 }
 
-// A word joiner is invisible, is not whitespace, and is not `/`, so Claude reads the text as text.
-const COMMAND_ESCAPE = "⁠";
+// A word joiner (U+2060) is invisible, is not whitespace, and is not `/`, so Claude reads text.
+const COMMAND_ESCAPE = String.fromCharCode(0x2060);
 
 /**
  * Text for a prompt that is not a person's: one that would read as a slash command is escaped so

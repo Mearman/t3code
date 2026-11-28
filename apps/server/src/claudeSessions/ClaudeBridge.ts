@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import type * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -36,6 +37,7 @@ interface Pending {
   readonly threadId: string;
   readonly queuedAt: number;
   readonly handedOutAt: number | undefined;
+  readonly firstHandedOutAt: number | undefined;
 }
 
 interface Session {
@@ -117,6 +119,17 @@ export class ClaudeBridge extends Context.Service<
 >()("t3/claudeSessions/ClaudeBridge") {}
 
 const encodeConnection = Schema.encodeSync(Schema.fromJsonString(ClaudeBridgeConnection));
+const decodeConnection = Schema.decodeEffect(Schema.fromJsonString(ClaudeBridgeConnection));
+
+// Signal 0 checks a process exists; only ESRCH says it does not.
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    return !(Predicate.hasProperty(cause, "code") && cause.code === "ESRCH");
+  }
+}
 
 const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
@@ -145,7 +158,10 @@ const make = Effect.gen(function* () {
       const next = new Map<string, Session>();
       for (const [sessionId, session] of current) {
         const live = session.pending.filter(
-          (item) => now - item.queuedAt < Duration.toMillis(CLAUDE_BRIDGE_COMMAND_TTL),
+          // A command the mod has taken is timed from then, so a slow submit is not reported lost.
+          (item) =>
+            now - (item.firstHandedOutAt ?? item.queuedAt) <
+            Duration.toMillis(CLAUDE_BRIDGE_COMMAND_TTL),
         );
         gone.push(...session.pending.filter((item) => !live.includes(item)));
         if (live.length > 0 || isAttached(session, now)) {
@@ -198,6 +214,7 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
           queuedAt: now,
           handedOutAt: undefined,
+          firstHandedOutAt: undefined,
         };
         return [
           undefined,
@@ -212,7 +229,6 @@ const make = Effect.gen(function* () {
   );
 
   const poll: ClaudeBridge["Service"]["poll"] = Effect.fn("ClaudeBridge.poll")(function* (request) {
-    yield* sweep();
     const now = yield* Clock.currentTimeMillis;
     const freshKey = yield* hex(16);
     const outcome = yield* Ref.modify(
@@ -238,7 +254,11 @@ const make = Effect.gen(function* () {
         const lease = Duration.toMillis(DELIVERY_LEASE);
         const due = (item: Pending) =>
           item.handedOutAt === undefined || now - item.handedOutAt >= lease;
-        const handed = kept.map((item) => (due(item) ? { ...item, handedOutAt: now } : item));
+        const handed = kept.map((item) =>
+          due(item)
+            ? { ...item, handedOutAt: now, firstHandedOutAt: item.firstHandedOutAt ?? now }
+            : item,
+        );
         const pollerKey =
           session !== undefined && session.pollerKey === request.pollerKey
             ? session.pollerKey
@@ -254,6 +274,8 @@ const make = Effect.gen(function* () {
         ];
       },
     );
+    // Acknowledgements are applied first, so a command acknowledged in this poll never expires.
+    yield* sweep();
     if (outcome._tag === "refused") return outcome;
     yield* Queue.offerAll(
       failures,
@@ -269,14 +291,32 @@ const make = Effect.gen(function* () {
   const directoryOf = (home: string) => path.join(home, CLAUDE_BRIDGE_CONNECTION_DIRECTORY);
   const fileOf = (home: string) => path.join(directoryOf(home), `${serverId}.json`);
 
+  // Removes files of servers whose process is gone, left by a crash; a reused pid keeps one.
+  const pruneStale = Effect.fn("ClaudeBridge.pruneStale")(function* (home: string) {
+    for (const name of yield* fileSystem.readDirectory(directoryOf(home))) {
+      const file = path.join(directoryOf(home), name);
+      const read = yield* fileSystem.readFileString(file).pipe(
+        Effect.flatMap(decodeConnection),
+        Effect.option,
+      );
+      if (read._tag === "Some" && read.value.pid !== process.pid && !isAlive(read.value.pid)) {
+        yield* fileSystem.remove(file).pipe(Effect.ignore);
+      }
+    }
+  });
+
   const writeConnection = Effect.fn("ClaudeBridge.writeConnection")(
     function* (home: string, origin: string) {
       yield* fileSystem.makeDirectory(directoryOf(home), { recursive: true, mode: 0o700 });
+      // makeDirectory sets the mode only on a directory it creates.
+      yield* fileSystem.chmod(directoryOf(home), 0o700);
+      yield* pruneStale(home);
       const text = encodeConnection({
         schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
         url: `${origin}${CLAUDE_BRIDGE_ROUTE_PREFIX}`,
         token,
         proof,
+        pid: process.pid,
       });
       // A fresh name created exclusively with mode 0600, so no other file or link is written.
       const pending = `${fileOf(home)}.${yield* hex(8)}.tmp`;

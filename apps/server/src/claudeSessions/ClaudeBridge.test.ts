@@ -131,6 +131,20 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("never reports lost a prompt acknowledged in the poll after its expiry", () =>
+    Effect.gen(function* () {
+      const bridge = yield* ClaudeBridge;
+      const key = yield* attach;
+      yield* bridge.submit(prompt("run-slow"));
+      yield* bridge.poll(poll("a", key));
+      yield* TestClock.adjust(CLAUDE_BRIDGE_COMMAND_TTL);
+
+      yield* bridge.poll(poll("a", key, [{ commandId: "run-slow", submitted: true }]));
+
+      assert.deepStrictEqual(yield* Queue.clear(bridge.failures), []);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("lets one process poll a session at a time, and only so many sessions", () =>
     Effect.gen(function* () {
       const bridge = yield* ClaudeBridge;
@@ -159,6 +173,31 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
       yield* TestClock.adjust("11 seconds");
       assert.isFalse(yield* bridge.attached("a"));
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("tightens an existing directory and removes a crashed server's file", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fileSystem.makeTempDirectoryScoped();
+      const directory = path.join(home, CLAUDE_BRIDGE_CONNECTION_DIRECTORY);
+      yield* fileSystem.makeDirectory(directory, { mode: 0o755 });
+      const connectionOf = (pid: number) =>
+        JSON.stringify({ schemaVersion: 1, url: "http://127.0.0.1:1", token: "t", proof: "p", pid });
+      // No process has the largest pid, so this server stopped without removing its file.
+      yield* fileSystem.writeFileString(path.join(directory, "dead.json"), connectionOf(2 ** 22));
+      yield* fileSystem.writeFileString(path.join(directory, "live.json"), connectionOf(1));
+      const bridge = yield* ClaudeBridge;
+
+      yield* bridge.registerHome(home);
+      yield* bridge.serveAt("http://127.0.0.1:3774");
+
+      assert.strictEqual((yield* fileSystem.stat(directory)).mode & 0o777, 0o700);
+      const names = yield* fileSystem.readDirectory(directory);
+      assert.isFalse(names.includes("dead.json"));
+      assert.isTrue(names.includes("live.json"));
+      assert.strictEqual(names.length, 2);
+    }).pipe(Effect.provide(layer), Effect.scoped),
   );
 
   it.effect("writes a file only its owner can read, and removes it when the server stops", () =>
