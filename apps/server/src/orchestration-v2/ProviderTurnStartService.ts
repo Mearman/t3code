@@ -2555,7 +2555,7 @@ export const layer: Layer.Layer<
           ...(claudeBridgeSubmitsAsPerson({
             choice: run.heldSessionSend,
             terminalAccess: run.heldSessionTerminalAccess === true,
-            submittedBy: providerMessage.createdBy,
+            words: providerMessage,
           })
             ? { adoptAsUser: true as const }
             : {}),

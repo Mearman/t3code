@@ -12813,6 +12813,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const editedAttachments =
       command.attachments === undefined ? {} : { attachments: command.attachments };
     const { followsThreadSelection: _followsThreadSelection, ...pinnedMessage } = queuedMessage;
+    // The editor's words replace the author's, so a person's message an agent edits is not theirs.
+    const { editedByAgent: _earlierEditor, ...edited } =
+      command.modelSelection === undefined ? queuedMessage : pinnedMessage;
     yield* emitEvent({
       type: "message.updated",
       threadId: command.threadId,
@@ -12821,7 +12824,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerInstanceId: queuedRun.providerInstanceId,
       occurredAt: now,
       payload: withoutGuestAttribution({
-        ...(command.modelSelection === undefined ? queuedMessage : pinnedMessage),
+        ...edited,
+        ...(command.editedByPerson === true ? {} : { editedByAgent: true as const }),
         text: command.text,
         ...editedAttachments,
         ...(command.context ? { context: command.context } : {}),

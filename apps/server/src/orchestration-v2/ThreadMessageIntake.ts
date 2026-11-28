@@ -137,13 +137,15 @@ function withTerminalAccess(
   return operatesTerminal ? { ...rest, heldSessionTerminalAccess: true } : rest;
 }
 
-// An edit puts the editor's words in the run, so the editor's own scopes decide its access.
+// An edit puts the editor's words in the run, so the editor's own scopes decide its access. A
+// client's session is a person's, so its edit keeps the words a person's.
 function editWithTerminalAccess(
   command: Extract<OrchestrationV2Command, { readonly type: "queued-run.edit" }>,
   operatesTerminal: boolean,
 ): typeof command {
   const { heldSessionTerminalAccess: _claimed, ...rest } = command;
-  return operatesTerminal ? { ...rest, heldSessionTerminalAccess: true } : rest;
+  const byPerson = { ...rest, editedByPerson: true as const };
+  return operatesTerminal ? { ...byPerson, heldSessionTerminalAccess: true } : byPerson;
 }
 
 export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (

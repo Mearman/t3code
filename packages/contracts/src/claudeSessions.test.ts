@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { claudeBridgeSubmitsAsPerson, resolveClaudeHeldSessionSend } from "./claudeSessions.ts";
+import { ScheduledTaskId } from "./baseSchemas.ts";
 import { OrchestrationV2Run } from "./orchestrationV2.ts";
 import { ServerSettings } from "./settings.ts";
 
@@ -95,20 +96,28 @@ describe("a held-session choice from a newer server", () => {
 });
 
 describe("claudeBridgeSubmitsAsPerson", () => {
-  it("submits as the person only words a person wrote, whoever pressed resend", () => {
+  const person = { createdBy: "user" } as const;
+  it("submits as the person only words a person sent from a client, whoever pressed resend", () => {
     expect(
-      claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, submittedBy: "user" }),
+      claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, words: person }),
     ).toBe(true);
-    for (const submittedBy of ["agent", "system"] as const) {
-      expect(
-        claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, submittedBy }),
-      ).toBe(false);
+    for (const words of [
+      { createdBy: "agent" },
+      { createdBy: "system" },
+      // A scheduled task's words go under the mod's name even when a person made the task.
+      { createdBy: "user", scheduledTaskId: ScheduledTaskId.make("task-1") },
+      // An agent's edit of a person's queued message makes the words the agent's.
+      { createdBy: "user", editedByAgent: true },
+    ] as const) {
+      expect(claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, words })).toBe(
+        false,
+      );
     }
     expect(
-      claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: false, submittedBy: "user" }),
+      claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: false, words: person }),
     ).toBe(false);
     expect(
-      claudeBridgeSubmitsAsPerson({ choice: undefined, terminalAccess: true, submittedBy: "user" }),
+      claudeBridgeSubmitsAsPerson({ choice: undefined, terminalAccess: true, words: person }),
     ).toBe(false);
   });
 });
