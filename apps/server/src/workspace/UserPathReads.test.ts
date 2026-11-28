@@ -391,11 +391,13 @@ describe("readUserPath", () => {
             expect(yield* readUserPath("/Users/me/Documents/b", Effect.succeed("b"))).toEqual(
               Exit.succeed("b"),
             );
-            const lane = state.lanes.get("/users/me/documents");
-            expect(lane?.queue).toHaveLength(0);
-            expect(lane?.draining).toBe(false);
-            expect(state.running).toBe(0);
           }
+          // The last drain and read finish a step after their caller does.
+          for (let step = 0; step < 5; step += 1) yield* Effect.yieldNow;
+          const lane = state.lanes.get("/users/me/documents");
+          expect(lane?.queue).toHaveLength(0);
+          expect(lane?.draining).toBe(false);
+          expect(state.running).toBe(0);
         }).pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, 1)),
         signals,
       );

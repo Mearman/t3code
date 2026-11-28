@@ -1112,8 +1112,9 @@ export const make = Effect.gen(function* () {
   const blockedGitFilePaths = new Map<string, number>();
 
   /**
- * Reads small files, off the libuv pool except on Windows; "" when missing, unreadable or blocked.
- */
+   * Reads small files, off the libuv pool except on Windows.
+   * "" when a file is missing, unreadable or blocked.
+   */
   const readGitFiles = Effect.fn("AgentSessionScanner.readGitFiles")(function* (
     filePaths: ReadonlyArray<string>,
   ) {
