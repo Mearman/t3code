@@ -525,6 +525,20 @@ jobs:
           --uncached apps/server/integration/transferBudgetV2.integration.test.ts
           --verify-hits 1 apps/server
 
+      # The bridge mod runs inside claude, so it is tested by Claude Code's own mod kit. The pin
+      # is one Claude Code release at or above CLAUDE_BRIDGE_MIN_CLAUDE_VERSION; bump it with care.
+      - name: Test the Claude bridge mod in Claude Code
+        if: matrix.shard == 1 && steps.changes.outputs.test_server != 'false'
+        env:
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-bridge-home
+        run: |
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          # Its install script fetches the native binary the npm package wraps.
+          npm install --prefix "$RUNNER_TEMP/claude-code" --no-save --ignore-scripts=false \
+            @anthropic-ai/claude-code@2.1.329
+          CLAUDE_BIN="$RUNNER_TEMP/claude-code/node_modules/.bin/claude" \
+            node apps/server/scripts/test-claude-bridge-mod.ts
+
       - name: Save Vitest module cache
         if: github.event_name == 'push' && steps.changes.outputs.test_server != 'false'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
