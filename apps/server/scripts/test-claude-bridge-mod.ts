@@ -1,8 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off - a maintenance script that writes a folder and runs claude.
+// @effect-diagnostics nodeBuiltinImport:off - a script that writes a folder and runs claude.
 /**
- * Runs the T3 bridge mod's own tests in Claude Code's mod test kit (`claude plugin test`), against
+ * Runs the T3 bridge mod's tests in Claude Code's mod test kit (`claude plugin test`), against
  * the exact files `t3 claude bridge install` writes. Needs a `claude` of the bridge's minimum
- * version on PATH, or its path in CLAUDE_BIN; CI has none, so run it where Claude Code is installed.
+ * version on PATH, or its path in CLAUDE_BIN; CI installs a pinned one on server shard 1.
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
