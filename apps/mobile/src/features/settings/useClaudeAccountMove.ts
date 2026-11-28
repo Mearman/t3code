@@ -3,27 +3,37 @@ import {
   claudeMoveTargets,
   summariseClaudeMove,
 } from "@t3tools/client-runtime/claudeAccountMove";
-import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
-import type {
-  ClaudeThreadMoveInput,
-  EnvironmentId,
-  ProviderInstanceId,
-  ServerProvider,
-  ThreadId,
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import type { MenuAction } from "@react-native-menu/menu";
+import {
+  AuthProvidersManageScope,
+  type ClaudeThreadMoveInput,
+  type EnvironmentId,
+  type ProviderInstanceId,
+  type ServerProvider,
+  type ThreadId,
 } from "@t3tools/contracts";
-import { useGT } from "gt-react-native";
+import { useGT, useMessages } from "gt-react-native";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { useEnvironmentServerConfig } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
+import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { claudeMoveMenuAction, claudeMoveMenuTarget } from "./claudeAccountMoveMenu";
 
 /**
- * Moving threads to another Claude account through native alerts: pick the account, confirm with
- * both accounts named and the choice to compact, then report what stayed and why.
+ * Moving threads to another Claude account: the menu lists the accounts, an alert confirms with
+ * both accounts named and the choice to compact, then reports what stayed and why.
  */
 export function useClaudeAccountMove(environmentId: EnvironmentId) {
   const gt = useGT();
+  const resolveMessage = useMessages();
+  const canManage = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const config = useEnvironmentServerConfig(environmentId);
   const move = useAtomCommand(serverEnvironment.moveClaudeThreads, { reportFailure: false });
   const supported = config?.environment.capabilities.claudeAccountMoves === true;
@@ -32,6 +42,7 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
 
   const canMove = (sourceInstanceId: ProviderInstanceId) =>
     supported &&
+    canManage &&
     providers.some(
       (provider) => provider.instanceId === sourceInstanceId && provider.driver === "claudeAgent",
     ) &&
@@ -50,7 +61,13 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     });
     if (isAtomCommandInterrupted(result)) return;
     if (result._tag !== "Success") {
-      Dialog.alert(gt("Could not move"), gt("Reconnect and try again."));
+      const failure = squashAtomCommandFailure(result);
+      Dialog.alert(
+        gt("Could not move"),
+        failure instanceof Error
+          ? (thrownErrorMessage(failure, resolveMessage) ?? failure.message)
+          : gt("Reconnect and try again."),
+      );
       return;
     }
     const summary = summariseClaudeMove(result.value.outcomes);
@@ -110,26 +127,32 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
   };
 
   /**
-   * Starts a move of one thread, or of every thread on `sourceInstanceId` when no thread is given.
+   * The menu item that moves one thread, or every thread on `sourceInstanceId` when the caller
+   * passes no thread; undefined when this client cannot move them.
    */
-  const startMove = (sourceInstanceId: ProviderInstanceId, threadId?: ThreadId) => {
+  const menuAction = (
+    sourceInstanceId: ProviderInstanceId,
+    item: Omit<MenuAction, "id" | "subactions">,
+  ): MenuAction | undefined =>
+    canMove(sourceInstanceId) ? claudeMoveMenuAction(providers, sourceInstanceId, item) : undefined;
+
+  /** Starts the move a `menuAction` item names; false for any other menu id. */
+  const handleMenuAction = (
+    id: string,
+    sourceInstanceId: ProviderInstanceId,
+    threadId?: ThreadId,
+  ): boolean => {
+    const target = claudeMoveMenuTarget(providers, sourceInstanceId, id);
+    if (target === undefined) return false;
     const source = providers.find((provider) => provider.instanceId === sourceInstanceId);
-    const targets = claudeMoveTargets(providers, sourceInstanceId);
-    if (source === undefined || targets.length === 0) return;
-    const selection: ClaudeThreadMoveInput["selection"] =
-      threadId === undefined ? { fromInstanceId: sourceInstanceId } : { threadIds: [threadId] };
-    if (targets.length === 1) {
-      confirm(selection, source, targets[0]!);
-      return;
-    }
-    Dialog.alert(gt("Move to which account?"), undefined, [
-      ...targets.map((target) => ({
-        text: claudeAccountLabel(target),
-        onPress: () => confirm(selection, source, target),
-      })),
-      { text: gt("Cancel"), style: "cancel" as const },
-    ]);
+    if (source === undefined || target === null) return true;
+    confirm(
+      threadId === undefined ? { fromInstanceId: sourceInstanceId } : { threadIds: [threadId] },
+      source,
+      target,
+    );
+    return true;
   };
 
-  return { canMove, startMove };
+  return { menuAction, handleMenuAction };
 }

@@ -71,7 +71,7 @@ vi.mock("./use-new-task-project-defaults", () => ({ useNewTaskProjectDefaults: (
 vi.mock("./use-visible-second-clock", () => ({ useVisibleSecondClock: () => 0 }));
 vi.mock("./CustomSnoozeSheet", () => ({ CustomSnoozeSheet: () => null }));
 vi.mock("../settings/useClaudeAccountMove", () => ({
-  useClaudeAccountMove: () => ({ canMove: () => false, startMove: vi.fn() }),
+  useClaudeAccountMove: () => ({ menuAction: () => undefined, handleMenuAction: () => false }),
 }));
 vi.mock("./queued-message-icon", () => ({ QueuedMessageIcon: () => null }));
 vi.mock("./thread-search-match", () => ({ ThreadSearchMatchExcerpt: () => null }));

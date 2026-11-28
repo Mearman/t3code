@@ -4109,7 +4109,6 @@
   "72590e9a7906569f": "Compactar y luego mover",
   "40e9177a5aaff9da": "¿Mover a {to}?",
   "b790da0be82a37ad": "El historial de la conversación va a {to} y el hilo continúa allí en lugar de en {from}. La compactación previa se ejecuta con {from}, así que {to} empieza con un resumen.",
-  "6c36e636372b44e6": "¿A qué cuenta mover?",
   "f0297ec79e896a13": "{environment}: {error}",
   "a727c7a42018cc90": "No se pudieron guardar los ajustes",
   "9e7d6fc560d071f8": "No se pudo importar el contenido compartido.",

@@ -960,7 +960,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     !canOperateThread;
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
   const accountMove = useClaudeAccountMove(thread.environmentId);
-  const canMoveAccount = accountMove.canMove(thread.modelSelection.instanceId);
+  const moveAccount = accountMove.menuAction(thread.modelSelection.instanceId, {
+    title: gt("Move to another Claude account…"),
+    image: "arrow.left.arrow.right",
+    attributes: { disabled: !threadCanArchive(thread.runtime) },
+  });
   const navigation = useNavigation();
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
@@ -1145,16 +1149,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ...(canShareWithGuest
         ? [{ id: "share-guest", title: gt("Share with guest"), image: "person.badge.plus" }]
         : []),
-      ...(canMoveAccount
-        ? [
-            {
-              id: "move-account",
-              title: gt("Move to another Claude account…"),
-              image: "arrow.left.arrow.right",
-              attributes: { disabled: !threadCanArchive(thread.runtime) },
-            } satisfies MenuAction,
-          ]
-        : []),
+      ...(moveAccount === undefined ? [] : [moveAccount]),
     ];
     if (snoozedRow) {
       return layoutThreadListV2RowMenuActions(
@@ -1234,7 +1229,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     );
   }, [
     autoSettleMenuItems,
-    canMoveAccount,
+    moveAccount,
     canShareWithGuest,
     canUnsettle,
     pinMenuItems,
@@ -1246,7 +1241,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     m,
     swipeActions.secondary,
     thread.branch,
-    thread.runtime,
     titleMenuItems,
   ]);
   const handleMenuAction = useCallback(
@@ -1286,9 +1280,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "copy-thread-id") {
         copyTextWithHaptic(thread.id, { target: "thread-id" });
       }
-      if (nativeEvent.event === "move-account") {
-        accountMove.startMove(thread.modelSelection.instanceId, thread.id);
-      }
+      accountMove.handleMenuAction(nativeEvent.event, thread.modelSelection.instanceId, thread.id);
       if (nativeEvent.event === "share-guest") {
         navigation.navigate("ThreadGuestShare", {
           environmentId: thread.environmentId,

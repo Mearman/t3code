@@ -9131,6 +9131,7 @@
   "78253300f9f94d2b": "Mover a",
   "20adc4ec3fea0253": ["Compactar primero con ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
   "65eced1f62b31ac8": "La nueva cuenta empieza con un resumen. El historial completo se queda en la sesión.",
+  "3184194a8a730e62": "Cada hilo se compacta y se mueve por turnos, lo que puede tardar unos minutos. Mantén esto abierto para ver qué se movió.",
   "6bd44a7b22513151": "Mover sin compactar",
   "73da41e93823fd71": [
     "No recomendamos gestionar varias cuentas de ",

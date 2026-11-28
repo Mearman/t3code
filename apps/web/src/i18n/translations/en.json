@@ -9141,6 +9141,7 @@
   "78253300f9f94d2b": "Move to",
   "20adc4ec3fea0253": ["Compact under ", { "i": 1, "k": "_gt_value_1", "v": "v" }, " first"],
   "65eced1f62b31ac8": "The new account starts from a summary. The full history stays in the session.",
+  "3184194a8a730e62": "Each thread compacts and moves in turn, which can take a few minutes. Keep this open to see what moved.",
   "6bd44a7b22513151": "Move without compacting",
   "73da41e93823fd71": [
     "We do not recommend managing multiple ",

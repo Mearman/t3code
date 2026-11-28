@@ -9139,6 +9139,7 @@
   "78253300f9f94d2b": "Flytta till",
   "20adc4ec3fea0253": ["Komprimera först under ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
   "65eced1f62b31ac8": "Det nya kontot börjar från en sammanfattning. Hela historiken finns kvar i sessionen.",
+  "3184194a8a730e62": "Varje tråd komprimeras och flyttas i tur och ordning, vilket kan ta några minuter. Håll det här öppet för att se vad som flyttades.",
   "6bd44a7b22513151": "Flytta utan att komprimera",
   "73da41e93823fd71": [
     "Vi rekommenderar inte att du hanterar flera ",

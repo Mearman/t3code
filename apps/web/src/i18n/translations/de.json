@@ -9133,6 +9133,7 @@
   "78253300f9f94d2b": "Verschieben nach",
   "20adc4ec3fea0253": ["Zuerst unter ", { "i": 1, "k": "_gt_value_1", "v": "v" }, " komprimieren"],
   "65eced1f62b31ac8": "Das neue Konto beginnt mit einer Zusammenfassung. Der gesamte Verlauf bleibt in der Sitzung.",
+  "3184194a8a730e62": "Jeder Thread wird nacheinander komprimiert und verschoben, was einige Minuten dauern kann. Lass dieses Fenster offen, um zu sehen, was verschoben wurde.",
   "6bd44a7b22513151": "Ohne Komprimieren verschieben",
   "73da41e93823fd71": [
     "Wir raten davon ab, mehrere ",
