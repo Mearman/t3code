@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 
+import { ForwardCompatibleOptional } from "./baseSchemas.ts";
+
 /**
  * The wire between T3 Code's server and the T3 bridge mod running inside a `claude` process on the
  * same host. The mod polls the server over loopback; Claude stays the only writer of the session.
@@ -63,11 +65,15 @@ export const ClaudeBridgeFailureReason = Schema.Literals([
 ]);
 export type ClaudeBridgeFailureReason = typeof ClaudeBridgeFailureReason.Type;
 
-/** The mod's report on a command it was handed: submitted, or why not. */
+/**
+ * The mod's report on a command it was handed: submitted, or why not. The mod and the server are
+ * installed apart, so a reason this build does not know decodes as absent (a plain refusal)
+ * rather than failing the whole poll.
+ */
 export const ClaudeBridgeAck = Schema.Struct({
   commandId: Schema.String,
   submitted: Schema.Boolean,
-  reason: Schema.optional(ClaudeBridgeFailureReason),
+  reason: ForwardCompatibleOptional(ClaudeBridgeFailureReason),
 });
 export type ClaudeBridgeAck = typeof ClaudeBridgeAck.Type;
 

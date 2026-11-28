@@ -9,6 +9,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 
 import { ClaudeBridge, layer as bridgeLayer } from "./ClaudeBridge.ts";
 import { answerClaudeBridgePoll, handleClaudeBridgePoll } from "./ClaudeBridgeHttp.ts";
@@ -42,6 +43,43 @@ it.layer(NodeServices.layer)("ClaudeBridgeHttp", (it) => {
         assert.strictEqual(refusal.status, 403);
         assert.isNull(refusal.headers.get(CLAUDE_BRIDGE_PROOF_HEADER));
       }
+    }).pipe(Effect.provide(bridge)),
+  );
+
+  it.effect("takes an ack whose reason this server does not know, as a refusal", () =>
+    Effect.gen(function* () {
+      const claudeBridge = yield* ClaudeBridge;
+      const first = yield* claudeBridge.poll({
+        schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
+        sessionId: "a",
+        acks: [],
+      });
+      assert.strictEqual(first._tag, "accepted");
+      const pollerKey = first._tag === "accepted" ? first.pollerKey : "";
+      yield* claudeBridge.submit({
+        sessionId: "a",
+        threadId: "thread-a",
+        runId: "run-a",
+        text: "hello",
+        asUser: false,
+      });
+      // A mod newer than this server reports a code it has never seen.
+      const answer = yield* answerClaudeBridgePoll({
+        sameHost: true,
+        authorization: `Bearer ${claudeBridge.token}`,
+        body: Effect.succeedSome<unknown>({
+          schemaVersion: CLAUDE_BRIDGE_SCHEMA_VERSION,
+          sessionId: "a",
+          pollerKey,
+          acks: [{ commandId: "run-a", submitted: false, reason: "aCodeFromALaterBuild" }],
+        }),
+      }).pipe(Effect.map(HttpServerResponse.toWeb));
+
+      assert.strictEqual(answer.status, 200);
+      assert.deepStrictEqual(
+        (yield* Queue.clear(claudeBridge.failures)).map((failure) => failure.reason),
+        ["refused"],
+      );
     }).pipe(Effect.provide(bridge)),
   );
 
