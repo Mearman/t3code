@@ -7,6 +7,7 @@ import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as ClaudeAccountMove from "./claudeSessions/ClaudeAccountMove.ts";
+import * as ClaudeSessionFiles from "./claudeSessions/ClaudeSessionFiles.ts";
 import * as ClaudeAccounts from "./claudeSessions/ClaudeAccounts.ts";
 import * as ClaudeThreadAccounts from "./claudeSessions/ClaudeThreadAccounts.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -2835,8 +2836,9 @@ export const layerWsRpc = (
               {
                 orchestration:
                   ClaudeAccountMove.claudeAccountMoveOrchestration(orchestrationEngine),
-                // Windows grants symbolic links only with Developer Mode or administrator rights.
-                canLinkFiles: (yield* HostProcess.Platform) !== "win32",
+                canLinkFiles: ClaudeSessionFiles.canLinkClaudeSessionFiles(
+                  yield* HostProcess.Platform,
+                ),
                 releaseSession: ({ threadId, providerSessionId }) =>
                   providerSessionsV2.detach({
                     threadId,

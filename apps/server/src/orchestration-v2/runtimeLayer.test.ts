@@ -8927,7 +8927,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       });
       const refused = yield* retry("retry-moved-retry").pipe(Effect.flip);
       assert.equal(refused._tag, "OrchestratorDispatchError");
-      assert.include(String(refused.cause), "now uses another account");
+      assert.include(String(refused.cause), "now uses another provider or account");
       const after = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(after.runs.find((candidate) => candidate.id === run.id)?.status, "failed");
 

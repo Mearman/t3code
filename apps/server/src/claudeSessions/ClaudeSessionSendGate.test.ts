@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import {
   ClaudeProcessTableError,
@@ -41,7 +42,10 @@ import {
   type ClaudeSessionHold,
   claudeHolderSource,
 } from "./ClaudeSessionSendGate.ts";
-import { makeClaudeSessionMoveFence } from "./ClaudeSpawnedProcesses.ts";
+import {
+  makeClaudeSessionMoveFence,
+  makeClaudeSessionMoveFenceOver,
+} from "./ClaudeSpawnedProcesses.ts";
 
 const encodeEntry = Schema.encodeSync(Schema.fromJsonString(ClaudeSessionRegistryEntry));
 
@@ -979,6 +983,19 @@ describe("gateHeldClaudeSessionRuntime", () => {
       return { ...turn, message: { ...turn.message, heldSessionSend: "takeOver" as const } };
     };
 
+    it.effect("acts on no holder for a session a move is copying", () =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const { runtime, calls, moveFence } = makeGate({ hold: held(true) });
+        const refused = yield* moveFence.whileMoving(
+          "held-session",
+          Effect.flip(runtime.startTurn(takeOverTurn(now))),
+        );
+        expect(Option.isSome(refused)).toBe(true);
+        expect(calls).toEqual([]);
+      }),
+    );
+
     it.effect("stops an idle holder, waits for it to exit, then sends", () =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
@@ -1399,19 +1416,29 @@ describe("gateHeldClaudeSessionRuntime", () => {
   );
 });
 
-it.effect("keeps no fence for a session nothing holds", () =>
+it.effect("keeps no fence for a session nothing holds, even when interrupted", () =>
   Effect.gen(function* () {
-    const fence = makeClaudeSessionMoveFence();
+    const fences = new Map<string, { readonly semaphore: Semaphore.Semaphore; users: number }>();
+    const fence = makeClaudeSessionMoveFenceOver(fences);
     for (const sessionId of ["one", "two", "three"]) {
       yield* fence.unlessMoving(sessionId, Effect.void);
       yield* fence.whileMoving(sessionId, Effect.void);
     }
-    expect(fence.fencedSessions()).toBe(0);
+    expect(fences.size).toBe(0);
     const held = yield* fence.whileMoving(
       "one",
-      Effect.sync(() => fence.fencedSessions()),
+      Effect.sync(() => fences.size),
     );
     expect(held).toEqual(Option.some(1));
-    expect(fence.fencedSessions()).toBe(0);
+    const started = yield* Deferred.make<void>();
+    const fiber = yield* Effect.forkChild(
+      fence.unlessMoving(
+        "two",
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      ),
+    );
+    yield* Deferred.await(started);
+    yield* Fiber.interrupt(fiber);
+    expect(fences.size).toBe(0);
   }),
 );

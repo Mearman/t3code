@@ -31,7 +31,10 @@ import {
 } from "./ClaudeAccountMove.ts";
 import { claudeAccountIdentity, makeClaudeThreadAccountStore } from "./ClaudeThreadAccounts.ts";
 import { makeClaudeSessionMoveFence } from "./ClaudeSpawnedProcesses.ts";
-import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
+import {
+  OrchestratorDispatchError,
+  OrchestratorProjectionError,
+} from "../orchestration-v2/Orchestrator.ts";
 
 const services = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
 const claude = ProviderDriverKind.make("claudeAgent");
@@ -90,6 +93,8 @@ interface Options {
   readonly sessionDuringCompaction?: string;
   /** Changes the thread's model once its session is released, before the files move. */
   readonly modelAfterRelease?: string;
+  /** Once the files have moved: fail reading the thread, or switch it to the third account. */
+  readonly afterCopy?: "readFails" | "accountChanges";
   /** A run becomes active just as the move takes the session's fence. */
   readonly runningAtFence?: boolean;
   /** Runs after the session is released, while the files are about to move. */
@@ -182,7 +187,19 @@ const harness = (options: Options = {}) =>
     let compactMessage: MessageId | undefined;
     const deps: ClaudeAccountMoveDependencies = {
       orchestration: {
-        getThreadProjection: () => Effect.sync(projection),
+        getThreadProjection: () =>
+          Effect.gen(function* () {
+            // The originals are set aside only once every copy is verified.
+            const copied =
+              options.afterCopy !== undefined &&
+              (yield* fileSystem
+                .exists(path.join(source, `${transcriptPath}.t3-move-original`))
+                .pipe(Effect.orDie));
+            if (copied && options.afterCopy === "readFails")
+              return yield* new OrchestratorProjectionError({ threadId, cause: "store closed" });
+            if (copied && options.afterCopy === "accountChanges") selected = third;
+            return projection();
+          }),
         holdThreadMessages: (id, effect) => intake.withLock(id, effect),
         dispatch: (command) =>
           Effect.gen(function* () {
@@ -612,4 +629,23 @@ it.effect("refuses a run that started just before the fence without tearing down
     assert.notInclude(h.commands, "provider-session.detach");
     assert.strictEqual(h.selected(), personal);
   }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect.each(["readFails", "accountChanges"] as const)(
+  "puts every file back when, once they moved, the thread cannot be read or changed account: %s",
+  (afterCopy) =>
+    Effect.gen(function* () {
+      const h = yield* harness({ afterCopy });
+      const outcome = (yield* h.move(false)).outcomes[0];
+      assert.strictEqual(outcome?.status, afterCopy === "readFails" ? "failed" : "busy");
+      // The account chosen during the copy stands, and the move never switched the thread.
+      assert.strictEqual(h.selected(), afterCopy === "readFails" ? personal : third);
+      assert.notInclude(h.commands, "thread.model-selection.set");
+      assert.isFalse(yield* isLink(h.fileSystem, h.path.join(h.source, transcriptPath)));
+      assert.isFalse(yield* h.fileSystem.exists(h.path.join(h.target, transcriptPath)));
+      const leftovers = (yield* h.fileSystem.readDirectory(h.source, { recursive: true })).filter(
+        (entry) => entry.includes(".t3-move"),
+      );
+      assert.deepEqual(leftovers, []);
+    }).pipe(Effect.scoped, Effect.provide(services)),
 );
