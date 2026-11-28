@@ -1,14 +1,15 @@
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 /**
- * After a verified copy to another home, each original is replaced by a symlink to its copy, so
- * both homes resume one history. Claude Code 2.1.311 resumed a session through a symlinked
- * transcript and appended to the link's target, keeping the link (E12, run against a local API
- * stand-in). If a release stops doing that, set this to false: originals are then left in place.
+ * Whether a moved part in the old home becomes a symlink to its copy, so both homes resume one
+ * history (Claude Code 2.1.311 resumed and appended through a linked transcript, E12). When false
+ * the old parts are renamed aside (`.t3-moved`), so neither home keeps a copy that could fork.
  */
 export const CLAUDE_MOVE_LINKS_ORIGINALS = true;
 
@@ -29,30 +30,26 @@ export const locateClaudeTranscript = Effect.fn("ClaudeSessionFiles.locateTransc
 });
 
 /**
- * Every file of a session, relative to its home: the transcript, its sidecar directory
- * (`subagents`, `tool-results`, `mcp-tasks`) and its `file-history` and `tasks` directories.
+ * The parts of a session that move as one, relative to its home: the transcript, its sidecar
+ * directory (`subagents`, `tool-results`, `mcp-tasks`) and its `file-history` and `tasks`
+ * directories. Directories move whole, so files Claude writes into them later follow the link.
  */
-export const listClaudeSessionFiles = Effect.fn("ClaudeSessionFiles.list")(function* (
+export const listClaudeSessionParts = Effect.fn("ClaudeSessionFiles.listParts")(function* (
   home: string,
   projectDir: string,
   sessionId: string,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const files = [path.join("projects", projectDir, `${sessionId}.jsonl`)];
+  const parts = [path.join("projects", projectDir, `${sessionId}.jsonl`)];
   for (const directory of [
     path.join("projects", projectDir, sessionId),
     path.join("file-history", sessionId),
     path.join("tasks", sessionId),
   ]) {
-    const absolute = path.join(home, directory);
-    if (!(yield* fileSystem.exists(absolute))) continue;
-    for (const entry of yield* fileSystem.readDirectory(absolute, { recursive: true })) {
-      const relative = path.join(directory, entry);
-      if ((yield* fileSystem.stat(path.join(home, relative))).type === "File") files.push(relative);
-    }
+    if (yield* fileSystem.exists(path.join(home, directory))) parts.push(directory);
   }
-  return files.toSorted();
+  return parts;
 });
 
 const TranscriptRecord = Schema.Struct({
@@ -60,13 +57,39 @@ const TranscriptRecord = Schema.Struct({
   subtype: Schema.optional(Schema.String),
   isMeta: Schema.optional(Schema.Boolean),
   isCompactSummary: Schema.optional(Schema.Boolean),
+  message: Schema.optional(Schema.Unknown),
 });
 const decodeRecord = Schema.decodeUnknownOption(Schema.fromJsonString(TranscriptRecord));
 
 // A compact summary is far smaller than this, so a boundary outside the tail has turns after it.
 const COMPACTION_TAIL_BYTES = 1024 * 1024;
+// Claude Code records the `/compact` command itself and its output as user messages tagged so.
+const LOCAL_COMMAND_RECORD =
+  /^\s*<(?:command-name|command-message|command-args|local-command-[a-z]+)>/u;
 
-/** True when the transcript's last conversation turn is a compaction, with nothing after it. */
+const messageText = (message: unknown): string | undefined => {
+  if (typeof message !== "object" || message === null || !("content" in message)) return undefined;
+  const { content } = message;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    if (
+      typeof block === "object" &&
+      block !== null &&
+      "type" in block &&
+      block.type === "text" &&
+      "text" in block &&
+      typeof block.text === "string"
+    )
+      return block.text;
+  }
+  return undefined;
+};
+
+/**
+ * True when the transcript's last conversation turn is a compaction, with nothing after it. The
+ * compaction's own command records and meta records after the summary are not conversation.
+ */
 export const claudeTranscriptEndsCompacted = Effect.fn("ClaudeSessionFiles.endsCompacted")(
   function* (transcript: string) {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -79,16 +102,19 @@ export const claudeTranscriptEndsCompacted = Effect.fn("ClaudeSessionFiles.endsC
         return yield* file.readAlloc(Number(size - start));
       }),
     );
-    const text = bytes._tag === "Some" ? new TextDecoder().decode(bytes.value) : "";
+    const text = Option.isSome(bytes) ? new TextDecoder().decode(bytes.value) : "";
     let compacted = false;
     // The first line of a tail may be cut mid-record, which simply fails to decode.
     for (const line of text.split("\n")) {
       const record = decodeRecord(line);
-      if (record._tag === "None") continue;
-      const { type, subtype, isMeta, isCompactSummary } = record.value;
+      if (Option.isNone(record)) continue;
+      const { type, subtype, isMeta, isCompactSummary, message } = record.value;
       if (type === "system" && subtype === "compact_boundary") compacted = true;
-      else if (type === "assistant" || (type === "user" && !isMeta && !isCompactSummary))
-        compacted = false;
+      else if (type === "assistant") compacted = false;
+      else if (type === "user" && isMeta !== true && isCompactSummary !== true) {
+        const body = messageText(message);
+        if (body === undefined || !LOCAL_COMMAND_RECORD.test(body)) compacted = false;
+      }
     }
     return compacted;
   },
@@ -114,52 +140,169 @@ export class ClaudeSessionTargetConflictError extends Schema.TaggedError<ClaudeS
   }
 }
 
-const sameBytes = (a: Uint8Array, b: Uint8Array) =>
-  a.length === b.length && a.every((byte, index) => byte === b[index]);
+/** Undoing a part-way move failed, so the old home may hold links to the new one. */
+export class ClaudeSessionRollbackError extends Schema.TaggedError<ClaudeSessionRollbackError>()(
+  "ClaudeSessionRollbackError",
+  { part: Schema.String, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return `The move stopped part-way and ${this.part} could not be put back; check both Claude folders before resuming the session.`;
+  }
+}
+
+// Files are compared and copied in pieces of this size, never read whole.
+const COMPARE_CHUNK_BYTES = 1024 * 1024;
+
+const sameContents = Effect.fn("ClaudeSessionFiles.sameContents")(function* (
+  left: string,
+  right: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  if ((yield* fileSystem.stat(left)).size !== (yield* fileSystem.stat(right)).size) return false;
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const a = yield* fileSystem.open(left, { flag: "r" });
+      const b = yield* fileSystem.open(right, { flag: "r" });
+      while (true) {
+        const chunkA = yield* a.readAlloc(COMPARE_CHUNK_BYTES);
+        const chunkB = yield* b.readAlloc(COMPARE_CHUNK_BYTES);
+        if (Option.isNone(chunkA) || Option.isNone(chunkB))
+          return Option.isNone(chunkA) && Option.isNone(chunkB);
+        const x = chunkA.value;
+        const y = chunkB.value;
+        if (x.length !== y.length) return false;
+        for (let index = 0; index < x.length; index++) if (x[index] !== y[index]) return false;
+      }
+    }),
+  );
+});
+
+/** What a move did to the files, so the caller can keep it or put it all back. */
+export interface ClaudeSessionMoved {
+  /** Whether any part was copied, rather than already shared with the target. */
+  readonly copied: boolean;
+  /** Keeps the move: removes the set-aside originals. */
+  readonly commit: Effect.Effect<void>;
+  /** Puts every original back and removes every copy this move made. */
+  readonly undo: Effect.Effect<void, ClaudeSessionRollbackError>;
+}
 
 /**
- * Copies `files` from `source` to the same relative paths under `target`, verifies every copy byte
- * for byte, then (with `linkOriginals`) replaces each original with a symlink to its copy. A failed
- * check removes the copies this call made and replaces nothing.
+ * Copies `parts` from `source` to `target`, verifies every file, then links (or sets aside) each
+ * original. A part whose two paths already resolve to one file stays, so a move back never replaces
+ * the only copy. A failure or interruption puts everything back, or fails with a rollback error.
  */
-export const copyClaudeSession = Effect.fn("ClaudeSessionFiles.copy")(function* (input: {
+export const moveClaudeSessionParts = Effect.fn("ClaudeSessionFiles.moveParts")(function* (input: {
   readonly source: string;
   readonly target: string;
-  readonly files: ReadonlyArray<string>;
+  readonly parts: ReadonlyArray<string>;
   readonly linkOriginals: boolean;
-  /** Corrupts a copy between writing and checking it; tests use it to prove the check. */
+  /** Runs after each file is copied, before it is checked; tests corrupt or fail with it. */
   readonly afterCopy?: (copy: string) => Effect.Effect<void, PlatformError.PlatformError>;
+  /** Runs before each part is replaced; tests fail a later part with it. */
+  readonly beforeReplace?: (part: string) => Effect.Effect<void, PlatformError.PlatformError>;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const created: Array<string> = [];
-  const verify = Effect.gen(function* () {
-    for (const relative of input.files) {
-      const original = yield* fileSystem.readFile(path.join(input.source, relative));
-      const copy = path.join(input.target, relative);
-      if (yield* fileSystem.exists(copy)) {
-        if (!sameBytes(original, yield* fileSystem.readFile(copy)))
-          return yield* new ClaudeSessionTargetConflictError({ file: relative });
-        continue;
+  const realPath = (file: string) =>
+    fileSystem.realPath(file).pipe(Effect.asSome, Effect.orElseSucceed(Option.none));
+  const createdFiles: Array<string> = [];
+  const createdParts: Array<string> = [];
+  const replaced: Array<{
+    readonly part: string;
+    readonly original: string;
+    readonly aside: string;
+  }> = [];
+  const moving: Array<string> = [];
+
+  // Records the outermost directory it creates, so undoing removes every directory the move made.
+  const makeDirectories = Effect.fnUntraced(function* (directory: string) {
+    let outermost: string | undefined;
+    for (let current = directory; !(yield* fileSystem.exists(current));) {
+      outermost = current;
+      current = path.dirname(current);
+    }
+    if (outermost === undefined) return;
+    yield* fileSystem.makeDirectory(directory, { recursive: true });
+    createdParts.push(outermost);
+  });
+  const removeCopies = Effect.gen(function* () {
+    for (const file of createdFiles.toReversed()) yield* fileSystem.remove(file);
+    for (const part of createdParts.toReversed())
+      yield* fileSystem.remove(part, { recursive: true });
+  });
+  const putBack = Effect.gen(function* () {
+    for (const { part, original, aside } of replaced.toReversed()) {
+      yield* Effect.gen(function* () {
+        if (input.linkOriginals) yield* fileSystem.remove(original);
+        yield* fileSystem.rename(aside, original);
+      }).pipe(Effect.mapError((cause) => new ClaudeSessionRollbackError({ part, cause })));
+    }
+    yield* removeCopies.pipe(
+      Effect.mapError((cause) => new ClaudeSessionRollbackError({ part: "a copy", cause })),
+    );
+  });
+
+  const copyAndReplace = Effect.gen(function* () {
+    for (const part of input.parts) {
+      const original = path.join(input.source, part);
+      const copy = path.join(input.target, part);
+      const [from, to] = [yield* realPath(original), yield* realPath(copy)];
+      if (Option.isSome(from) && Option.isSome(to) && from.value === to.value) continue;
+      moving.push(part);
+      const isDirectory = (yield* fileSystem.stat(original)).type === "Directory";
+      const files = isDirectory
+        ? (yield* fileSystem.readDirectory(original, { recursive: true })).map((entry) =>
+            path.join(part, entry),
+          )
+        : [part];
+      if (isDirectory) yield* makeDirectories(copy);
+      for (const relative of files) {
+        const fromFile = path.join(input.source, relative);
+        if ((yield* fileSystem.stat(fromFile)).type !== "File") continue;
+        const toFile = path.join(input.target, relative);
+        if (yield* fileSystem.exists(toFile)) {
+          if (!(yield* sameContents(fromFile, toFile)))
+            return yield* new ClaudeSessionTargetConflictError({ file: relative });
+          continue;
+        }
+        yield* makeDirectories(path.dirname(toFile));
+        yield* fileSystem.copyFile(fromFile, toFile);
+        if (!createdParts.some((created) => toFile.startsWith(`${created}${path.sep}`)))
+          createdFiles.push(toFile);
+        if (input.afterCopy !== undefined) yield* input.afterCopy(toFile);
+        if (!(yield* sameContents(fromFile, toFile)))
+          return yield* new ClaudeSessionCopyMismatchError({ file: relative });
       }
-      yield* fileSystem.makeDirectory(path.dirname(copy), { recursive: true });
-      yield* fileSystem.writeFile(copy, original);
-      created.push(copy);
-      if (input.afterCopy !== undefined) yield* input.afterCopy(copy);
-      if (!sameBytes(original, yield* fileSystem.readFile(copy)))
-        return yield* new ClaudeSessionCopyMismatchError({ file: relative });
+    }
+    for (const part of moving) {
+      const original = path.join(input.source, part);
+      const aside = `${original}.${input.linkOriginals ? "t3-move-original" : "t3-moved"}`;
+      if (input.beforeReplace !== undefined) yield* input.beforeReplace(part);
+      yield* fileSystem.rename(original, aside);
+      replaced.push({ part, original, aside });
+      if (input.linkOriginals) yield* fileSystem.symlink(path.join(input.target, part), original);
     }
   });
-  yield* verify.pipe(
-    Effect.tapError(() =>
-      Effect.forEach(created, (copy) => fileSystem.remove(copy), { discard: true }),
-    ),
-  );
-  if (!input.linkOriginals) return;
-  for (const relative of input.files) {
-    const original = path.join(input.source, relative);
-    const staged = `${original}.t3-move`;
-    yield* fileSystem.symlink(path.join(input.target, relative), staged);
-    yield* fileSystem.rename(staged, original);
+
+  // Uninterruptible, so a cut-off request finishes or undoes its step instead of stopping part-way.
+  const exit = yield* Effect.exit(Effect.uninterruptible(copyAndReplace));
+  if (Exit.isFailure(exit)) {
+    yield* Effect.uninterruptible(putBack);
+    return yield* Effect.failCause(exit.cause);
   }
+  return {
+    copied: moving.length > 0,
+    // The links already work, so a leftover original costs only space; it is logged, not undone.
+    commit: input.linkOriginals
+      ? Effect.forEach(replaced, ({ aside }) => fileSystem.remove(aside, { recursive: true }), {
+          discard: true,
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("claude-account-move.remove-originals-failed", { cause }),
+          ),
+        )
+      : Effect.void,
+    undo: Effect.uninterruptible(putBack),
+  } satisfies ClaudeSessionMoved;
 });

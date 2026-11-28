@@ -12,18 +12,20 @@ import {
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import {
   CLAUDE_MOVE_LINKS_ORIGINALS,
   claudeTranscriptEndsCompacted,
-  copyClaudeSession,
-  listClaudeSessionFiles,
+  ClaudeSessionRollbackError,
+  listClaudeSessionParts,
   locateClaudeTranscript,
+  moveClaudeSessionParts,
 } from "./ClaudeSessionFiles.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import type { ClaudeThreadAccountStore } from "./ClaudeThreadAccounts.ts";
@@ -43,6 +45,9 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<OrchestrationV2RunStatus> = new Set([
   "cancelled",
   "rolled_back",
 ]);
+// The move request stays open while the old account compacts; past this it gives up, moving
+// nothing.
+export const CLAUDE_MOVE_COMPACTION_LIMIT = Duration.minutes(30);
 
 /** The parts of a thread projection a move reads. */
 export interface ClaudeAccountMoveThread {
@@ -94,7 +99,7 @@ export interface ClaudeAccountMoveOrchestration {
           readonly modelSelection: OrchestrationV2ThreadProjection["thread"]["modelSelection"];
         },
   ) => Effect.Effect<{ readonly sequence: number }, OrchestratorV2Error>;
-  /** Run states of `threadId` recorded after `afterSequence`, oldest first. */
+  /** Run states of `threadId` recorded after `afterSequence`, oldest first, never dropped. */
   readonly runUpdates: (input: {
     readonly threadId: ThreadId;
     readonly afterSequence: number;
@@ -110,6 +115,11 @@ export interface ClaudeAccountMoveDependencies {
   readonly listThreads: (
     instanceId: ClaudeThreadMoveInput["targetInstanceId"],
   ) => Effect.Effect<ReadonlyArray<ThreadId>, OrchestratorV2Error>;
+  /** Stops T3 Code's own process for the session, returning once it has exited. */
+  readonly releaseSession: (input: {
+    readonly threadId: ThreadId;
+    readonly providerSessionId: OrchestrationV2ThreadProjection["providerSessions"][number]["id"];
+  }) => Effect.Effect<void, { readonly message: string }>;
   readonly getInstance: (
     instanceId: ClaudeThreadMoveInput["targetInstanceId"],
   ) => Effect.Effect<
@@ -149,9 +159,43 @@ const compactThread = Effect.fn("ClaudeAccountMove.compact")(function* (
         (run) => run.userMessageId === messageId && TERMINAL_RUN_STATUSES.has(run.status),
       ),
       Stream.runHead,
+      Effect.timeoutOption(CLAUDE_MOVE_COMPACTION_LIMIT),
     );
-  return Option.isSome(ended) && ended.value.status === "completed";
+  return (
+    Option.isSome(ended) && Option.isSome(ended.value) && ended.value.value.status === "completed"
+  );
 });
+
+type MoveSource = Pick<ProviderInstance, "nativeThreadStore">;
+
+/** Why the thread cannot move right now, or undefined when nothing stops it. */
+const refusal = Effect.fn("ClaudeAccountMove.refusal")(function* (
+  projection: ClaudeAccountMoveThread,
+  source: MoveSource,
+) {
+  if (projection.runs.some((run) => ACTIVE_RUN_STATUSES.has(run.status)))
+    return {
+      status: "busy",
+      detail: "The thread is working. Move it once it has finished.",
+    } as const;
+  const providerThread = projection.providerThreads.find(
+    (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+  );
+  const nativeId = providerThread?.nativeThreadRef?.nativeId ?? undefined;
+  if (providerThread === undefined || nativeId === undefined || !source.nativeThreadStore)
+    return undefined;
+  const free = yield* Effect.result(
+    source.nativeThreadStore.checkNativeThreadFree({
+      providerThreadId: providerThread.id,
+      nativeId,
+    }),
+  );
+  return free._tag === "Failure"
+    ? ({ status: "held", detail: free.failure.detail } as const)
+    : undefined;
+});
+
+const isRollbackError = Schema.is(ClaudeSessionRollbackError);
 
 const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
   deps: ClaudeAccountMoveDependencies,
@@ -163,7 +207,6 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
     extra: Omit<ClaudeThreadMoveOutcome, "threadId" | "status"> = {},
   ): ClaudeThreadMoveOutcome => ({ threadId, status, ...extra });
   const random = yield* SecureRandom.SecureRandom;
-  const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const projection = yield* deps.orchestration.getThreadProjection(threadId);
   const { thread } = projection;
@@ -178,86 +221,99 @@ const moveOne = Effect.fn("ClaudeAccountMove.moveOne")(function* (
     target.nativeThreadStore === undefined
   )
     return outcome("unsupported", { detail: "Only Claude threads move between Claude accounts." });
-  if (projection.runs.some((run) => ACTIVE_RUN_STATUSES.has(run.status)))
-    return outcome("busy", { detail: "The thread is working. Move it once it has finished." });
+  const refused = yield* refusal(projection, source);
+  if (refused !== undefined) return outcome(refused.status, { detail: refused.detail });
 
-  const providerThread = projection.providerThreads.find(
-    (candidate) => candidate.id === thread.activeProviderThreadId,
-  );
-  const nativeId = providerThread?.nativeThreadRef?.nativeId ?? undefined;
+  const nativeId =
+    projection.providerThreads.find((candidate) => candidate.id === thread.activeProviderThreadId)
+      ?.nativeThreadRef?.nativeId ?? undefined;
   const sameStore =
     source.continuationIdentity.continuationKey === target.continuationIdentity.continuationKey;
-  let copied = false;
-  if (providerThread !== undefined && nativeId !== undefined) {
-    const free = yield* Effect.result(
-      source.nativeThreadStore.checkNativeThreadFree({
-        providerThreadId: providerThread.id,
-        nativeId,
-      }),
+  const setSelection = Effect.gen(function* () {
+    yield* deps.orchestration.dispatch({
+      type: "thread.model-selection.set",
+      commandId: CommandId.make(`server:account-move:${yield* random.uuidV4()}`),
+      threadId,
+      modelSelection: { ...thread.modelSelection, instanceId: input.targetInstanceId },
+    });
+    // The user confirmed the new account by moving, so its next send records that account.
+    yield* deps.accounts.forget(threadId);
+  });
+  if (nativeId === undefined) {
+    yield* setSelection;
+    return outcome("moved");
+  }
+  const projectDir = yield* locateClaudeTranscript(source.nativeThreadStore.root, nativeId);
+  if (projectDir === undefined)
+    return outcome("missing", {
+      detail: "The session's history is not in this account's Claude folder.",
+    });
+  const transcript = path.join(
+    source.nativeThreadStore.root,
+    "projects",
+    projectDir,
+    `${nativeId}.jsonl`,
+  );
+  if (input.compact && !(yield* claudeTranscriptEndsCompacted(transcript))) {
+    const compacted = yield* compactThread(deps, threadId, yield* random.uuidV4()).pipe(
+      Effect.orElseSucceed(() => false),
     );
-    if (free._tag === "Failure") return outcome("held", { detail: free.failure.detail });
-    const projectDir = yield* locateClaudeTranscript(source.nativeThreadStore.root, nativeId);
-    if (projectDir === undefined)
-      return outcome("missing", {
-        detail: "The session's history is not in this account's Claude folder.",
+    if (!compacted)
+      return outcome("compactionFailed", {
+        detail: "The old account could not compact the conversation, so nothing moved.",
       });
-    const transcript = path.join(
-      source.nativeThreadStore.root,
-      "projects",
-      projectDir,
-      `${nativeId}.jsonl`,
-    );
-    if (input.compact && !(yield* claudeTranscriptEndsCompacted(transcript))) {
-      const compacted = yield* compactThread(deps, threadId, yield* random.uuidV4()).pipe(
-        Effect.orElseSucceed(() => false),
-      );
-      if (!compacted)
-        return outcome("compactionFailed", {
-          detail: "The old account could not compact the conversation, so nothing moved.",
-        });
-    }
-    if (!sameStore) {
-      // A live process may still write the session; release it before its files move.
-      const current = yield* deps.orchestration.getThreadProjection(threadId);
-      for (const session of current.providerSessions) {
-        if (session.providerInstanceId !== sourceId || session.status === "stopped") continue;
-        yield* deps.orchestration.dispatch({
-          type: "provider-session.detach",
-          commandId: CommandId.make(`server:account-move-detach:${yield* random.uuidV4()}`),
-          threadId,
-          providerSessionId: session.id,
-          reason: "account-move",
-        });
-      }
-      const files = yield* listClaudeSessionFiles(
-        source.nativeThreadStore.root,
-        projectDir,
-        nativeId,
-      );
-      const result = yield* Effect.result(
-        copyClaudeSession({
-          source: source.nativeThreadStore.root,
-          target: target.nativeThreadStore.root,
-          files,
+    // Compaction takes a while; a message or a terminal may have taken the thread meanwhile.
+    const after = yield* refusal(yield* deps.orchestration.getThreadProjection(threadId), source);
+    if (after !== undefined) return outcome(after.status, { detail: after.detail });
+  }
+  if (sameStore) {
+    yield* setSelection;
+    return outcome("moved");
+  }
+
+  // T3 Code's own process may still write the session, so it exits before any file moves.
+  for (const session of (yield* deps.orchestration.getThreadProjection(threadId))
+    .providerSessions) {
+    if (session.providerInstanceId !== sourceId || session.status === "stopped") continue;
+    yield* deps.orchestration.dispatch({
+      type: "provider-session.detach",
+      commandId: CommandId.make(`server:account-move-detach:${yield* random.uuidV4()}`),
+      threadId,
+      providerSessionId: session.id,
+      reason: "account-move",
+    });
+    yield* deps.releaseSession({ threadId, providerSessionId: session.id });
+  }
+  const released = yield* refusal(yield* deps.orchestration.getThreadProjection(threadId), source);
+  if (released !== undefined) return outcome(released.status, { detail: released.detail });
+
+  const parts = yield* listClaudeSessionParts(source.nativeThreadStore.root, projectDir, nativeId);
+  const homes = { source: source.nativeThreadStore.root, target: target.nativeThreadStore.root };
+  // Moving the files and the selection is one step: either both happen or neither does.
+  const moved = yield* Effect.uninterruptible(
+    Effect.gen(function* () {
+      const files = yield* Effect.result(
+        moveClaudeSessionParts({
+          ...homes,
+          parts,
           linkOriginals: CLAUDE_MOVE_LINKS_ORIGINALS,
         }),
       );
-      if (result._tag === "Failure")
-        return outcome("copyFailed", { detail: describeFailure(result.failure) });
-      copied = yield* fileSystem.exists(
-        path.join(target.nativeThreadStore.root, "projects", projectDir, `${nativeId}.jsonl`),
-      );
-    }
-  }
-  yield* deps.orchestration.dispatch({
-    type: "thread.model-selection.set",
-    commandId: CommandId.make(`server:account-move:${yield* random.uuidV4()}`),
-    threadId,
-    modelSelection: { ...thread.modelSelection, instanceId: input.targetInstanceId },
-  });
-  // The user confirmed the new account by moving, so its next send records that account.
-  yield* deps.accounts.forget(threadId);
-  return outcome("moved", copied ? { copied } : {});
+      if (files._tag === "Failure") return files;
+      const selected = yield* Effect.result(setSelection);
+      if (selected._tag === "Success") {
+        yield* files.success.commit;
+        return files;
+      }
+      yield* files.success.undo;
+      return yield* selected.failure;
+    }),
+  );
+  if (moved._tag === "Failure")
+    return outcome(isRollbackError(moved.failure) ? "failed" : "copyFailed", {
+      detail: describeFailure(moved.failure),
+    });
+  return outcome("moved", moved.success.copied ? { copied: true } : {});
 });
 
 /**
