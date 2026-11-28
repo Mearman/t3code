@@ -12,7 +12,7 @@ export function claudeMoveMenuAction(
   providers: ReadonlyArray<ServerProvider>,
   sourceInstanceId: ProviderInstanceId,
   item: Omit<MenuAction, "id" | "subactions">,
-  sharedHistoryOnly = false,
+  sharedHistoryOnly: boolean,
 ): MenuAction | undefined {
   const targets = claudeMoveTargets(providers, sourceInstanceId, sharedHistoryOnly);
   const [only] = targets;
@@ -36,7 +36,7 @@ export function claudeMoveMenuTarget(
   providers: ReadonlyArray<ServerProvider>,
   sourceInstanceId: ProviderInstanceId,
   id: string,
-  sharedHistoryOnly = false,
+  sharedHistoryOnly: boolean,
 ): ServerProvider | null | undefined {
   if (!id.startsWith(MOVE_ACTION_PREFIX)) return undefined;
   const instanceId = id.slice(MOVE_ACTION_PREFIX.length);

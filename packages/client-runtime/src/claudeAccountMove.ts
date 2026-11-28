@@ -21,7 +21,7 @@ export function claudeAccountLabel(provider: Pick<ServerProvider, "displayName" 
 export function claudeMoveTargets(
   providers: ReadonlyArray<ServerProvider>,
   sourceInstanceId: ProviderInstanceId,
-  sharedHistoryOnly = false,
+  sharedHistoryOnly: boolean,
 ): ReadonlyArray<ServerProvider> {
   const source = providers.find((provider) => provider.instanceId === sourceInstanceId);
   return providers.filter(

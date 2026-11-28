@@ -19,6 +19,7 @@ const press = (label: string) =>
   );
 
 const state = vi.hoisted(() => ({
+  sharedHistoryOnly: false,
   move: vi.fn(),
   list: vi.fn(),
   close: vi.fn(),
@@ -45,7 +46,10 @@ vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: unknown) =>
     atom === "dialog"
       ? { environmentId: "env", sourceInstanceId: "personal" }
-      : [account("personal"), account("work")],
+      : [
+          { ...account("personal"), continuation: { groupKey: "claude:store:personal" } },
+          { ...account("work"), continuation: { groupKey: "claude:store:work" } },
+        ],
 }));
 vi.mock("../../state/server", () => ({
   serverEnvironment: {
@@ -58,7 +62,19 @@ vi.mock("../../state/use-atom-command", () => ({
   useAtomCommand: (command: string) => (command === "move" ? state.move : state.list),
 }));
 vi.mock("../../hooks/useSettings", () => ({ useEnvironmentSettings: () => false }));
-vi.mock("../../state/entities", () => ({ useServerConfigs: () => new Map() }));
+vi.mock("../../state/entities", () => ({
+  useServerConfigs: () =>
+    new Map([
+      [
+        "env",
+        {
+          environment: {
+            capabilities: { claudeAccountMovesSharedHistoryOnly: state.sharedHistoryOnly },
+          },
+        },
+      ],
+    ]),
+}));
 vi.mock("../../rpc/atomRegistry", () => ({ appAtomRegistry: { set: state.close } }));
 vi.mock("../ui/toast", () => ({ toastManager: { add: state.toast } }));
 
@@ -114,4 +130,19 @@ it("Escape closes the dialog when no move is running", async () => {
     );
   });
   expect(state.close).toHaveBeenCalledWith("dialog", null);
+});
+
+it("offers no account with separate history where the server moves only within shared history", async () => {
+  state.sharedHistoryOnly = true;
+  using _flag = {
+    [Symbol.dispose]: () => {
+      state.sharedHistoryOnly = false;
+    },
+  };
+  await using _screen = await render(<MoveClaudeAccountDialogHost />);
+  const buttons = [...document.querySelectorAll("button")].map((button) => button.textContent);
+  expect(buttons).not.toContain("Move to work");
+  expect(document.body.textContent).toContain(
+    "Add another Claude account on this environment first.",
+  );
 });

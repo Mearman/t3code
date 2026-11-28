@@ -28,7 +28,7 @@ const idOf = (action: MenuAction | undefined) => {
 describe("claudeMoveMenuAction", () => {
   it("offers every other account, however many there are", () => {
     const providers = ["claudeAgent", "a", "b", "c", "d", "e"].map(account);
-    const action = claudeMoveMenuAction(providers, source, item);
+    const action = claudeMoveMenuAction(providers, source, item, false);
     expect(action?.subactions?.map((entry) => entry.title)).toEqual([
       "a name",
       "b name",
@@ -37,20 +37,22 @@ describe("claudeMoveMenuAction", () => {
       "e name",
     ]);
     for (const entry of action?.subactions ?? [])
-      expect(claudeMoveMenuTarget(providers, source, idOf(entry))?.displayName).toBe(entry.title);
+      expect(claudeMoveMenuTarget(providers, source, idOf(entry), false)?.displayName).toBe(
+        entry.title,
+      );
   });
 
   it("names the one other account directly, and nothing when there is none", () => {
     const providers = [account("claudeAgent"), account("work")];
-    const action = claudeMoveMenuAction(providers, source, item);
+    const action = claudeMoveMenuAction(providers, source, item, false);
     expect(action?.subactions).toBeUndefined();
-    expect(claudeMoveMenuTarget(providers, source, idOf(action))?.instanceId).toBe("work");
-    expect(claudeMoveMenuAction([account("claudeAgent")], source, item)).toBeUndefined();
+    expect(claudeMoveMenuTarget(providers, source, idOf(action), false)?.instanceId).toBe("work");
+    expect(claudeMoveMenuAction([account("claudeAgent")], source, item, false)).toBeUndefined();
   });
 
   it("ignores other menu ids and reports an account that has gone", () => {
     const providers = [account("claudeAgent"), account("work")];
-    expect(claudeMoveMenuTarget(providers, source, "copy-thread")).toBeUndefined();
-    expect(claudeMoveMenuTarget(providers, source, "claude-move-to:gone")).toBeNull();
+    expect(claudeMoveMenuTarget(providers, source, "copy-thread", false)).toBeUndefined();
+    expect(claudeMoveMenuTarget(providers, source, "claude-move-to:gone", false)).toBeNull();
   });
 });
