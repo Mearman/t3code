@@ -10,7 +10,7 @@ const loadBuild = async (defines: Record<string, string>) => {
 };
 
 const forkDefines = {
-  __T3CODE_DESKTOP_PRODUCT_NAME__: "ExaCode",
+  __T3CODE_DESKTOP_PRODUCT_NAME__: "MearCode",
   __T3CODE_RELEASE_REPOSITORY__: "owner/fork",
 };
 

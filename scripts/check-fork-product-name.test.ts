@@ -30,7 +30,7 @@ it("finds upstream's name in shipped text and ignores maps, licences and T3's Gi
       "index.html": "<title>T3-Code</title>",
       "third-party-licenses.json": '{"x":"T3 Code"}',
       "assets/github.js": 'const a="Install T3 Code for GitHub";',
-      "assets/clean.js": 'const a="Enjoying ExaCode?";',
+      "assets/clean.js": 'const a="Enjoying MearCode?";',
     }),
   ).toEqual(["assets/app.js", "index.html"]);
 });

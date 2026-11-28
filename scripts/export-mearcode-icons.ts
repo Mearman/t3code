@@ -6,9 +6,9 @@ import * as NodePath from "node:path";
 import sharp from "sharp";
 
 import {
-  EXACODE_ICON_BACKGROUND_COLOR,
-  EXACODE_ICON_PATHS,
-  EXACODE_ICON_SOURCE_SVG,
+  MEARCODE_ICON_BACKGROUND_COLOR,
+  MEARCODE_ICON_PATHS,
+  MEARCODE_ICON_SOURCE_SVG,
 } from "./lib/brand-assets.ts";
 import { encodePngIco, WINDOWS_ICON_SIZES } from "./lib/icon-export.ts";
 
@@ -21,7 +21,7 @@ const MAC_INSET = (MAC_CANVAS - MAC_BODY) / 2;
 const renderSquare = (svg: Buffer, size: number) =>
   sharp(svg, { density: 384 }).resize(size, size).png().toBuffer();
 
-// Android draws EXACODE_ICON_BACKGROUND_COLOR behind the adaptive foreground and masks the
+// Android draws MEARCODE_ICON_BACKGROUND_COLOR behind the adaptive foreground and masks the
 // central 72dp of 108dp, inside which the logo's mark already sits; the splash shows the whole
 // logo within the inner two thirds of its canvas (scripts/export-android-icons.ts).
 const ANDROID_ADAPTIVE_CANVAS = 432;
@@ -29,10 +29,10 @@ const ANDROID_SPLASH_CANVAS = 1152;
 const ANDROID_SPLASH_BODY = 576;
 
 const withoutBackground = (svg: Buffer) => {
-  const background = `<rect width="1024" height="1024" rx="230" fill="${EXACODE_ICON_BACKGROUND_COLOR}"/>`;
+  const background = `<rect width="1024" height="1024" rx="230" fill="${MEARCODE_ICON_BACKGROUND_COLOR}"/>`;
   const source = svg.toString("utf8");
   if (source.split(background).length !== 2) {
-    throw new Error(`${EXACODE_ICON_SOURCE_SVG} no longer has exactly one ${background}.`);
+    throw new Error(`${MEARCODE_ICON_SOURCE_SVG} no longer has exactly one ${background}.`);
   }
   return Buffer.from(source.replace(background, ""));
 };
@@ -65,30 +65,30 @@ const renderMacOs = async (svg: Buffer) =>
     .png()
     .toBuffer();
 
-/** Every ExaCode icon, by repository-relative path, rendered from the logo SVG. */
-export async function renderExacodeIcons(): Promise<ReadonlyMap<string, Buffer>> {
-  const svg = NodeFS.readFileSync(NodePath.join(REPO_ROOT, EXACODE_ICON_SOURCE_SVG));
+/** Every MearCode icon, by repository-relative path, rendered from the logo SVG. */
+export async function renderMearcodeIcons(): Promise<ReadonlyMap<string, Buffer>> {
+  const svg = NodeFS.readFileSync(NodePath.join(REPO_ROOT, MEARCODE_ICON_SOURCE_SVG));
   const ico = encodePngIco(
     await Promise.all(
       WINDOWS_ICON_SIZES.map(async (size) => ({ size, contents: await renderSquare(svg, size) })),
     ),
   );
   return new Map<string, Buffer>([
-    [EXACODE_ICON_PATHS.macIconPng, await renderMacOs(svg)],
-    [EXACODE_ICON_PATHS.linuxIconPng, await renderSquare(svg, 1024)],
-    [EXACODE_ICON_PATHS.webIcon512Png, await renderSquare(svg, 512)],
-    [EXACODE_ICON_PATHS.webIcon192Png, await renderSquare(svg, 192)],
-    [EXACODE_ICON_PATHS.webAppleTouchIconPng, await renderSquare(svg, 180)],
-    [EXACODE_ICON_PATHS.webFavicon32Png, await renderSquare(svg, 32)],
-    [EXACODE_ICON_PATHS.webFavicon16Png, await renderSquare(svg, 16)],
-    [EXACODE_ICON_PATHS.windowsIconIco, ico],
-    [EXACODE_ICON_PATHS.webFaviconIco, ico],
+    [MEARCODE_ICON_PATHS.macIconPng, await renderMacOs(svg)],
+    [MEARCODE_ICON_PATHS.linuxIconPng, await renderSquare(svg, 1024)],
+    [MEARCODE_ICON_PATHS.webIcon512Png, await renderSquare(svg, 512)],
+    [MEARCODE_ICON_PATHS.webIcon192Png, await renderSquare(svg, 192)],
+    [MEARCODE_ICON_PATHS.webAppleTouchIconPng, await renderSquare(svg, 180)],
+    [MEARCODE_ICON_PATHS.webFavicon32Png, await renderSquare(svg, 32)],
+    [MEARCODE_ICON_PATHS.webFavicon16Png, await renderSquare(svg, 16)],
+    [MEARCODE_ICON_PATHS.windowsIconIco, ico],
+    [MEARCODE_ICON_PATHS.webFaviconIco, ico],
     [
-      EXACODE_ICON_PATHS.androidForegroundPng,
+      MEARCODE_ICON_PATHS.androidForegroundPng,
       await renderSquare(withoutBackground(svg), ANDROID_ADAPTIVE_CANVAS),
     ],
     [
-      EXACODE_ICON_PATHS.androidSplashPng,
+      MEARCODE_ICON_PATHS.androidSplashPng,
       await renderCentred(svg, ANDROID_SPLASH_CANVAS, ANDROID_SPLASH_BODY),
     ],
   ]);
@@ -124,9 +124,9 @@ const matches = async (path: string, expected: Buffer, committed: Buffer) => {
 };
 
 /** The paths whose committed file is missing or no longer matches the logo SVG. */
-export async function staleExacodeIcons(): Promise<ReadonlyArray<string>> {
+export async function staleMearcodeIcons(): Promise<ReadonlyArray<string>> {
   const stale: Array<string> = [];
-  for (const [path, expected] of await renderExacodeIcons()) {
+  for (const [path, expected] of await renderMearcodeIcons()) {
     const absolute = NodePath.join(REPO_ROOT, path);
     if (
       !NodeFS.existsSync(absolute) ||
@@ -140,15 +140,15 @@ export async function staleExacodeIcons(): Promise<ReadonlyArray<string>> {
 
 if (import.meta.main) {
   if (process.argv.includes("--check")) {
-    const stale = await staleExacodeIcons();
+    const stale = await staleMearcodeIcons();
     if (stale.length > 0) {
       console.error(
-        `These ExaCode icons are stale; run vp run icons:export:exacode:\n${stale.join("\n")}`,
+        `These MearCode icons are stale; run vp run icons:export:mearcode:\n${stale.join("\n")}`,
       );
       process.exit(1);
     }
   } else {
-    for (const [path, contents] of await renderExacodeIcons()) {
+    for (const [path, contents] of await renderMearcodeIcons()) {
       NodeFS.writeFileSync(NodePath.join(REPO_ROOT, path), contents);
     }
   }

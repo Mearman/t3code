@@ -37,24 +37,24 @@ export const BRAND_ASSET_PATHS = {
   developmentWebIcon512Png: "assets/dev/blueprint-web-icon-512x512.png",
 } as const;
 
-// A fork build (one with its own product name) ships the ExaCode icons, rendered from the SVG by
-// scripts/export-exacode-icons.ts, in place of T3's.
-export const EXACODE_ICON_SOURCE_SVG = "assets/exacode/logo.svg";
-export const EXACODE_ICON_PATHS = {
-  macIconPng: "assets/exacode/exacode-macos-1024.png",
-  linuxIconPng: "assets/exacode/exacode-universal-1024.png",
-  windowsIconIco: "assets/exacode/exacode-windows.ico",
-  webFaviconIco: "assets/exacode/exacode-web-favicon.ico",
-  webFavicon16Png: "assets/exacode/exacode-web-favicon-16x16.png",
-  webFavicon32Png: "assets/exacode/exacode-web-favicon-32x32.png",
-  webAppleTouchIconPng: "assets/exacode/exacode-web-apple-touch-180.png",
-  webIcon192Png: "assets/exacode/exacode-web-icon-192x192.png",
-  webIcon512Png: "assets/exacode/exacode-web-icon-512x512.png",
-  androidForegroundPng: "assets/exacode/exacode-android-foreground.png",
-  androidSplashPng: "assets/exacode/exacode-android-splash.png",
+// A fork build (one with its own product name) ships the MearCode icons, rendered from the SVG by
+// scripts/export-mearcode-icons.ts, in place of T3's.
+export const MEARCODE_ICON_SOURCE_SVG = "assets/mearcode/logo.svg";
+export const MEARCODE_ICON_PATHS = {
+  macIconPng: "assets/mearcode/mearcode-macos-1024.png",
+  linuxIconPng: "assets/mearcode/mearcode-universal-1024.png",
+  windowsIconIco: "assets/mearcode/mearcode-windows.ico",
+  webFaviconIco: "assets/mearcode/mearcode-web-favicon.ico",
+  webFavicon16Png: "assets/mearcode/mearcode-web-favicon-16x16.png",
+  webFavicon32Png: "assets/mearcode/mearcode-web-favicon-32x32.png",
+  webAppleTouchIconPng: "assets/mearcode/mearcode-web-apple-touch-180.png",
+  webIcon192Png: "assets/mearcode/mearcode-web-icon-192x192.png",
+  webIcon512Png: "assets/mearcode/mearcode-web-icon-512x512.png",
+  androidForegroundPng: "assets/mearcode/mearcode-android-foreground.png",
+  androidSplashPng: "assets/mearcode/mearcode-android-splash.png",
 } as const;
 /** The logo's background, which Android draws behind the adaptive icon's foreground. */
-export const EXACODE_ICON_BACKGROUND_COLOR = "#1B2A5E";
+export const MEARCODE_ICON_BACKGROUND_COLOR = "#1B2A5E";
 
 export type WebAssetBrand = "development" | "nightly" | "production" | "fork";
 
@@ -102,12 +102,12 @@ const WEB_ICON_SOURCE_PATHS_BY_BRAND = {
     icon512Png: BRAND_ASSET_PATHS.nightlyWebIcon512Png,
   },
   fork: {
-    faviconIco: EXACODE_ICON_PATHS.webFaviconIco,
-    favicon16Png: EXACODE_ICON_PATHS.webFavicon16Png,
-    favicon32Png: EXACODE_ICON_PATHS.webFavicon32Png,
-    appleTouchIconPng: EXACODE_ICON_PATHS.webAppleTouchIconPng,
-    icon192Png: EXACODE_ICON_PATHS.webIcon192Png,
-    icon512Png: EXACODE_ICON_PATHS.webIcon512Png,
+    faviconIco: MEARCODE_ICON_PATHS.webFaviconIco,
+    favicon16Png: MEARCODE_ICON_PATHS.webFavicon16Png,
+    favicon32Png: MEARCODE_ICON_PATHS.webFavicon32Png,
+    appleTouchIconPng: MEARCODE_ICON_PATHS.webAppleTouchIconPng,
+    icon192Png: MEARCODE_ICON_PATHS.webIcon192Png,
+    icon512Png: MEARCODE_ICON_PATHS.webIcon512Png,
   },
   production: {
     faviconIco: BRAND_ASSET_PATHS.productionWebFaviconIco,

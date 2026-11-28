@@ -1,4 +1,4 @@
-name: ExaCode Release
+name: MearCode Release
 
 # Fork-only nightly release for Mearman/t3code on GitHub-hosted runners. release.yml stays as
 # upstream's and skips outside pingdotgg/t3code. See docs/operations/03_release.md#fork-releases.
@@ -22,7 +22,7 @@ on:
 
 # Publishers are never cancelled; queue: max keeps every pending run so no CI success is dropped.
 concurrency:
-  group: exacode-release
+  group: mearcode-release
   cancel-in-progress: false
   queue: max
 
@@ -149,7 +149,7 @@ jobs:
           node scripts/resolve-fork-nightly-release.ts \
             --date "$(date -u +%Y%m%d)" \
             --sha "$NIGHTLY_SHA" \
-            --product-name ExaCode \
+            --product-name MearCode \
             --published-tags "$RUNNER_TEMP/published-tags" \
             --github-output
 
@@ -189,7 +189,7 @@ jobs:
       - name: Build JS bundle
         env:
           T3CODE_TELEMETRY_CHANNEL: dev
-          T3CODE_DESKTOP_PRODUCT_NAME: ExaCode
+          T3CODE_DESKTOP_PRODUCT_NAME: MearCode
           # Mearman/t3code has Issues on, so the boot error may offer its report link.
           T3CODE_ISSUES_ENABLED: "1"
         run: vp run build:desktop:bundle
@@ -205,13 +205,13 @@ jobs:
             fi
           done
 
-      # The desktop bundle, the web client and the server name the app ExaCode
+      # The desktop bundle, the web client and the server name the app MearCode
       # (scripts/lib/product-name-define.ts), and the server and web client name upstream nowhere.
       - name: Check the bundles' product name
         run: |
           for dir in apps/desktop/dist-electron apps/server/dist/client; do
-            if ! grep -rqE --include='*.js' --include='*.cjs' --include='*.mjs' "[\"'\`]ExaCode[\"'\`]" "$dir"; then
-              echo "::error::$dir does not name the app ExaCode."
+            if ! grep -rqE --include='*.js' --include='*.cjs' --include='*.mjs' "[\"'\`]MearCode[\"'\`]" "$dir"; then
+              echo "::error::$dir does not name the app MearCode."
               exit 1
             fi
           done
@@ -257,8 +257,8 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: macOS arm64
-      product_name: ExaCode
-      app_id: io.exadev.exacode
+      product_name: MearCode
+      app_id: uk.mearman.mearcode
       runner: macos-26
       platform: mac
       target: dmg
@@ -291,8 +291,8 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: macOS x64
-      product_name: ExaCode
-      app_id: io.exadev.exacode
+      product_name: MearCode
+      app_id: uk.mearman.mearcode
       runner: macos-26-intel
       platform: mac
       target: dmg
@@ -319,7 +319,7 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: Linux x64
-      product_name: ExaCode
+      product_name: MearCode
       maintainer: Joseph Mearman <joseph@mearman.co.uk>
       runner: ubuntu-24.04
       platform: linux
@@ -349,7 +349,7 @@ jobs:
       clerk_cli_oauth_client_id: ""
       relay_url: ""
       label: Linux arm64
-      product_name: ExaCode
+      product_name: MearCode
       maintainer: Joseph Mearman <joseph@mearman.co.uk>
       runner: ubuntu-24.04-arm
       platform: linux
@@ -367,7 +367,7 @@ jobs:
     if: needs.preflight.outputs.build == 'true'
     permissions:
       contents: read
-    uses: ./.github/workflows/exacode-android.yml
+    uses: ./.github/workflows/mearcode-android.yml
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ github.ref == 'refs/heads/main' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
       ANDROID_KEYSTORE_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
@@ -426,7 +426,7 @@ jobs:
       - name: Download the Android APK
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: exacode-android-apk
+          name: mearcode-android-apk
           path: release-assets
 
       - name: Merge desktop updater manifests
@@ -439,19 +439,19 @@ jobs:
           rm -f release-assets/builder-debug.yml
           version="${{ needs.preflight.outputs.version }}"
           # A dry run's APK carries Android's public debug key and says so in its name.
-          apk="ExaCode-$version${{ needs.preflight.outputs.publish != 'true' && '-debug-signed' || '' }}.apk"
+          apk="MearCode-$version${{ needs.preflight.outputs.publish != 'true' && '-debug-signed' || '' }}.apk"
           for asset in \
             "t3-$version-darwin-arm64.tar.gz" \
             "t3-$version-linux-x64.tar.gz" \
             "t3-$version-linux-arm64.tar.gz" \
-            "ExaCode-$version-arm64.zip" "ExaCode-$version-arm64.dmg" \
-            "ExaCode-$version-x64.zip" "ExaCode-$version-x64.dmg" \
+            "MearCode-$version-arm64.zip" "MearCode-$version-arm64.dmg" \
+            "MearCode-$version-x64.zip" "MearCode-$version-x64.dmg" \
             "$apk" "$apk.sha256" \
             nightly-mac.yml nightly-linux.yml nightly-linux-arm64.yml; do
             [[ -f "release-assets/$asset" ]] || { echo "::error::Missing release asset $asset."; exit 1; }
           done
           # The Linux packages carry the app's name, and none carries upstream's.
-          for pattern in "ExaCode-*.AppImage" "ExaCode-*.deb"; do
+          for pattern in "MearCode-*.AppImage" "MearCode-*.deb"; do
             compgen -G "release-assets/$pattern" > /dev/null || { echo "::error::Missing release asset $pattern."; exit 1; }
           done
           if compgen -G "release-assets/T3-Code*" > /dev/null; then
@@ -469,9 +469,9 @@ jobs:
               'repo="${T3CODE_RELEASE_REPOSITORY:-pingdotgg/t3code}"\n':
                   'repo="${T3CODE_RELEASE_REPOSITORY:-' + sys.argv[1] + '}"\n',
               'channel="${T3CODE_CHANNEL:-stable}"\n': 'channel="${T3CODE_CHANNEL:-nightly}"\n',
-              # T3's mark and name become ExaCode's "E" and name.
+              # T3's mark and name become MearCode's "E" and name.
               "  printf '  %s\\n' '██████████ ████████ ' >&2\n": "  printf '  %s\\n' '██████████ ' >&2\n",
-              "  printf '  %s\\n' '    ███       ▄██▀       T3 Code' >&2\n": "  printf '  %s\\n' '███           ExaCode' >&2\n",
+              "  printf '  %s\\n' '    ███       ▄██▀       T3 Code' >&2\n": "  printf '  %s\\n' '███           MearCode' >&2\n",
               "  printf '  %s%s     %sCLI installer%s\\n' '    ███       ████▄ '": "  printf '  %s%s     %sCLI installer%s\\n' '█████████   '",
               "  printf '  %s\\n' '    ███    ▄     ███' >&2\n": "  printf '  %s\\n' '███' >&2\n",
               "  printf '  %s\\n' '    ███    ███████▀ ' >&2\n": "  printf '  %s\\n' '██████████' >&2\n",
@@ -482,7 +482,7 @@ jobs:
               source = source.replace(old, new)
           if "T3 Code" not in source:
               sys.exit("scripts/install.sh no longer names T3 Code")
-          source = source.replace("T3 Code", "ExaCode")
+          source = source.replace("T3 Code", "MearCode")
           # The download page, the usage line and the default repository named in the comments.
           source = source.replace("https://t3.codes/download", f"https://github.com/{sys.argv[1]}/releases")
           source = source.replace("curl -fsSL https://t3.codes/install.sh | sh", "sh install.sh")

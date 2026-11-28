@@ -524,14 +524,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     },
     {
       env: {
-        T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode",
-        T3CODE_DESKTOP_APP_ID: "io.exadev.exacode",
+        T3CODE_DESKTOP_PRODUCT_NAME: "MearCode",
+        T3CODE_DESKTOP_APP_ID: "uk.mearman.mearcode",
         T3CODE_DESKTOP_MAINTAINER: "Jo Maintainer <jo@example.com>",
       },
-      productName: "ExaCode",
-      appId: "io.exadev.exacode",
-      artifactName: "ExaCode-${version}-${arch}.${ext}",
-      appImageName: "ExaCode-Nightly-${arch}.${ext}",
+      productName: "MearCode",
+      appId: "uk.mearman.mearcode",
+      artifactName: "MearCode-${version}-${arch}.${ext}",
+      appImageName: "MearCode-Nightly-${arch}.${ext}",
       maintainer: "Jo Maintainer <jo@example.com>",
     },
   ])("names the app $productName ($appId)", (expected) =>
@@ -2126,15 +2126,15 @@ it.effect.skipIf(!symlinksSupported)("preserves relative links when replacing di
 
 it("lists a fork build as unofficial under its own name and repository", () => {
   const listing = resolveDesktopListing({
-    productName: "ExaCode",
+    productName: "MearCode",
     repository: "Owner/fork",
     maintainer: "Jo Maintainer <jo@example.com>",
   });
-  assert.equal(listing.appName, "ExaCode");
+  assert.equal(listing.appName, "MearCode");
   assert.equal(listing.homepage, "https://github.com/Owner/fork");
   assert.equal(listing.developerId, "io.github.owner");
   assert.equal(listing.maintainer, "Jo Maintainer <jo@example.com>");
-  assert.equal(listing.author, "ExaCode");
+  assert.equal(listing.author, "MearCode");
   assert.include(listing.description, "unofficial fork");
   assert.equal(
     resolveDesktopListing({ productName: undefined, repository: "", maintainer: undefined })
@@ -2154,12 +2154,12 @@ it("renders the Linux metainfo under the fork's name and links", () => {
   const rendered = renderLinuxMetainfo(
     template,
     resolveDesktopListing({
-      productName: "ExaCode",
+      productName: "MearCode",
       repository: "owner/fork",
       maintainer: "Jo Maintainer <jo@example.com>",
     }),
   );
-  assert.include(rendered, "<name>ExaCode</name>");
+  assert.include(rendered, "<name>MearCode</name>");
   assert.include(rendered, '<url type="vcs-browser">https://github.com/owner/fork</url>');
   assert.notInclude(rendered, "<name>T3 Tools");
   assert.include(rendered, '<developer id="io.github.owner">');
@@ -2169,11 +2169,11 @@ it("renders the Linux metainfo under the fork's name and links", () => {
   assert.include(rendered, "<id>com.t3tools.t3code</id>");
 });
 
-it("ships the ExaCode icons exactly when the build has its own product name", () => {
+it("ships the MearCode icons exactly when the build has its own product name", () => {
   const version = "0.1.13-nightly.20261127.14171";
-  assert.equal(resolveDesktopWebAssetBrand(version, "ExaCode"), "fork");
+  assert.equal(resolveDesktopWebAssetBrand(version, "MearCode"), "fork");
   assert.equal(resolveDesktopWebAssetBrand(version), "nightly");
-  assert.include(resolveDesktopBuildIconAssets(version, "ExaCode").macIconPng, "assets/exacode/");
+  assert.include(resolveDesktopBuildIconAssets(version, "MearCode").macIconPng, "assets/mearcode/");
   assert.include(resolveDesktopBuildIconAssets(version).macIconPng, "assets/nightly/");
 });
 
@@ -2185,7 +2185,7 @@ const forkEnv =
         Layer.mergeAll(ConfigProvider.layer(ConfigProvider.fromEnv({ env })), NodeServices.layer),
       ),
     );
-const NAMED = { T3CODE_DESKTOP_PRODUCT_NAME: "ExaCode" };
+const NAMED = { T3CODE_DESKTOP_PRODUCT_NAME: "MearCode" };
 const VERSION = "0.1.13-nightly.20261127.14171";
 
 it.effect("refuses a Linux build with its own product name and no maintainer", () =>

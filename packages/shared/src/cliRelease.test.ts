@@ -63,9 +63,9 @@ describe("cliRelease", () => {
 describe("projectNoreplyEmail", () => {
   it("keeps upstream's address and gives a fork one no account can own", () => {
     expect(projectNoreplyEmail(true, "T3 Code")).toBe("noreply@t3.codes");
-    expect(projectNoreplyEmail(false, "ExaCode")).toBe("noreply@exacode.invalid");
+    expect(projectNoreplyEmail(false, "MearCode")).toBe("noreply@mearcode.invalid");
     expect(projectNoreplyEmail(false, "My  Fork!")).toBe("noreply@my-fork.invalid");
     expect(projectNoreplyEmail(false, "!!!")).toBe("noreply@fork.invalid");
-    expect(projectNoreplyEmail(false, "ExaCode")).not.toContain("users.noreply.github.com");
+    expect(projectNoreplyEmail(false, "MearCode")).not.toContain("users.noreply.github.com");
   });
 });
