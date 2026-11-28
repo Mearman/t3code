@@ -54,7 +54,10 @@ it("re-keys an entry in the format it was keyed with, plain text or structured",
   expect(Object.keys(renamed).toSorted()).toEqual(
     [
       hashSource({ source: "Welcome to MearCode", dataFormat: "JSX" }),
-      hashSource({ source: ["Get MearCode", { t: "code", i: 1, c: "t3 pair" }], dataFormat: "JSX" }),
+      hashSource({
+        source: ["Get MearCode", { t: "code", i: 1, c: "t3 pair" }],
+        dataFormat: "JSX",
+      }),
       hashSource({ source: "Close", dataFormat: "ICU" }),
       hashSource({ source: "Open MearCode", dataFormat: "ICU" }),
     ].toSorted(),

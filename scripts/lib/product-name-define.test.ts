@@ -50,7 +50,10 @@ it("gives a fork build its repository, and refuses a name with none", () => {
 
 it("refuses a product name that releases from upstream's repository", () => {
   expect(() =>
-    forkIdentity({ T3CODE_DESKTOP_PRODUCT_NAME: "MearCode", GITHUB_REPOSITORY: "pingdotgg/t3code" }),
+    forkIdentity({
+      T3CODE_DESKTOP_PRODUCT_NAME: "MearCode",
+      GITHUB_REPOSITORY: "pingdotgg/t3code",
+    }),
   ).toThrow("upstream's own repository");
 });
 
