@@ -147,6 +147,29 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("applies an ack before expiring, and never hands out what has expired", () =>
+    Effect.gen(function* () {
+      const bridge = yield* ClaudeBridge;
+      const key = yield* attach;
+      yield* bridge.submit(prompt("run-acked"));
+      yield* bridge.submit(prompt("run-lost"));
+      // Handed out between two of the bridge's own sweeps, so only these polls see them expire.
+      yield* TestClock.adjust("5 seconds");
+      yield* bridge.poll(poll("a", key));
+      yield* TestClock.adjust(CLAUDE_BRIDGE_COMMAND_TTL);
+
+      const answer = yield* bridge.poll(
+        poll("a", key, [{ commandId: "run-acked", submitted: true }]),
+      );
+
+      assert.deepStrictEqual(answer, { _tag: "accepted", pollerKey: key, commands: [] });
+      assert.deepStrictEqual(
+        (yield* Queue.clear(bridge.failures)).map((failure) => failure.runId),
+        ["run-lost"],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("lets one process poll a session at a time, and only so many sessions", () =>
     Effect.gen(function* () {
       const bridge = yield* ClaudeBridge;
