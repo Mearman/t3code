@@ -12203,6 +12203,67 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("gives an edited queued run the editor's terminal access, not its sender's", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-layer-queued-edit-access-thread");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-queued-edit-access-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-layer-queued-edit-access-project"),
+        title: "Edit a held send",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-queued-edit-access",
+      });
+      for (const [name, dispatchMode] of [
+        ["active", { type: "start_immediately" }],
+        ["queued", { type: "queue_after_active" }],
+      ] as const) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-layer-queued-edit-access-${name}`),
+          threadId,
+          messageId: MessageId.make(`runtime-layer-queued-edit-access-${name}`),
+          text: `The ${name} message.`,
+          attachments: [],
+          modelSelection,
+          heldSessionSend: "takeOver",
+          heldSessionTerminalAccess: true,
+          dispatchMode,
+        });
+      }
+      const queuedRunId = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (run) => run.status === "queued",
+      )?.id;
+      assert.isDefined(queuedRunId);
+      const editAs = (name: string, operatesTerminal: boolean) =>
+        Effect.gen(function* () {
+          yield* orchestrator.dispatch({
+            type: "queued-run.edit",
+            commandId: CommandId.make(`runtime-layer-queued-edit-access-${name}`),
+            threadId,
+            runId: queuedRunId,
+            text: `Edited by ${name}.`,
+            ...(operatesTerminal ? { heldSessionTerminalAccess: true as const } : {}),
+          });
+          return (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.id === queuedRunId,
+          )?.heldSessionTerminalAccess;
+        });
+
+      assert.isUndefined(yield* editAs("operator", false));
+      assert.isTrue(yield* editAs("terminal-operator", true));
+    }),
+  );
+
   it.effect("edits and removes queued runs", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
