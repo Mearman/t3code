@@ -3726,6 +3726,49 @@ describe("AgentSessionScanner with a folder whose reads never return", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     );
 
+    it.effect("gives up on a hung worktree pointer read on Windows", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const checkout = yield* makeTempDir("t3code-workspace-worktree-");
+        const repo = yield* makeTempDir("t3code-workspace-repo-");
+        const gitDir = path.join(repo, ".git", "worktrees", "wt");
+        yield* fileSystem.makeDirectory(gitDir, { recursive: true });
+        const pointer = path.join(checkout, ".git");
+        yield* fileSystem.writeFileString(pointer, `gitdir: ${gitDir}\n`);
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", "-slug-0", "a.jsonl"),
+          contents: claudeSessionLine(checkout),
+          mtimeMs: Date.parse("2026-01-01T00:00:00.000Z"),
+        });
+        const blocked = yield* Queue.unbounded<string>();
+        // Only the pointer's content read hangs, so the read under test is `readGitFiles` itself.
+        const scannerFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          readFileString: (target, encoding) =>
+            target === pointer
+              ? Queue.offer(blocked, target).pipe(Effect.andThen(Effect.never))
+              : fileSystem.readFileString(target, encoding),
+        });
+
+        yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          const scan = yield* Effect.forkChild(scanner.scan);
+          expect(yield* Queue.take(blocked)).toBe(pointer);
+          yield* TestClock.adjust("2 seconds");
+          const result = yield* Fiber.join(scan);
+          expect(result.unanswered).toBe(true);
+          expect(result.candidates.map(({ path }) => path)).toEqual([checkout]);
+        }).pipe(
+          Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, scannerFileSystem })),
+          Effect.provideService(UserPathReads, makeUserPathReadState()),
+          Effect.provideService(HostProcess.Platform, "win32"),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+
     it.effect(
       "marks recent threads unanswered, and collects candidates again once the folder answers",
       () =>
