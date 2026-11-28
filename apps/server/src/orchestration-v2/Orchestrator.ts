@@ -579,6 +579,8 @@ export interface OrchestratorV2Shape {
     readonly threadId?: ThreadId;
     readonly afterSequence?: number;
     readonly eventType?: OrchestrationV2DomainEvent["type"];
+    /** Internal workers set this: they get every event, never a bounded buffer that drops. */
+    readonly internal?: boolean;
   }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
   readonly streamDomainEvents: Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
 }
@@ -17783,7 +17785,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     ),
     streamStoredEventsFrom: (input) =>
-      eventSink.stream({ ...input, bounded: true }).pipe(
+      eventSink.stream({ ...input, bounded: input?.internal !== true }).pipe(
         Stream.mapError(
           (cause) =>
             new OrchestratorDomainEventStreamError({

@@ -2827,7 +2827,7 @@ export const layerWsRpc = (
                   dispatch: orchestrationEngine.dispatch,
                   runUpdates: ({ threadId, afterSequence }) =>
                     orchestrationEngine
-                      .streamStoredEventsFrom({ threadId, afterSequence })
+                      .streamStoredEventsFrom({ threadId, afterSequence, internal: true })
                       .pipe(
                         Stream.flatMap(({ event }) =>
                           event.type === "run.created" || event.type === "run.updated"
@@ -2853,6 +2853,12 @@ export const layerWsRpc = (
                       .map((thread) => thread.id),
                   );
                 }),
+                releaseSession: ({ threadId, providerSessionId }) =>
+                  providerSessionsV2.detach({
+                    threadId,
+                    providerSessionId,
+                    detail: "account-move",
+                  }),
                 getInstance: providerInstances.getInstance,
                 accounts,
               },
