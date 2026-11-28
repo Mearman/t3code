@@ -17792,7 +17792,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
       ),
     ),
-    holdThreadMessages: (threadId, effect) => messageIntake.withLock(threadId, effect),
+    holdThreadMessages: messageIntake.withLock,
     streamStoredEventsFrom: (input) =>
       eventSink.stream({ ...input, bounded: input?.internal !== true }).pipe(
         Stream.mapError(
