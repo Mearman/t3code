@@ -178,7 +178,8 @@ export const register: Register = (on) => {
     return result;
   });
 
-  on("command.run", { command: "t3-bridge" }, ($, e, next) => {
+  // Answers its own command whole, so a bare or unknown argument gets the usage, not another hook.
+  on("command.run", { command: "t3-bridge" }, ($, e) => {
     const argument = e.args.trim();
     if (argument === "release") {
       released = true;
@@ -189,7 +190,7 @@ export const register: Register = (on) => {
       released = false;
       return { text: "T3 Code can send to this session again." };
     }
-    return next(e);
+    return { text: "Usage: /t3-bridge release, or /t3-bridge resume." };
   });
 };
 `;
