@@ -111,6 +111,8 @@ export interface ProviderNativeThreadStore {
     readonly providerThreadId: ProviderAdapter.ProviderAdapterThreadInUseError["providerThreadId"];
     readonly nativeId: string;
   }) => Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError>;
+  /** Fails while any process, T3 Code's own included, still holds `nativeId`. */
+  readonly checkNativeThreadReleased: ProviderNativeThreadStore["checkNativeThreadFree"];
 }
 
 export interface ProviderContinuationIdentity {

@@ -583,6 +583,14 @@ export interface OrchestratorV2Shape {
     readonly internal?: boolean;
   }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
   readonly streamDomainEvents: Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
+  /**
+   * Runs `effect` holding the thread's message intake, so no message is accepted for it, and no
+   * run started by one, until it ends. `effect` must not dispatch a message to that thread.
+   */
+  readonly holdThreadMessages: <A, E, R>(
+    threadId: ThreadId,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
 }
 
 export class OrchestratorV2 extends Context.Service<OrchestratorV2, OrchestratorV2Shape>()(
@@ -17784,6 +17792,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
       ),
     ),
+    holdThreadMessages: (threadId, effect) => messageIntake.withLock(threadId, effect),
     streamStoredEventsFrom: (input) =>
       eventSink.stream({ ...input, bounded: input?.internal !== true }).pipe(
         Stream.mapError(

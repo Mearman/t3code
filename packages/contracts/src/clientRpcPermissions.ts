@@ -26,6 +26,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.claudeThreadAccountConfirm]: AuthOrchestrationOperateScope,
   // A move hands a thread's history to another account, as a sign-in hands it an account.
   [WS_METHODS.claudeThreadMove]: AuthProvidersManageScope,
+  [WS_METHODS.claudeThreadMoveList]: AuthProvidersManageScope,
   // An MCP sign-in stores a credential for the agent, as an account sign-in does.
   [WS_METHODS.providerMcpSignInStart]: AuthProvidersManageScope,
   [WS_METHODS.providerMcpSignInComplete]: AuthProvidersManageScope,

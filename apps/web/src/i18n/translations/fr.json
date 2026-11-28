@@ -9133,7 +9133,8 @@
   "78253300f9f94d2b": "Déplacer vers",
   "20adc4ec3fea0253": ["Compacter d’abord sous ", { "i": 1, "k": "_gt_value_1", "v": "v" }],
   "65eced1f62b31ac8": "Le nouveau compte part d’un résumé. L’historique complet reste dans la session.",
-  "3184194a8a730e62": "Chaque fil est compacté puis déplacé à tour de rôle, ce qui peut prendre quelques minutes. Gardez cette fenêtre ouverte pour voir ce qui a été déplacé.",
+  "0cbf5109bcdb6a3f": "{done} fils sur {total} déplacés. Gardez cette fenêtre ouverte pour voir ce qui a été déplacé.",
+  "4a027be0872edd31": "Chaque fil est compacté puis déplacé à tour de rôle, ce qui peut prendre quelques minutes. Gardez cette fenêtre ouverte pour voir ce qui a été déplacé.",
   "6bd44a7b22513151": "Déplacer sans compacter",
   "73da41e93823fd71": [
     "Nous déconseillons de gérer plusieurs comptes ",

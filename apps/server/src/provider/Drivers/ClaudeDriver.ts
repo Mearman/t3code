@@ -254,11 +254,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     yield* bridge.registerHome(configDir);
     const platform = yield* HostProcess.Platform;
     const sessionsDir = path.join(configDir, "sessions");
-    const holdProbe = (sessionId: string) =>
+    const probeHold = (sessionId: string, ownRootPids: Effect.Effect<ReadonlyArray<number>>) =>
       probeClaudeSessionHold({
         sessionsDir,
         sessionId,
-        ownRootPids: spawnedProcesses.pids(sessionsDir),
+        ownRootPids,
         readProcesses: spawnedProcesses.readProcesses,
         // Windows has no `ps lstart` to match `procStart` against; `startedAt` is checked instead.
         matchStartTime: platform !== "win32",
@@ -266,6 +266,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
       );
+    const holdProbe = (sessionId: string) =>
+      probeHold(sessionId, spawnedProcesses.pids(sessionsDir));
+    // Counting no CLI as T3 Code's own also sees one of its own that has not exited yet.
+    const anyHolderProbe = (sessionId: string) => probeHold(sessionId, Effect.succeed([]));
     const sendGatedAdapter = gateHeldClaudeSessions(
       orchestrationAdapter,
       holdProbe,
@@ -295,6 +299,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       checkNativeThreadFree: refuseHeldClaudeSession(
         DRIVER_KIND,
         holdProbe,
+        claudeProcessTableRequirement(platform),
+      ),
+      checkNativeThreadReleased: refuseHeldClaudeSession(
+        DRIVER_KIND,
+        anyHolderProbe,
         claudeProcessTableRequirement(platform),
       ),
     };

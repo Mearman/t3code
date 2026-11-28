@@ -4107,6 +4107,7 @@
   "7c6fad49c01c6e57": "villkor",
   "5eb8b236120a62d0": "licenser för öppen källkod",
   "0101a4713308f3ff": "Kunde inte flytta",
+  "9b5b09e53b84653b": "Flyttar trådar till {to}: {done} av {total} klara",
   "c86dce72b7d25a38": "Anslut igen och försök på nytt.",
   "95fbf69a23f5d80b": "{from} kunde inte komprimera",
   "99145fad5ccd18ee": "{count, plural, one {{count} tråd stannade på {from}.} other {{count} trådar stannade på {from}.}} Flytta utan att komprimera för att skicka hela historiken till {to}.",

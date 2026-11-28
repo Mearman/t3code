@@ -6,7 +6,12 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 
-import { claudeAccountLabel, claudeMoveTargets, summariseClaudeMove } from "./claudeAccountMove.ts";
+import {
+  claudeAccountLabel,
+  claudeMoveTargets,
+  moveClaudeThreadsInTurn,
+  summariseClaudeMove,
+} from "./claudeAccountMove.ts";
 
 const provider = (
   instanceId: string,
@@ -64,5 +69,44 @@ describe("claude account moves", () => {
       uncompacted: [two],
       refused: [{ threadId: three, status: "held", detail: "held" }],
     });
+  });
+});
+
+describe("moveClaudeThreadsInTurn", () => {
+  const [one, two, three] = ["one", "two", "three"].map((id) => ThreadId.make(id));
+  const threadIds = [one!, two!, three!];
+
+  it("moves one thread per request and reports each as it finishes", async () => {
+    const progress: Array<readonly [number, number]> = [];
+    const requested: Array<ThreadId> = [];
+    const result = await moveClaudeThreadsInTurn({
+      threadIds,
+      moveThread: async (threadId) => {
+        requested.push(threadId);
+        return { outcomes: [{ threadId, status: "moved" }] };
+      },
+      onProgress: (done, total) => progress.push([done, total]),
+    });
+    expect(requested).toEqual(threadIds);
+    expect(progress).toEqual([
+      [0, 3],
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ]);
+    expect(result.outcomes.map((outcome) => outcome.threadId)).toEqual(threadIds);
+    expect(result.failure).toBeUndefined();
+  });
+
+  it("stops at a failed request and keeps what already moved", async () => {
+    const refused = new Error("offline");
+    const result = await moveClaudeThreadsInTurn({
+      threadIds,
+      moveThread: async (threadId) =>
+        threadId === two ? { failure: refused } : { outcomes: [{ threadId, status: "moved" }] },
+      onProgress: () => {},
+    });
+    expect(result.outcomes).toEqual([{ threadId: one, status: "moved" }]);
+    expect(result.failure).toBe(refused);
   });
 });

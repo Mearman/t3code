@@ -1,6 +1,7 @@
 import {
   claudeAccountLabel,
   claudeMoveTargets,
+  moveClaudeThreadsInTurn,
   summariseClaudeMove,
 } from "@t3tools/client-runtime/claudeAccountMove";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
@@ -11,13 +12,13 @@ import {
 import type { MenuAction } from "@react-native-menu/menu";
 import {
   AuthProvidersManageScope,
-  type ClaudeThreadMoveInput,
   type EnvironmentId,
   type ProviderInstanceId,
   type ServerProvider,
   type ThreadId,
 } from "@t3tools/contracts";
 import { useGT, useMessages } from "gt-react-native";
+import { useState } from "react";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { useEnvironmentServerConfig } from "../../state/entities";
@@ -36,6 +37,12 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
   const canManage = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const config = useEnvironmentServerConfig(environmentId);
   const move = useAtomCommand(serverEnvironment.moveClaudeThreads, { reportFailure: false });
+  const list = useAtomCommand(serverEnvironment.listClaudeThreadsToMove, { reportFailure: false });
+  const [progress, setProgress] = useState<{
+    readonly to: string;
+    readonly done: number;
+    readonly total: number;
+  } | null>(null);
   const supported = config?.environment.capabilities.claudeAccountMoves === true;
   const providers: ReadonlyArray<ServerProvider> = config?.providers ?? [];
   const compactByDefault = config?.settings.claudeSessionSync.compactBeforeAccountMove ?? true;
@@ -48,29 +55,49 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     ) &&
     claudeMoveTargets(providers, sourceInstanceId).length > 0;
 
+  const describe = (failure: unknown) =>
+    failure instanceof Error
+      ? (thrownErrorMessage(failure, resolveMessage) ?? failure.message)
+      : gt("Reconnect and try again.");
+
+  /** Moves these threads, or every thread on the source account when `threadIds` is undefined. */
   const run = async (
-    selection: ClaudeThreadMoveInput["selection"],
+    threadIds: ReadonlyArray<ThreadId> | undefined,
+    source: ServerProvider,
     target: ServerProvider,
-    from: string,
     compact: boolean,
   ) => {
+    const from = claudeAccountLabel(source);
     const to = claudeAccountLabel(target);
-    const result = await move({
-      environmentId,
-      input: { selection, targetInstanceId: target.instanceId, compact },
+    let ids = threadIds;
+    if (ids === undefined) {
+      const listed = await list({ environmentId, input: { instanceId: source.instanceId } });
+      if (isAtomCommandInterrupted(listed)) return;
+      if (listed._tag !== "Success") {
+        Dialog.alert(gt("Could not move"), describe(squashAtomCommandFailure(listed)));
+        return;
+      }
+      ids = listed.value.threadIds;
+    }
+    const moved = await moveClaudeThreadsInTurn({
+      threadIds: ids,
+      moveThread: async (threadId) => {
+        const result = await move({
+          environmentId,
+          input: { threadIds: [threadId], targetInstanceId: target.instanceId, compact },
+        });
+        return result._tag === "Success"
+          ? { outcomes: result.value.outcomes }
+          : { failure: squashAtomCommandFailure(result) };
+      },
+      onProgress: (done, total) => setProgress(total > 1 ? { to, done, total } : null),
     });
-    if (isAtomCommandInterrupted(result)) return;
-    if (result._tag !== "Success") {
-      const failure = squashAtomCommandFailure(result);
-      Dialog.alert(
-        gt("Could not move"),
-        failure instanceof Error
-          ? (thrownErrorMessage(failure, resolveMessage) ?? failure.message)
-          : gt("Reconnect and try again."),
-      );
+    setProgress(null);
+    if (moved.failure !== undefined && moved.outcomes.length === 0) {
+      Dialog.alert(gt("Could not move"), describe(moved.failure));
       return;
     }
-    const summary = summariseClaudeMove(result.value.outcomes);
+    const summary = summariseClaudeMove(moved.outcomes);
     const refused = summary.refused.map((outcome) => outcome.detail).filter(Boolean);
     if (summary.uncompacted.length > 0) {
       Dialog.alert(
@@ -83,23 +110,24 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
           { text: gt("Cancel"), style: "cancel" },
           {
             text: gt("Move without compacting"),
-            onPress: () => void run({ threadIds: [...summary.uncompacted] }, target, from, false),
+            onPress: () => void run(summary.uncompacted, source, target, false),
           },
         ],
       );
       return;
     }
+    const stopped = moved.failure === undefined ? [] : [describe(moved.failure)];
     Dialog.alert(
       gt(
         "{count, plural, =0 {No threads moved} one {Moved {count} thread to {to}} other {Moved {count} threads to {to}}}",
         { count: summary.moved, to },
       ),
-      refused.length > 0 ? refused.join("\n") : undefined,
+      [...refused, ...stopped].length > 0 ? [...refused, ...stopped].join("\n") : undefined,
     );
   };
 
   const confirm = (
-    selection: ClaudeThreadMoveInput["selection"],
+    threadIds: ReadonlyArray<ThreadId> | undefined,
     source: ServerProvider,
     target: ServerProvider,
   ) => {
@@ -107,11 +135,11 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     const to = claudeAccountLabel(target);
     const compactFirst = {
       text: gt("Compact, then move"),
-      onPress: () => void run(selection, target, from, true),
+      onPress: () => void run(threadIds, source, target, true),
     };
     const moveNow = {
       text: gt("Move without compacting"),
-      onPress: () => void run(selection, target, from, false),
+      onPress: () => void run(threadIds, source, target, false),
     };
     Dialog.alert(
       gt("Move to {to}?", { to }),
@@ -146,13 +174,19 @@ export function useClaudeAccountMove(environmentId: EnvironmentId) {
     if (target === undefined) return false;
     const source = providers.find((provider) => provider.instanceId === sourceInstanceId);
     if (source === undefined || target === null) return true;
-    confirm(
-      threadId === undefined ? { fromInstanceId: sourceInstanceId } : { threadIds: [threadId] },
-      source,
-      target,
-    );
+    confirm(threadId === undefined ? undefined : [threadId], source, target);
     return true;
   };
 
-  return { menuAction, handleMenuAction };
+  /** While a whole-account move runs: how many of its threads have finished. */
+  const progressMessage =
+    progress === null
+      ? undefined
+      : gt("Moving threads to {to}: {done} of {total} done", {
+          to: progress.to,
+          done: progress.done,
+          total: progress.total,
+        });
+
+  return { menuAction, handleMenuAction, progressMessage };
 }

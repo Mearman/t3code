@@ -19,9 +19,11 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 
 import {
   CLAUDE_MOVE_COMPACTION_LIMIT,
+  claudeAccountMoveOrchestration,
   moveClaudeThreads,
   type ClaudeAccountMoveDependencies,
   type ClaudeAccountMoveThread,
@@ -39,6 +41,14 @@ const session = "11111111-2222-3333-4444-555555555555";
 const projectDir = "-work-repo";
 const transcriptPath = `projects/${projectDir}/${session}.jsonl`;
 const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;
+const inUse = (id: ProviderThreadId) =>
+  new ProviderAdapter.ProviderAdapterThreadInUseError({
+    driver: claude,
+    providerThreadId: id,
+    detail: "Another Claude Code process has this session open.",
+    cause: "held",
+    holderObserved: true,
+  });
 // What a `/compact` turn leaves: the boundary, the summary, then the command and its output.
 const compactedTail =
   line({ type: "system", subtype: "compact_boundary" }) +
@@ -63,6 +73,14 @@ interface Options {
   readonly onSelection?: Effect.Effect<void>;
   readonly runStatus?: OrchestrationV2RunStatus;
   readonly targetFile?: string;
+  /** This host cannot link files, as on Windows without symbolic link rights. */
+  readonly cannotLink?: boolean;
+  /** T3 Code's own process outlives the release. */
+  readonly ownProcessLingers?: boolean;
+  /** Dropping the thread's account record dies. */
+  readonly forgetDies?: boolean;
+  /** Sends a message to the thread while its session is being released. */
+  readonly messageDuringRelease?: boolean;
 }
 
 const harness = (options: Options = {}) =>
@@ -93,7 +111,12 @@ const harness = (options: Options = {}) =>
     let runStatus = options.runStatus;
     let held = options.held === true;
     const compactionWaiting = yield* Deferred.make<void>();
-    const accounts = yield* makeClaudeThreadAccountStore(path.join(root, "accounts.json"));
+    const intake = yield* KeyedLock.make<ThreadId>();
+    const sent: Array<Fiber.Fiber<void>> = [];
+    const store_ = yield* makeClaudeThreadAccountStore(path.join(root, "accounts.json"));
+    const accounts = options.forgetDies
+      ? { ...store_, forget: () => Effect.die("the store is gone") }
+      : store_;
     yield* accounts.check(
       threadId,
       claudeAccountIdentity({ email: "personal@example.com", tokenSource: "claude.ai" }),
@@ -121,16 +144,10 @@ const harness = (options: Options = {}) =>
         root: home,
         hasNativeThread: () => Effect.succeed(true),
         checkNativeThreadFree: (input: { readonly providerThreadId: ProviderThreadId }) =>
-          isHeld()
-            ? Effect.fail(
-                new ProviderAdapter.ProviderAdapterThreadInUseError({
-                  driver: claude,
-                  providerThreadId: input.providerThreadId,
-                  detail: "Another Claude Code process has this session open.",
-                  cause: "held",
-                  holderObserved: true,
-                }),
-              )
+          isHeld() ? Effect.fail(inUse(input.providerThreadId)) : Effect.void,
+        checkNativeThreadReleased: (input: { readonly providerThreadId: ProviderThreadId }) =>
+          isHeld() || options.ownProcessLingers === true
+            ? Effect.fail(inUse(input.providerThreadId))
             : Effect.void,
       },
     });
@@ -138,6 +155,7 @@ const harness = (options: Options = {}) =>
     const deps: ClaudeAccountMoveDependencies = {
       orchestration: {
         getThreadProjection: () => Effect.sync(projection),
+        holdThreadMessages: (id, effect) => intake.withLock(id, effect),
         dispatch: (command) =>
           Effect.gen(function* () {
             commands.push(command.type);
@@ -177,8 +195,20 @@ const harness = (options: Options = {}) =>
           // The copy must not have started while T3 Code's own process can still write.
           const copied = yield* fileSystem.exists(path.join(target, transcriptPath));
           commands.push(copied && !options.sharedStore ? "release-after-copy" : "release");
+          // A message sent now waits for the move, the way the orchestrator's intake holds it.
+          if (options.messageDuringRelease === true)
+            sent.push(
+              yield* Effect.forkDetach(
+                intake.withLock(
+                  threadId,
+                  Effect.sync(() => {
+                    commands.push(`message-accepted-on:${selected}`);
+                  }),
+                ),
+              ),
+            );
         }),
-      listThreads: (instanceId) => Effect.succeed(instanceId === selected ? [threadId] : []),
+      canLinkFiles: options.cannotLink !== true,
       getInstance: (instanceId) =>
         Effect.succeed(
           instanceId === personal
@@ -194,17 +224,8 @@ const harness = (options: Options = {}) =>
       accounts,
     };
     const move = (compact = true, targetInstanceId = work) =>
-      moveClaudeThreads(deps, {
-        selection: { threadIds: [threadId] },
-        targetInstanceId,
-        compact,
-      });
-    const moveAll = () =>
-      moveClaudeThreads(deps, {
-        selection: { fromInstanceId: personal },
-        targetInstanceId: work,
-        compact: false,
-      });
+      moveClaudeThreads(deps, { threadIds: [threadId], targetInstanceId, compact });
+    const messagesDelivered = Effect.forEach(sent, Fiber.join, { discard: true });
     return {
       fileSystem,
       path,
@@ -214,7 +235,7 @@ const harness = (options: Options = {}) =>
       compactionWaiting,
       accounts,
       move,
-      moveAll,
+      messagesDelivered,
       selected: () => selected,
     };
   });
@@ -303,15 +324,6 @@ it.effect("leaves the thread and its files as they were when the copy cannot be 
   }).pipe(Effect.scoped, Effect.provide(services)),
 );
 
-it.effect("moves every thread on an account when the selection names the account", () =>
-  Effect.gen(function* () {
-    const h = yield* harness({ sharedStore: true });
-    assert.deepEqual((yield* h.moveAll()).outcomes, [{ threadId, status: "moved" }]);
-    assert.strictEqual(h.selected(), work);
-    assert.deepEqual((yield* h.moveAll()).outcomes, []);
-  }).pipe(Effect.scoped, Effect.provide(services)),
-);
-
 it.effect("re-checks after compacting, and moves nothing if the thread was taken meanwhile", () =>
   Effect.gen(function* () {
     const working = yield* harness({ duringCompaction: { runStatus: "running" } });
@@ -386,4 +398,71 @@ it.effect("moving a thread back to its first account keeps its history readable 
     for (const home of [h.source, h.target])
       assert.include(yield* h.fileSystem.readFileString(h.path.join(home, transcriptPath)), "hi");
   }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("a message sent during the move waits, then goes to the new account", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({ messageDuringRelease: true });
+    assert.strictEqual((yield* h.move(false)).outcomes[0]?.status, "moved");
+    yield* h.messagesDelivered;
+    assert.deepEqual(h.commands, [
+      "provider-session.detach",
+      "release",
+      "thread.model-selection.set",
+      `message-accepted-on:${work}`,
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("moves nothing while T3 Code's own process for the thread has not exited", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({ ownProcessLingers: true });
+    const outcome = (yield* h.move(false)).outcomes[0];
+    assert.strictEqual(outcome?.status, "held");
+    assert.include(outcome?.detail, "has not exited");
+    assert.strictEqual(h.selected(), personal);
+    assert.isFalse(yield* h.fileSystem.exists(h.path.join(h.target, transcriptPath)));
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("refuses a move between stores where files cannot be linked, changing nothing", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({ cannotLink: true });
+    const outcome = (yield* h.move(false)).outcomes[0];
+    assert.strictEqual(outcome?.status, "unsupported");
+    assert.strictEqual(h.selected(), personal);
+    assert.deepEqual(h.commands, []);
+    const shared = yield* harness({ cannotLink: true, sharedStore: true });
+    assert.strictEqual((yield* shared.move(false)).outcomes[0]?.status, "moved");
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("a thread that moved still reports moved when its account record cannot be dropped", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({ forgetDies: true });
+    const { outcomes } = yield* h.move(false);
+    assert.deepEqual(outcomes, [{ threadId, status: "moved", copied: true }]);
+    assert.strictEqual(h.selected(), work);
+    const leftovers = (yield* h.fileSystem.readDirectory(h.source, { recursive: true })).filter(
+      (entry) => entry.includes(".t3-move"),
+    );
+    assert.deepEqual(leftovers, []);
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("reads compaction runs from the event stream that never drops", () =>
+  Effect.gen(function* () {
+    const reads: Array<unknown> = [];
+    const orchestration = claudeAccountMoveOrchestration({
+      getThreadProjection: () => Effect.die("unused"),
+      dispatch: () => Effect.die("unused"),
+      holdThreadMessages: (_id, effect) => effect,
+      streamStoredEventsFrom: (input) => {
+        reads.push(input);
+        return Stream.empty;
+      },
+    });
+    yield* Stream.runDrain(orchestration.runUpdates({ threadId, afterSequence: 4 }));
+    assert.deepEqual(reads, [{ threadId, afterSequence: 4, internal: true }]);
+  }),
 );
