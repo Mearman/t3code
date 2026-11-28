@@ -19,6 +19,7 @@ import * as AcpErrors from "effect-acp/errors";
 
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { directoryLinkType } from "../directoryLink.ts";
 import {
   antigravityUserSkillDirectories,
   resolveAntigravityUserHome,
@@ -271,7 +272,7 @@ const linkAntigravityUserConfig = Effect.fn("linkAntigravityUserConfig")(functio
   const userGemini = path.join(input.userHome, ".gemini");
   const links = antigravityUserSkillDirectories(path, input.profileDirectory);
   const targets = antigravityUserSkillDirectories(path, userGemini);
-  const directoryType = input.platform === "win32" ? "junction" : "dir";
+  const directoryType = directoryLinkType(input.platform);
   for (const [link, target, type] of [
     [links[0], targets[0], directoryType],
     [links[1], targets[1], directoryType],
