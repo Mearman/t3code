@@ -15,6 +15,7 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import {
+  bridgeFailureNotice,
   heldSessionSendResend,
   planHeldSessionFork,
   wentBesideHolder,
@@ -179,4 +180,14 @@ it("resends a send-beside refusal with the access the person's send had, and no 
   assert.deepInclude(withAccess, { heldSessionTerminalAccess: true });
   assert.isFalse("heldSessionTerminalAccess" in without);
   assert.strictEqual(withAccess.manualContinuationOfRunId, RunId.make("run:2"));
+});
+
+it("titles a bridge failure notice with its reason's code, for the apps to word", () => {
+  for (const reason of ["expired", "released", "anotherConversation", "refused"] as const) {
+    const notice = bridgeFailureNotice(reason, run(1), at);
+    assert.strictEqual(notice.title, reason);
+    // Agents read the message, so it words the reason instead of naming the code.
+    assert.match(notice.message, /did not reach it: the terminal(?:'s claude)? \w/u);
+    assert.strictEqual(notice.runId, RunId.make("run:1"));
+  }
 });

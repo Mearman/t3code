@@ -1,4 +1,5 @@
 import {
+  type ClaudeBridgeFailureReason,
   type OrchestrationV2Command,
   CommandId,
   isDeliveredProviderTurn,
@@ -147,6 +148,43 @@ export class ClaudeHeldSessionReactor extends Context.Service<
   }
 >()("t3/claudeSessions/ClaudeHeldSessionReactor") {}
 
+// The notice's own text, which agents read; the apps word it themselves from the reason's code.
+const BRIDGE_FAILURE_ENGLISH: Record<ClaudeBridgeFailureReason, string> = {
+  expired: "the terminal's claude did not take it in time",
+  released: "the terminal released the session",
+  anotherConversation: "the terminal started another conversation",
+  refused: "the terminal's claude refused it",
+};
+
+/**
+ * The notice that a prompt handed to the bridge never reached the terminal's claude, after the
+ * reply. Its title is the reason's code, which the apps word in their reader's language.
+ */
+export function bridgeFailureNotice(
+  reason: ClaudeBridgeFailureReason,
+  run: OrchestrationV2Run | undefined,
+  at: DateTime.Utc,
+) {
+  const message = `The message handed to the terminal's claude did not reach it: ${BRIDGE_FAILURE_ENGLISH[reason]}. Send it again, or fork.`;
+  return {
+    runId: run?.id ?? null,
+    nodeId: run?.rootNodeId ?? null,
+    providerThreadId: run?.providerThreadId ?? null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: AFTER_THE_REPLY_ORDINAL,
+    status: "failed" as const,
+    title: reason,
+    startedAt: at,
+    completedAt: at,
+    updatedAt: at,
+    type: "system_notice" as const,
+    message,
+    level: "warning" as const,
+  };
+}
+
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -207,7 +245,6 @@ const make = Effect.gen(function* () {
     if (turnItems.some((item) => item.id === id)) return;
     const run = runs.find((candidate) => candidate.id === failure.runId);
     const at = yield* DateTime.now;
-    const message = `The message handed to the terminal's claude did not reach it: ${failure.reason}. Send it again, or fork.`;
     yield* eventSink.write({
       events: [
         {
@@ -215,26 +252,7 @@ const make = Effect.gen(function* () {
           type: "turn-item.updated",
           threadId: thread.id,
           occurredAt: at,
-          payload: {
-            id,
-            threadId: thread.id,
-            runId: run?.id ?? null,
-            nodeId: run?.rootNodeId ?? null,
-            providerThreadId: run?.providerThreadId ?? null,
-            providerTurnId: null,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal: AFTER_THE_REPLY_ORDINAL,
-            status: "failed",
-            // Clients word the notice themselves around the reason, which the server words.
-            title: failure.reason,
-            startedAt: at,
-            completedAt: at,
-            updatedAt: at,
-            type: "system_notice",
-            message,
-            level: "warning",
-          },
+          payload: { id, threadId: thread.id, ...bridgeFailureNotice(failure.reason, run, at) },
         },
       ],
     });

@@ -115,7 +115,9 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
       yield* bridge.submit(prompt("run-stale"));
 
       yield* bridge.poll(
-        poll("a", key, [{ commandId: "run-refused", submitted: false, reason: "dropped" }]),
+        poll("a", key, [
+          { commandId: "run-refused", submitted: false, reason: "anotherConversation" },
+        ]),
       );
       yield* TestClock.adjust(CLAUDE_BRIDGE_COMMAND_TTL);
       yield* bridge.poll(poll("b"));
@@ -124,8 +126,8 @@ it.layer(NodeServices.layer)("ClaudeBridge", (it) => {
       assert.deepStrictEqual(
         failures.map((failure) => [failure.runId, failure.threadId, failure.reason]),
         [
-          ["run-refused", "thread-a", "dropped"],
-          ["run-stale", "thread-a", "the terminal's claude did not take it in time"],
+          ["run-refused", "thread-a", "anotherConversation"],
+          ["run-stale", "thread-a", "expired"],
         ],
       );
     }).pipe(Effect.provide(layer)),

@@ -337,17 +337,25 @@ describe("systemNoticeLabel", () => {
     ).toContain("Its next prompt continues from before this reply");
   });
 
-  it("words the bridge failure note itself around the server's reason", () => {
-    expect(
+  it("words the bridge failure note itself from the reason's code, the reason included", () => {
+    const label = (title: string) =>
       systemNoticeLabel({
         id: TurnItemId.make("x:bridge-failed:run-1"),
         status: "failed",
-        title: "the terminal released the session",
+        title,
         message: "English.",
-      }),
-    ).toBe(
-      "The message handed to the terminal's claude did not reach it: the terminal released the session. Send it again, or fork.",
-    );
+      });
+    for (const [code, reason] of [
+      ["expired", "the terminal's claude did not take it in time"],
+      ["released", "the terminal released the session"],
+      ["anotherConversation", "the terminal started another conversation"],
+      ["refused", "the terminal's claude refused it"],
+    ] as const) {
+      expect(label(code)).toBe(
+        `The message handed to the terminal's claude did not reach it: ${reason}. Send it again, or fork.`,
+      );
+    }
+    expect(label("a reason from a later build")).toBe("English.");
   });
 
   it("keeps the reason a history load failed with, and the text of every other notice", () => {
