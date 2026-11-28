@@ -155,7 +155,9 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
       ? yield* withGuestAttachments(withTerminalAccess(incoming, sender.operatesTerminal))
       : incoming.type === "queued-run.edit"
         ? editWithTerminalAccess(
-            sender.managesProviders ? incoming : yield* withQueuedAttachmentsOnSignOutText(incoming),
+            sender.managesProviders
+              ? incoming
+              : yield* withQueuedAttachmentsOnSignOutText(incoming),
             sender.operatesTerminal,
           )
         : incoming;
