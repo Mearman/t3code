@@ -13,18 +13,26 @@ import { CLAUDE_BRIDGE_MOD_NAME } from "@t3tools/contracts";
 
 import { claudeBridgeMarketplaceFiles } from "../src/claudeSessions/ClaudeBridgeMod.ts";
 
-const MOD_TEST = `import { expect, mock, test } from "claude-code/testing";
+const MOD_TEST = `import type { On } from "claude-code";
+import { type Engine, expect, mock, test } from "claude-code/testing";
 
 const HOME = "/home/user/.claude";
 const PROOF = "proof-a";
 const connection = { schemaVersion: 1, url: "http://127.0.0.1:3774/claude-bridge/v1", token: "t", proof: PROOF };
 
 type Command = { type: "submit"; commandId: string; sessionId: string; text: string; asUser: boolean };
+type Ack = { commandId: string; submitted: boolean; reason?: string };
+type Poll = { schemaVersion: number; sessionId: string; pollerKey?: string; acks: Ack[] };
 
-function world(on: any, options: { proof?: string; commands?: (poll: any) => Command[] } = {}) {
+function world(on: On, options: { proof?: string; commands?: (poll: Poll) => Command[] } = {}) {
   const clock = mock.clock(on);
   mock.env(on, { CLAUDE_CONFIG_DIR: HOME });
-  const state = { session: "s1", polls: [] as any[], submitted: [] as any[], fetched: 0 };
+  const state = {
+    session: "s1",
+    polls: [] as Poll[],
+    submitted: [] as Array<{ text: string; asUser: boolean }>,
+    fetched: 0,
+  };
   // A call on $ is answered with { value }.
   on("fs.exists", () => ({ value: true }));
   on("fs.list", () => ({
@@ -38,7 +46,7 @@ function world(on: any, options: { proof?: string; commands?: (poll: any) => Com
   on("ui.log", () => ({ value: undefined }));
   on("http.fetch", (_, e) => {
     state.fetched += 1;
-    const poll = JSON.parse(String(e.init?.body));
+    const poll: Poll = JSON.parse(String(e.init?.body));
     state.polls.push(poll);
     return {
       value: {
@@ -59,8 +67,17 @@ function world(on: any, options: { proof?: string; commands?: (poll: any) => Com
   return { clock, state };
 }
 
-const start = ($: any, isInteractive = true) =>
+const start = ($: Engine, isInteractive = true) =>
   $.session.start({ cwd: "/home/user/app", surface: isInteractive ? "terminal" : null, isInteractive });
+
+// The person typing /t3-bridge <args> at the prompt, as the engine stamps it.
+const run = ($: Engine, args: string) =>
+  $.command.run({
+    command: "t3-bridge",
+    args,
+    origin: { kind: "composer" },
+    presentation: { isFullscreen: false, columns: 80 },
+  });
 
 const submit = (commandId: string, sessionId: string, asUser = false): Command => ({
   type: "submit", commandId, sessionId, text: "hello " + commandId, asUser,
@@ -75,7 +92,7 @@ test("submits a prompt only into the session it names, and acknowledges each", a
   await clock.advance(1000);
 
   expect(state.submitted).toEqual([{ text: "hello c1", asUser: true }]);
-  expect(state.polls[1].acks).toEqual([
+  expect(state.polls.at(1)?.acks).toEqual([
     { commandId: "c1", submitted: true },
     { commandId: "c0", submitted: false, reason: "anotherConversation" },
   ]);
@@ -88,7 +105,7 @@ test("submits a prompt handed out twice once, framed as the mod's unless it is t
   await clock.advance(1000);
 
   expect(state.submitted).toEqual([{ text: "hello c1", asUser: false }]);
-  expect(state.polls[1].acks).toEqual([{ commandId: "c1", submitted: true }]);
+  expect(state.polls.at(1)?.acks).toEqual([{ commandId: "c1", submitted: true }]);
 });
 
 test("ignores an answer without the server's proof", async ($, on) => {
@@ -118,18 +135,27 @@ test("refuses what it is handed once released, and takes it again on resume", as
     commands: (poll) => (poll.acks.length === 0 ? [submit("c" + state.polls.length, "s1")] : []),
   });
   await start($);
-  await $.command.run({ command: "t3-bridge", args: "release" });
+  await run($, "release");
   await clock.advance(1000);
   await clock.advance(1000);
   expect(state.submitted).toEqual([]);
-  expect(state.polls[1].acks[0]).toEqual({
+  expect(state.polls.at(1)?.acks[0]).toEqual({
     commandId: "c1",
     submitted: false,
     reason: "released",
   });
-  await $.command.run({ command: "t3-bridge", args: "resume" });
+  await run($, "resume");
   await clock.advance(1000);
   expect(state.submitted).toHaveLength(1);
+});
+
+test("answers a bare or unknown argument with its usage, itself", async ($, on) => {
+  world(on);
+  await start($);
+
+  for (const args of ["", "stop"]) {
+    expect(await run($, args)).toEqual({ text: "Usage: /t3-bridge release, or /t3-bridge resume." });
+  }
 });
 
 test("stays inert outside an interactive session", async ($, on) => {
