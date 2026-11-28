@@ -1,12 +1,13 @@
 import { AuthOrchestrationOperateScope, type EnvironmentId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { useGT } from "gt-react-native";
-import { useState } from "react";
-import { View } from "react-native";
+import { useRef, useState } from "react";
+import { type TextInputInstance, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
+import { SearchField } from "../../components/ui/SearchField";
 import { claudeReplicationEnvironment } from "../../state/claudeReplication";
 import { peerLinkEnvironment } from "../../state/peerLinks";
 import { useEnvironmentQuery } from "../../state/query";
@@ -111,13 +112,15 @@ function LinkedSessions(props: { readonly environmentId: EnvironmentId }) {
   const openLinkedThread = useOpenLinkedThreadRead();
   const links = useEnvironmentQuery(peerLinkEnvironment.names({ environmentId, input: {} }));
   const [selected, setSelected] = useState<EnvironmentId | null>(null);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<TextInputInstance>(null);
   const linkId = selected ?? links.data?.links[0]?.environmentId ?? null;
   const sessions = useEnvironmentQuery(
     linkId === null
       ? null
       : claudeReplicationEnvironment.remoteSessions({
           environmentId,
-          input: { environmentId: linkId },
+          input: { environmentId: linkId, ...(query === "" ? {} : { query }) },
         }),
   );
   if (links.data === null || links.data.links.length === 0) return null;
@@ -135,6 +138,16 @@ function LinkedSessions(props: { readonly environmentId: EnvironmentId }) {
             onPress={() => setSelected(link.environmentId)}
           />
         ))}
+      </View>
+      <View className="flex-row">
+        <SearchField
+          inputRef={searchRef}
+          accessibilityLabel={gt("Search sessions on the linked machine")}
+          clearAccessibilityLabel={gt("Clear the session search")}
+          placeholder={gt("Search title or folder")}
+          value={query}
+          onChangeText={setQuery}
+        />
       </View>
       {sessions.error !== null ? (
         <Text textRole="footnote" className="text-danger">

@@ -178,6 +178,9 @@ export function ClaudeSessionSyncSection(props: {
               disabled={disabled}
               onValueChange={(value) => updateReplication({ activeWithinDays: value })}
             />
+            <Text textRole="footnote" className="pt-1 text-foreground-muted">
+              {gt("Also copy sessions changed within this many days. 0 turns this off.")}
+            </Text>
           </View>
           <SettingsSwitchRow
             icon="doc.on.doc"
@@ -198,6 +201,11 @@ export function ClaudeSessionSyncSection(props: {
               disabled={disabled}
               onValueChange={(value) => updateReplication({ reserveGiB: value })}
             />
+            <Text textRole="footnote" className="pt-1 text-foreground-muted">
+              {gt(
+                "A session is not copied while copying it would leave less free space than this on the disk holding the Claude home.",
+              )}
+            </Text>
           </View>
           <ListField
             label={gt("Restore a deleted session")}
