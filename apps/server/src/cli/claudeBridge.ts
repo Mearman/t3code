@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -74,11 +75,28 @@ const homeEnv = (home: Option.Option<string>) =>
     onSome: (value) => ({ CLAUDE_CONFIG_DIR: value }),
   });
 
+/** The directory a home's marketplace lives in: one per home, so removing one leaves the rest. */
+export function claudeBridgeMarketplaceDirectory(home: string): string {
+  return home.replaceAll(/[^A-Za-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
+}
+
 const marketplaceRoot = Effect.fn("claudeBridge.marketplaceRoot")(function* (
   baseDir: Option.Option<string>,
+  homeFlag: Option.Option<string>,
 ) {
   const path = yield* Path.Path;
-  return path.join(yield* resolveBaseDir(Option.getOrUndefined(baseDir)), "claude-bridge");
+  const env = yield* HostProcess.Environment;
+  // The home claude itself uses: the flag, else the caller's CLAUDE_CONFIG_DIR, else ~/.claude.
+  const home = path.resolve(
+    Option.getOrUndefined(homeFlag) ??
+      env.CLAUDE_CONFIG_DIR ??
+      path.join(yield* HostProcess.HomeDirectory, ".claude"),
+  );
+  return path.join(
+    yield* resolveBaseDir(Option.getOrUndefined(baseDir)),
+    "claude-bridge",
+    claudeBridgeMarketplaceDirectory(home),
+  );
 });
 
 const installCommand = Command.make("install", bridgeFlags).pipe(
@@ -97,7 +115,7 @@ const installCommand = Command.make("install", bridgeFlags).pipe(
           detail: `it needs Claude Code ${CLAUDE_BRIDGE_MIN_CLAUDE_VERSION} or later, found ${version.trim()}`,
         });
       }
-      const root = yield* marketplaceRoot(flags.baseDir);
+      const root = yield* marketplaceRoot(flags.baseDir, flags.home);
       for (const [relative, text] of claudeBridgeMarketplaceFiles(packageJson.version)) {
         const file = path.join(root, relative);
         yield* fileSystem.makeDirectory(path.dirname(file), { recursive: true });
@@ -143,7 +161,7 @@ const uninstallCommand = Command.make("uninstall", bridgeFlags).pipe(
         ["plugin", "marketplace", "remove", CLAUDE_BRIDGE_MARKETPLACE],
         env,
       );
-      const root = yield* marketplaceRoot(flags.baseDir);
+      const root = yield* marketplaceRoot(flags.baseDir, flags.home);
       yield* fileSystem.remove(root, { recursive: true, force: true });
       yield* Console.log(
         `Removed ${CLAUDE_BRIDGE_PLUGIN_ID} and the ${CLAUDE_BRIDGE_MARKETPLACE} marketplace. Run /reload-plugins in a claude that is already running.`,
