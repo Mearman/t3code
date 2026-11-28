@@ -244,7 +244,8 @@ const make = Effect.gen(function* () {
           return [{ _tag: "refused", reason: "full" }, current];
         }
         const acks = new Map(request.acks.map((ack) => [ack.commandId, ack]));
-        // Acks first, so one in this poll never expires; then expiry, so nothing expired is handed out.
+        // Acks first, so one in this poll never expires; then expiry, so nothing expired is handed
+        // out.
         const unacked = (session?.pending ?? []).filter(
           (item) => !acks.has(item.command.commandId),
         );

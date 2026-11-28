@@ -1,4 +1,4 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest of a path, for a name.
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest of a path.
 import * as NodeCrypto from "node:crypto";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -81,7 +81,7 @@ const homeEnv = (home: Option.Option<string>) =>
 /**
  * The directory a resolved home's marketplace lives in: one per home, so removing one leaves the
  * rest. The slug is for people; the hash of the whole path keeps `.claude-work` and `.claude_work`
- * apart.
+ * apart. No released build used another layout, so nothing here moves or removes other names.
  */
 export function claudeBridgeMarketplaceDirectory(home: string): string {
   const slug = home.replaceAll(/[^A-Za-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
