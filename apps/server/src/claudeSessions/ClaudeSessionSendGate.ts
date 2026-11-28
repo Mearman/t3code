@@ -434,7 +434,9 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
       if (Result.isFailure(probed)) return refuseHeld(providerThread, "send", true);
       const hold = probed.success;
       if (hold === undefined) return Effect.void;
-      return hold._tag === "held" && hold.idle
+      // Only a terminal's claude is written beside, as only one is taken over. The holder can
+      // take a prompt between this read and Claude's write; no read closes that, so it is accepted.
+      return hold._tag === "held" && hold.idle && hold.source === "terminal"
         ? secondWriters.record(runId)
         : refuseHeld(providerThread, "send", true);
     });

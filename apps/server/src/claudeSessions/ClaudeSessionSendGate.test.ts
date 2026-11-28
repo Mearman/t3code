@@ -782,6 +782,22 @@ describe("gateHeldClaudeSessionRuntime", () => {
       }),
     );
 
+    it.effect.each(["non-interactive", "agent-sdk", "t3-code", "unknown"] as const)(
+      "writes nothing beside an idle holder started %s, only beside a terminal's claude",
+      (source) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const { runtime, calls } = makeGate({
+            hold: { _tag: "held", pid: 200, source, idle: true },
+          });
+
+          const refusal = yield* Effect.flip(runtime.startTurn(sendTurn(now, true)));
+
+          expect(calls).toEqual([]);
+          expectInUse("startTurn", refusal, true);
+        }),
+    );
+
     it.effect("records nothing for a resend whose holder has gone, which writes alone", () =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
