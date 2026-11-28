@@ -568,6 +568,31 @@ it.layer(testLayer)("ClaudeSessionReplication between two environments", (it) =>
     }).pipe(Effect.scoped),
   );
 
+  it.effect("leaves a copy a claude holds where it is when a move takes it in", () =>
+    Effect.gen(function* () {
+      const env = yield* environments();
+      const { sessionId } = yield* env.ownSession({});
+      yield* env.b.replication.replicateNow;
+      const copy = env.copyOn(env.b, sessionId);
+      const before = yield* env.bytes(copy);
+      env.live.get(B)?.add(sessionId);
+
+      const refused = yield* Effect.flip(
+        env.b.replication.takeIn({ ownerEnvironmentId: A, sessionId, cwd: "/elsewhere" }),
+      );
+
+      expect(refused.reason).toBe("refused");
+      expect(refused.message).toContain("has the copy of this session open");
+      expect(yield* env.bytes(copy)).toBe(before);
+      expect((yield* env.b.replicas.get(sessionId))?.transcriptPath).toBe(copy);
+      expect(
+        yield* (yield* FileSystem.FileSystem).exists(
+          `${env.b.home}/projects/${claudeProjectSlug("/elsewhere")}`,
+        ),
+      ).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("claims a copy for a send while a pass waits on another session", () =>
     Effect.gen(function* () {
       const env = yield* environments();

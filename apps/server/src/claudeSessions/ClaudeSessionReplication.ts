@@ -709,9 +709,9 @@ const make = Effect.gen(function* () {
 
   /**
    * Moves a copy's transcript and project sidecars into the project folder of `cwd` in the same
-   * home, so a session moved with its code resumes from its new directory. Nothing moves when
-   * either destination is taken. The row follows the transcript before the sidecars move, so a
-   * failure then leaves only sidecars the next pass copies again, never a second transcript.
+   * home, so a moved session resumes from its new directory. Nothing moves when a destination is
+   * taken or a claude holds the copy. The row follows the transcript before the sidecars move, so
+   * a failure then leaves only sidecars the next pass copies again, never a second transcript.
    */
   const relocate = Effect.fn("ClaudeSessionReplication.relocate")(
     function* (row: ClaudeSessionReplicas.ClaudeSessionReplicaRow, cwd: string) {
@@ -729,6 +729,15 @@ const make = Effect.gen(function* () {
             message: `${taken} already exists, so the copy was left in its project folder.`,
           });
         }
+      }
+      // A claude resuming the copy keeps writing its old path, so a held copy is never moved.
+      const live = yield* liveOrRefuse(layoutOf(row.transcriptPath).home, "the copy was not moved");
+      if (live.has(row.sessionId)) {
+        return yield* new ClaudeSessionReplicationError({
+          reason: "refused",
+          message:
+            "A claude here has the copy of this session open, so it was not moved. Close it and move again.",
+        });
       }
       yield* fileSystem.makeDirectory(toDir, { recursive: true });
       yield* fileSystem.rename(row.transcriptPath, transcriptPath);
