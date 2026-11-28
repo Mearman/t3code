@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off - Standalone repository check.
-import { execFileSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -59,7 +59,7 @@ export function findLegacyNames(
 }
 
 function readTrackedFiles(root: string): Map<string, string | null> {
-  const listed = execFileSync("git", ["ls-files", "-z"], { cwd: root, maxBuffer: 1 << 28 });
+  const listed = NodeChildProcess.execFileSync("git", ["ls-files", "-z"], { cwd: root, maxBuffer: 1 << 28 });
   const files = new Map<string, string | null>();
   for (const file of listed.toString("utf8").split("\0").filter(Boolean)) {
     const absolute = NodePath.join(root, file);
