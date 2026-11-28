@@ -52,6 +52,8 @@ export interface ProviderAdapterRegistryV2Shape {
       readonly continuationKey: string;
       readonly enabled: boolean;
       readonly capabilities: OrchestrationV2ProviderCapabilities;
+      /** Whether the instance can resume a native thread from its own store. */
+      readonly hasNativeThread?: (nativeId: string) => Effect.Effect<boolean>;
     },
     ProviderAdapterRegistryV2Error
   >;
@@ -172,6 +174,9 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
           continuationKey: instance.continuationIdentity.continuationKey,
           enabled: instance.enabled,
           capabilities,
+          ...(instance.nativeThreadStore === undefined
+            ? {}
+            : { hasNativeThread: instance.nativeThreadStore.hasNativeThread }),
         };
       }),
     });

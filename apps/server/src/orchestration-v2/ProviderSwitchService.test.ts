@@ -66,7 +66,15 @@ function deadSessionRecord(
 }
 
 function layerTest(
-  metadata: Readonly<Record<string, { continuationKey: string }>>,
+  metadata: Readonly<
+    Record<
+      string,
+      {
+        continuationKey: string;
+        hasNativeThread?: (nativeId: string) => Effect.Effect<boolean>;
+      }
+    >
+  >,
   planSelectionTransition: ProviderAdapter.ProviderAdapterV2["Service"]["planSelectionTransition"] = () =>
     Effect.succeed({ type: "restart_session" }),
 ) {
@@ -98,6 +106,9 @@ function layerTest(
             continuationKey: value.continuationKey,
             enabled: true,
             capabilities: capabilitiesWithoutModelSwitch,
+            ...(value.hasNativeThread === undefined
+              ? {}
+              : { hasNativeThread: value.hasNativeThread }),
           });
     },
   });
@@ -341,4 +352,34 @@ it.effect(
         ),
       ),
     ),
+);
+
+it.effect("resumes natively on another store only when that store holds the native thread", () =>
+  Effect.gen(function* () {
+    const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+    const plan = (instanceId: string) =>
+      service.plan({
+        projection: deadNativeThreadProjection("stopped"),
+        targetModelSelection: {
+          instanceId: ProviderInstanceId.make(instanceId),
+          model: "gpt-5.1-codex",
+        },
+      });
+    assert.equal((yield* plan("codex_holding")).transition.type, "restart_and_resume");
+    assert.equal((yield* plan("codex_missing")).transition.type, "create_with_handoff");
+  }).pipe(
+    Effect.provide(
+      layerTest({
+        [currentInstanceId]: { continuationKey: "codex:account:primary" },
+        codex_holding: {
+          continuationKey: "codex:account:holding",
+          hasNativeThread: (nativeId) => Effect.succeed(nativeId === "native-thread:abc"),
+        },
+        codex_missing: {
+          continuationKey: "codex:account:missing",
+          hasNativeThread: () => Effect.succeed(false),
+        },
+      }),
+    ),
+  ),
 );

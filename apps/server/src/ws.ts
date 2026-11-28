@@ -6,6 +6,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as ClaudeAccountMove from "./claudeSessions/ClaudeAccountMove.ts";
 import * as ClaudeAccounts from "./claudeSessions/ClaudeAccounts.ts";
 import * as ClaudeThreadAccounts from "./claudeSessions/ClaudeThreadAccounts.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -32,6 +33,7 @@ import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
   AcpRegistryOperationError,
   CommandId,
+  isListedThreadLineage,
   authScopeResponse,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
@@ -40,6 +42,7 @@ import {
   AuthProvidersManageScope,
   type AuthEnvironmentScope,
   ProviderDriverKind,
+  type ProviderInstanceId,
   type ScheduledTaskListResult,
   WorkflowRequestError,
   AuthSessionId,
@@ -2810,6 +2813,52 @@ export const layerWsRpc = (
         [WS_METHODS.providerAuthCancel]: (input) => providerAuth.cancel(input, currentSessionId),
         [WS_METHODS.providerAuthRemoveMethod]: (input) => providerAuth.removeMethod(input),
         [WS_METHODS.providerAuthLogout]: (input) => providerAuth.logout(input),
+        [WS_METHODS.claudeThreadMove]:
+          /* Request instrumentation already owns the span; keep this helper in that context. */
+          Effect.fnUntraced(function* (input) {
+            const path = yield* Path.Path;
+            const accounts = yield* ClaudeThreadAccounts.makeClaudeThreadAccountStore(
+              ClaudeThreadAccounts.claudeThreadAccountsFile(path, config.stateDir),
+            );
+            return yield* ClaudeAccountMove.moveClaudeThreads(
+              {
+                orchestration: {
+                  getThreadProjection: orchestrationEngine.getThreadProjection,
+                  dispatch: orchestrationEngine.dispatch,
+                  runUpdates: ({ threadId, afterSequence }) =>
+                    orchestrationEngine
+                      .streamStoredEventsFrom({ threadId, afterSequence })
+                      .pipe(
+                        Stream.flatMap(({ event }) =>
+                          event.type === "run.created" || event.type === "run.updated"
+                            ? Stream.make(event.payload)
+                            : Stream.empty,
+                        ),
+                      ),
+                },
+                listThreads: Effect.fn("ClaudeAccountMove.listThreads")(function* (
+                  instanceId: ProviderInstanceId,
+                ) {
+                  const snapshots = yield* Effect.all([
+                    yield* orchestrationEngine.readShellSnapshot({ location: "active" }),
+                    yield* orchestrationEngine.readShellSnapshot({ location: "archive" }),
+                  ]);
+                  return snapshots.flatMap((snapshot) =>
+                    [...snapshot.threads, ...snapshot.archivedThreads]
+                      .filter(
+                        (thread) =>
+                          thread.modelSelection.instanceId === instanceId &&
+                          isListedThreadLineage(thread.lineage),
+                      )
+                      .map((thread) => thread.id),
+                  );
+                }),
+                getInstance: providerInstances.getInstance,
+                accounts,
+              },
+              input,
+            ).pipe(Effect.provideService(SecureRandom.SecureRandom, random));
+          }),
         [WS_METHODS.claudeThreadAccountConfirm]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {

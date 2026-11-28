@@ -175,6 +175,48 @@ export const ClaudeThreadAccountConfirmResult = Schema.Struct({
   outcome: Schema.Literals(["confirmed", "stale", "none"]),
 });
 
+/** Moves threads to another Claude account; the client has named both accounts to the user. */
+export const ClaudeThreadMoveInput = Schema.Struct({
+  /** These threads, or every top-level thread, active or archived, on one account. */
+  selection: Schema.Union([
+    Schema.Struct({
+      threadIds: Schema.Array(ThreadId).check(Schema.isMinLength(1), Schema.isMaxLength(500)),
+    }),
+    Schema.Struct({ fromInstanceId: ProviderInstanceId }),
+  ]),
+  targetInstanceId: ProviderInstanceId,
+  /** Compact under the old account first; a failed compaction then moves nothing. */
+  compact: Schema.Boolean,
+});
+export type ClaudeThreadMoveInput = typeof ClaudeThreadMoveInput.Type;
+
+export const ClaudeThreadMoveStatus = Schema.Literals([
+  "moved",
+  "unchanged",
+  "unsupported",
+  "busy",
+  "held",
+  "compactionFailed",
+  "missing",
+  "copyFailed",
+  "failed",
+]);
+export type ClaudeThreadMoveStatus = typeof ClaudeThreadMoveStatus.Type;
+
+export const ClaudeThreadMoveOutcome = Schema.Struct({
+  threadId: ThreadId,
+  status: ClaudeThreadMoveStatus,
+  /** Why it did not move, for the user. */
+  detail: Schema.optionalKey(Schema.String),
+  /** Moved by copying to the other account's history, rather than within a shared one. */
+  copied: Schema.optionalKey(Schema.Boolean),
+});
+export type ClaudeThreadMoveOutcome = typeof ClaudeThreadMoveOutcome.Type;
+export const ClaudeThreadMoveResult = Schema.Struct({
+  outcomes: Schema.Array(ClaudeThreadMoveOutcome),
+});
+export type ClaudeThreadMoveResult = typeof ClaudeThreadMoveResult.Type;
+
 export const ProviderAuthCancelInput = Schema.Struct({
   instanceId: ProviderInstanceId,
   flowId: SetupOperationId,

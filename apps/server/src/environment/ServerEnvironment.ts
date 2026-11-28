@@ -292,6 +292,7 @@ export const make = Effect.gen(function* () {
       serverReleaseRepository: CLI_RELEASE_REPOSITORY,
       claudeManagedAccounts: true,
       claudeThreadAccounts: true,
+      claudeAccountMoves: true,
       ...(serverInstallation === null ? {} : { serverInstallation }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? { serverSelfUpdateProgress: true }
