@@ -26,9 +26,9 @@ To use a config folder you already have, such as `~/.claude_personal`, add a Cla
 - Between accounts that share history, the thread simply continues on the new account. Otherwise its session files are copied into the new account's folder, checked byte for byte, and the originals become links to the copies, so `claude --resume` works from either folder. Nothing changes if a copy fails its check.
 - A thread that is working, or open in a terminal, stays where it is. Close the terminal, or take the session over, then move it.
 - Moves only happen when you ask: T3 Code never rotates accounts by itself.
-- Before any file moves, T3 Code stops its own Claude process for the thread and holds new messages to it until the thread is on the new account; a message sent meanwhile waits, then goes to the new account. If that process has not exited, the thread stays where it is and you can try again.
+- Before any file moves, T3 Code stops its own Claude process for the thread and holds new messages to it until the thread is on the new account; a message sent meanwhile waits, then goes to the new account, and a turn that would start another way (such as a retry) is refused with a note to send again once the move has finished. If that process has not exited, or a turn is starting, the thread stays where it is and you can try again. A thread whose account changes while a move waits is left where it is.
 - If a step fails, the files are put back and the thread stays on its old account. If putting them back fails too, the move says so; check both Claude folders before resuming the session.
-- Moving threads between accounts needs symbolic links, so it is not offered when T3 Code runs on Windows.
+- On Windows a thread moves only between accounts that share history: moving it to an account with its own history needs symbolic links, which Windows allows only with administrator rights or Developer Mode.
 - A move of every thread on an account moves them one at a time and shows how many have finished.
 
 ## Compact long conversations

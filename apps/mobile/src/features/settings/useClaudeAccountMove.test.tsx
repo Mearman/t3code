@@ -14,6 +14,7 @@ import { expect, it, vi } from "vite-plus/test";
 const state = vi.hoisted(() => ({
   canManage: true,
   move: vi.fn(),
+  list: vi.fn(),
   alert: vi.fn(),
 }));
 
@@ -37,7 +38,9 @@ vi.mock("../../state/session", () => ({ useEnvironmentScope: () => state.canMana
 vi.mock("../../state/server", () => ({
   serverEnvironment: { moveClaudeThreads: "move", listClaudeThreadsToMove: "list" },
 }));
-vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.move }));
+vi.mock("../../state/use-atom-command", () => ({
+  useAtomCommand: (command: string) => (command === "list" ? state.list : state.move),
+}));
 vi.mock("../../state/entities", () => ({
   useEnvironmentServerConfig: () => ({
     environment: { capabilities: { claudeAccountMoves: true } },
@@ -97,4 +100,39 @@ it("shows why a move failed instead of asking to reconnect", async () => {
     "Could not move",
     "You need permission to manage providers.",
   ]);
+});
+
+it("says a request failed and the rest were not moved, even when some came back uncompacted", async () => {
+  state.alert.mockReset();
+  state.move.mockReset();
+  state.list.mockReset();
+  state.list.mockResolvedValueOnce(
+    AsyncResult.success({ threadIds: [ThreadId.make("one"), ThreadId.make("two")] }),
+  );
+  state.move
+    .mockResolvedValueOnce(
+      AsyncResult.success({
+        outcomes: [{ threadId: ThreadId.make("one"), status: "compactionFailed" }],
+      }),
+    )
+    .mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("The server is not reachable."))),
+    );
+  using mounted = mount();
+  const action = mounted.hook().menuAction(source, { title: "Move" });
+  act(() => {
+    mounted.hook().handleMenuAction(action!.id!, source);
+  });
+  const [, , buttons] = state.alert.mock.calls[0] as [
+    string,
+    string,
+    ReadonlyArray<{ readonly text: string; readonly onPress?: () => void }>,
+  ];
+  await act(async () =>
+    buttons.find((button) => button.text === "Compact, then move")?.onPress?.(),
+  );
+  const [title, message] = state.alert.mock.calls[1] as [string, string];
+  expect(title).toBe("personal could not compact");
+  expect(message).toContain("The server is not reachable.");
+  expect(message).toContain("The remaining threads were not moved.");
 });

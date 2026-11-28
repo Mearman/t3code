@@ -4102,6 +4102,7 @@
   "5eb8b236120a62d0": "licenças de código aberto",
   "0101a4713308f3ff": "Não foi possível mover",
   "9b5b09e53b84653b": "Movendo conversas para {to}: {done} de {total} concluídas",
+  "baf28d8ce3f93bec": "As conversas restantes não foram movidas.",
   "c86dce72b7d25a38": "Reconecte e tente novamente.",
   "95fbf69a23f5d80b": "{from} não conseguiu compactar",
   "99145fad5ccd18ee": "{count, plural, one {{count} conversa ficou em {from}.} other {{count} conversas ficaram em {from}.}} Mova sem compactar para enviar todo o histórico para {to}.",

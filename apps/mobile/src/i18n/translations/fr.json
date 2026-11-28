@@ -4102,6 +4102,7 @@
   "5eb8b236120a62d0": "licences open source",
   "0101a4713308f3ff": "Déplacement impossible",
   "9b5b09e53b84653b": "Déplacement des fils vers {to} : {done} sur {total} terminés",
+  "baf28d8ce3f93bec": "Les autres fils n’ont pas été déplacés.",
   "c86dce72b7d25a38": "Reconnectez-vous et réessayez.",
   "95fbf69a23f5d80b": "{from} n’a pas pu compacter",
   "99145fad5ccd18ee": "{count, plural, one {{count} fil est resté sur {from}.} other {{count} fils sont restés sur {from}.}} Déplacez sans compacter pour envoyer tout l’historique à {to}.",

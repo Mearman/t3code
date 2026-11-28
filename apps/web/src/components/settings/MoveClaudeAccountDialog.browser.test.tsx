@@ -103,3 +103,14 @@ it("moves a whole account one thread at a time, showing progress, and stays open
   expect(state.close).toHaveBeenCalledWith("dialog", null);
   expect(state.toast).toHaveBeenCalledWith({ type: "success", title: "Moved 2 threads to work" });
 });
+
+it("Escape closes the dialog when no move is running", async () => {
+  state.close.mockReset();
+  await using _screen = await render(<MoveClaudeAccountDialogHost />);
+  await act(() => {
+    document.activeElement?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+  });
+  expect(state.close).toHaveBeenCalledWith("dialog", null);
+});
