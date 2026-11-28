@@ -224,9 +224,8 @@ const reportUnavailable = Effect.gen(function* () {
 /**
  * Runs `read` of `target` (or of something inside it) in its lane, one read at a time, and gives it
  * up at the deadline: a macOS privacy prompt or a dead mount pins a pool thread nothing can free.
- * `Unavailable` when given up on, when its lane or path is closed by such a read, when stuck reads
- * hold half the pool, or when no read ends for a deadline while it waits for room under that cap.
- * A defect in `read` is logged and rethrown, never hidden.
+ * `Unavailable` when given up on, closed out by such a read, or no read ends for a deadline while
+ * waiting under the pool cap. A defect in `read` is logged and rethrown, never hidden.
  */
 export const readUserPath = Effect.fn("UserPathReads.readUserPath")(function* <A, E>(
   target: string,
