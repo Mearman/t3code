@@ -272,6 +272,7 @@ type GatedRuntime = Pick<
   | "mcpApps"
   | "mcpSignIn"
   | "liveNativeThreadId"
+  | "forkThread"
 >;
 
 /**
@@ -646,6 +647,12 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
   const { resumeTurn, compactThread, applyThreadTitle, mcpApps, mcpSignIn } = runtime;
   return {
     ...runtime,
+    // A fork reads the transcript, which a move renames aside part-way, so it waits its turn.
+    forkThread: (input: ProviderAdapter.ProviderAdapterV2ForkThreadInput) =>
+      unlessMoving(
+        input.sourceProviderThread,
+        Effect.suspend(() => runtime.forkThread(input)),
+      ),
     checkNativeThreadFree: refuseHeld,
     resumeThread: (input: Parameters<SessionRuntime["resumeThread"]>[0]) =>
       refuseHeld(input.providerThread).pipe(

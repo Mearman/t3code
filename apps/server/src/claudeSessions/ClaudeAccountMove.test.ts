@@ -86,6 +86,12 @@ interface Options {
   readonly messageDuringRelease?: boolean;
   /** Changes the thread's model while the old account compacts. */
   readonly modelDuringCompaction?: string;
+  /** Gives the thread a new session while the old account compacts, as a rollback does. */
+  readonly sessionDuringCompaction?: string;
+  /** Changes the thread's model once its session is released, before the files move. */
+  readonly modelAfterRelease?: string;
+  /** A run becomes active just as the move takes the session's fence. */
+  readonly runningAtFence?: boolean;
   /** Runs after the session is released, while the files are about to move. */
   readonly afterRelease?: (
     fence: ReturnType<typeof makeClaudeSessionMoveFence>,
@@ -118,6 +124,7 @@ const harness = (options: Options = {}) =>
     const commands: Array<string> = [];
     let selected = personal;
     let model = "claude-test";
+    let nativeId = session;
     const moveFence = makeClaudeSessionMoveFence();
     const third_ = path.join(root, "third");
     yield* fileSystem.makeDirectory(path.join(third_, "projects"), { recursive: true });
@@ -143,7 +150,7 @@ const harness = (options: Options = {}) =>
       providerThreads: [
         {
           id: providerThreadId,
-          nativeThreadRef: { driver: claude, nativeId: session, strength: "strong" },
+          nativeThreadRef: { driver: claude, nativeId, strength: "strong" },
         },
       ],
       providerSessions: [
@@ -162,7 +169,14 @@ const harness = (options: Options = {}) =>
           isHeld() || options.ownProcessLingers === true
             ? Effect.fail(inUse(input.providerThreadId))
             : Effect.void,
-        whileNativeThreadFenced: moveFence.whileMoving,
+        whileNativeThreadFenced: <A, E, R>(id: string, effect: Effect.Effect<A, E, R>) =>
+          moveFence.whileMoving(
+            id,
+            Effect.suspend(() => {
+              if (options.runningAtFence === true) runStatus = "running";
+              return effect;
+            }),
+          ),
       },
     });
     let compactMessage: MessageId | undefined;
@@ -196,6 +210,7 @@ const harness = (options: Options = {}) =>
             );
           runStatus = options.duringCompaction?.runStatus ?? runStatus;
           model = options.modelDuringCompaction ?? model;
+          nativeId = options.sessionDuringCompaction ?? nativeId;
           held = options.duringCompaction?.held ?? held;
           return Stream.fromIterable<{
             readonly userMessageId: MessageId;
@@ -224,6 +239,7 @@ const harness = (options: Options = {}) =>
               ),
             );
           if (options.afterRelease !== undefined) yield* options.afterRelease(moveFence);
+          model = options.modelAfterRelease ?? model;
         }),
       canLinkFiles: options.cannotLink !== true,
       getInstance: (instanceId) =>
@@ -566,5 +582,34 @@ it.effect("a start by any route while the files move is refused, not run on the 
     assert.strictEqual((yield* h.move(false)).outcomes[0]?.status, "moved");
     assert.deepEqual(refusedDuringMove, ["refused"]);
     assert.isTrue(Option.isSome(yield* h.moveFence.unlessMoving(session, Effect.void)));
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("leaves a thread whose session changed while the old account compacted", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({ sessionDuringCompaction: "22222222-3333-4444-5555-666666666666" });
+    const outcome = (yield* h.move()).outcomes[0];
+    assert.strictEqual(outcome?.status, "busy");
+    assert.include(outcome?.detail, "changed account or session");
+    assert.strictEqual(h.selected(), personal);
+    assert.isFalse(yield* h.fileSystem.exists(h.path.join(h.target, transcriptPath)));
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("keeps a model chosen while the files moved", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({ modelAfterRelease: "claude-during-copy" });
+    assert.strictEqual((yield* h.move(false)).outcomes[0]?.status, "moved");
+    assert.strictEqual(h.selected(), work);
+    assert.strictEqual(h.model(), "claude-during-copy");
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("refuses a run that started just before the fence without tearing down its session", () =>
+  Effect.gen(function* () {
+    const h = yield* harness({ runningAtFence: true });
+    assert.strictEqual((yield* h.move(false)).outcomes[0]?.status, "busy");
+    assert.notInclude(h.commands, "provider-session.detach");
+    assert.strictEqual(h.selected(), personal);
   }).pipe(Effect.scoped, Effect.provide(services)),
 );

@@ -1348,6 +1348,10 @@ describe("gateHeldClaudeSessionRuntime", () => {
         Effect.gen(function* () {
           const operations = writes(runtime, thread, now);
           return yield* refusals({
+            forkThread: runtime.forkThread({
+              sourceProviderThread: thread,
+              targetThreadId: ThreadId.make("thread-fork"),
+            }),
             resumeThread: operations.resumeThread,
             startTurn: operations.startTurn,
             resumeTurn: operations.resumeTurn,
@@ -1394,3 +1398,20 @@ describe("gateHeldClaudeSessionRuntime", () => {
     }),
   );
 });
+
+it.effect("keeps no fence for a session nothing holds", () =>
+  Effect.gen(function* () {
+    const fence = makeClaudeSessionMoveFence();
+    for (const sessionId of ["one", "two", "three"]) {
+      yield* fence.unlessMoving(sessionId, Effect.void);
+      yield* fence.whileMoving(sessionId, Effect.void);
+    }
+    expect(fence.fencedSessions()).toBe(0);
+    const held = yield* fence.whileMoving(
+      "one",
+      Effect.sync(() => fence.fencedSessions()),
+    );
+    expect(held).toEqual(Option.some(1));
+    expect(fence.fencedSessions()).toBe(0);
+  }),
+);

@@ -24,7 +24,7 @@ export class ClaudeSpawnedProcesses extends Context.Service<
 
 /** Why T3 Code started no Claude process on a session a move holds. */
 export const CLAUDE_SESSION_MOVING_DETAIL =
-  "This thread is moving to another Claude account. Send again once the move has finished.";
+  "This thread is moving to another Claude account. Try again once the move has finished.";
 
 export interface ClaudeSessionMoveFence {
   /** Runs `effect`, which may start a CLI on `sessionId`; none when a move holds the session. */
@@ -42,20 +42,40 @@ export interface ClaudeSessionMoveFence {
 // Any number of starts share a session's fence; a move takes every permit at once.
 const FENCE_PERMITS = 2 ** 30;
 
-export function makeClaudeSessionMoveFence(): ClaudeSessionMoveFence {
-  const fences = new Map<string, Semaphore.Semaphore>();
-  const fence = (sessionId: string) => {
-    const existing = fences.get(sessionId);
-    if (existing !== undefined) return existing;
-    const created = Semaphore.makeUnsafe(FENCE_PERMITS);
-    fences.set(sessionId, created);
-    return created;
-  };
+export function makeClaudeSessionMoveFence(): ClaudeSessionMoveFence & {
+  /** Sessions with a fence in use, for tests that it is dropped once nothing holds it. */
+  readonly fencedSessions: () => number;
+} {
+  // A session's fence lives only while something holds or awaits it, so the map stays small.
+  const fences = new Map<string, { readonly semaphore: Semaphore.Semaphore; users: number }>();
+  const withFence = <A, E, R>(
+    sessionId: string,
+    permits: number,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<Option.Option<A>, E, R> =>
+    Effect.suspend(() => {
+      const entry = fences.get(sessionId) ?? {
+        semaphore: Semaphore.makeUnsafe(FENCE_PERMITS),
+        users: 0,
+      };
+      entry.users += 1;
+      fences.set(sessionId, entry);
+      return Semaphore.withPermitsIfAvailable(
+        entry.semaphore,
+        permits,
+      )(effect).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            entry.users -= 1;
+            if (entry.users === 0) fences.delete(sessionId);
+          }),
+        ),
+      );
+    });
   return {
-    unlessMoving: (sessionId, effect) =>
-      Semaphore.withPermitsIfAvailable(fence(sessionId), 1)(effect),
-    whileMoving: (sessionId, effect) =>
-      Semaphore.withPermitsIfAvailable(fence(sessionId), FENCE_PERMITS)(effect),
+    unlessMoving: (sessionId, effect) => withFence(sessionId, 1, effect),
+    whileMoving: (sessionId, effect) => withFence(sessionId, FENCE_PERMITS, effect),
+    fencedSessions: () => fences.size,
   };
 }
 
