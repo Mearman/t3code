@@ -5595,6 +5595,43 @@ describe("OrchestratorMcpService thread lookup", () => {
     }),
   );
 
+  it.effect("forks a held Claude session's send only when the agent asks to", () =>
+    Effect.gen(function* () {
+      const target = liveThreadShell(ThreadId.make("thread:held"));
+      const sendWith = (forkIfHeld: boolean | undefined) =>
+        Effect.gen(function* () {
+          const inputs: Array<ThreadManagementService.ThreadManagementSendInput> = [];
+          const sent = yield* Ref.make(0);
+          yield* Effect.gen(function* () {
+            const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+            yield* mcp.sendToThread(client, {
+              threadId: target.id,
+              message: "hello",
+              ...(forkIfHeld === undefined ? {} : { forkIfHeld }),
+            });
+          }).pipe(
+            Effect.provide(
+              service([target], sent, {
+                getProjectThreadRecords: () => Effect.succeed(idleThreadProjection(target)),
+                sendToThread: (input) => {
+                  inputs.push(input);
+                  return Effect.succeed({
+                    run: { id: RunId.make("run:sent"), status: "running" },
+                    delivery: "started",
+                  } as never);
+                },
+              }),
+            ),
+          );
+          return inputs[0]?.heldSessionSend;
+        });
+
+      assert.strictEqual(yield* sendWith(true), "fork");
+      assert.isUndefined(yield* sendWith(false));
+      assert.isUndefined(yield* sendWith(undefined));
+    }),
+  );
+
   it.effect("refuses waiting without orchestration capability before reading the target", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make(0);

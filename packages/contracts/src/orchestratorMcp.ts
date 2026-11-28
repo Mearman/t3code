@@ -2,7 +2,6 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { ClaudeHeldSessionAgentSend } from "./claudeSessions.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
 import {
   ContextTransferId,
@@ -558,22 +557,17 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   freshContext: Schema.optional(
     Schema.Boolean.annotate({
-      description:
-        "Start a new provider session without the thread's earlier context, like /clear. Never steers.",
+      description: "New session without the thread's earlier context, like /clear. Never steers.",
     }),
   ),
   outputSchema: Schema.optional(
     Schema.Record(Schema.String, Schema.Json).annotate({
       description:
-        "JSON Schema for a result the turn must return as data, read back as `output` from `t3_thread_wait`. Never steers.",
+        "JSON Schema of a result the turn must return, read as `output` by `t3_thread_wait`. Never steers.",
     }),
   ),
-  heldSessionSend: Schema.optional(
-    ClaudeHeldSessionAgentSend.annotate({
-      description:
-        "For a Claude thread a terminal holds: `fork`, or `ask` (default) to send nothing.",
-    }),
-  ),
+  // Undescribed: the name says what it does, and this list is under a byte budget.
+  forkIfHeld: Schema.optional(Schema.Boolean),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
