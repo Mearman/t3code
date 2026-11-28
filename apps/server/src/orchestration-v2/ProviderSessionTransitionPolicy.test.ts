@@ -101,3 +101,36 @@ it("uses portable handoff for incompatible continuation identities", () => {
     { type: "create_with_handoff" },
   );
 });
+
+it("resumes natively on another store only when that store holds the native thread", () => {
+  const other = {
+    ...base,
+    continuationIdentity: { driverKind: driver, continuationKey: "codex:account:two" },
+    modelSelection: { ...base.modelSelection, instanceId: ProviderInstanceId.make("codex_two") },
+    available: true,
+  };
+  assert.deepEqual(decideProviderSessionTransition({ current: base, target: other }), {
+    type: "create_with_handoff",
+  });
+  assert.deepEqual(
+    decideProviderSessionTransition({
+      current: base,
+      target: { ...other, holdsNativeThread: true },
+    }),
+    { type: "restart_and_resume" },
+  );
+  assert.deepEqual(
+    decideProviderSessionTransition({
+      current: base,
+      target: {
+        ...other,
+        holdsNativeThread: true,
+        continuationIdentity: {
+          driverKind: ProviderDriverKind.make("claudeAgent"),
+          continuationKey: "x",
+        },
+      },
+    }),
+    { type: "create_with_handoff" },
+  );
+});

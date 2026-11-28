@@ -24,7 +24,9 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
 
         expect(yield* resolveClaudeHomePath({ homePath })).toBe(resolved);
         expect((yield* makeClaudeEnvironment({ homePath })).CLAUDE_CONFIG_DIR).toBe(resolved);
-        expect(yield* makeClaudeContinuationGroupKey({ homePath })).toBe(`claude:home:${resolved}`);
+        expect(yield* makeClaudeContinuationGroupKey({ homePath })).toBe(
+          `claude:store:${path.join(resolved, "projects")}`,
+        );
         expect(yield* makeClaudeCapabilitiesCacheKey({ binaryPath: "claude", homePath })).toBe(
           `claude\0${resolved}\0`,
         );
@@ -39,7 +41,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
 
         expect(yield* resolveClaudeHomePath({ homePath: "" }, environment)).toBe(inherited);
         expect(yield* makeClaudeContinuationGroupKey({ homePath: "" }, environment)).toBe(
-          `claude:home:${inherited}`,
+          `claude:store:${path.join(inherited, "projects")}`,
         );
 
         const explicit = path.resolve(NodeOS.homedir(), ".claude-work");
@@ -66,6 +68,25 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         ).toBe(direct);
         // The spawned process keeps the literal path, because Claude keys its login by that path.
         expect((yield* makeClaudeEnvironment({ homePath: link })).CLAUDE_CONFIG_DIR).toBe(link);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("lets accounts that share one session store continue each other's threads", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.realPath(yield* fileSystem.makeTempDirectoryScoped());
+        const personal = path.join(root, ".claude");
+        const work = path.join(root, "managed", "home");
+        const other = path.join(root, ".claude-other");
+        yield* fileSystem.makeDirectory(path.join(personal, "projects"), { recursive: true });
+        yield* fileSystem.makeDirectory(work, { recursive: true });
+        yield* fileSystem.makeDirectory(path.join(other, "projects"), { recursive: true });
+        yield* fileSystem.symlink(path.join(personal, "projects"), path.join(work, "projects"));
+
+        const shared = yield* makeClaudeContinuationGroupKey({ homePath: personal });
+        expect(yield* makeClaudeContinuationGroupKey({ homePath: work })).toBe(shared);
+        expect(yield* makeClaudeContinuationGroupKey({ homePath: other })).not.toBe(shared);
       }).pipe(Effect.scoped),
     );
 

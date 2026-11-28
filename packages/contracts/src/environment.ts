@@ -163,6 +163,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   claudeManagedAccounts: Schema.optionalKey(Schema.Boolean),
   /** Serves `provider.claude.thread-account.confirm` and refuses sends on a changed account. */
   claudeThreadAccounts: Schema.optionalKey(Schema.Boolean),
+  /** Serves `provider.claude.thread.move`; hide Move to account where it is absent. */
+  claudeAccountMoves: Schema.optionalKey(Schema.Boolean),
   /** The repository whose releases this server updates from; absent on older servers. */
   serverReleaseRepository: Schema.optionalKey(ReleaseRepository),
   /** Server answers server.getNpmRelease using its configured npm registry. */

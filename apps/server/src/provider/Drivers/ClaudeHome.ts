@@ -155,13 +155,16 @@ export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationG
     environment?: NodeJS.ProcessEnv,
   ): Effect.fn.Return<string, never, Path.Path | FileSystem.FileSystem> {
     const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const resolvedHomePath = yield* resolveClaudeHomePath(config, environment);
-    // Two instances that reach one Claude home through a symlink share sessions, so they can resume.
-    // Only the key uses the real path: the spawn keeps the literal path, which names the Keychain login.
+    // Homes whose `projects` resolve to one directory share sessions, so a thread resumes across
+    // them; a managed account links its `projects` to another home's. Only the key uses real
+    // paths: the spawn keeps the literal home, which names the Keychain login.
     const canonicalHomePath = yield* fileSystem
       .realPath(resolvedHomePath)
       .pipe(Effect.orElseSucceed(() => resolvedHomePath));
-    return `claude:home:${canonicalHomePath}`;
+    const projects = path.join(canonicalHomePath, "projects");
+    return `claude:store:${yield* fileSystem.realPath(projects).pipe(Effect.orElseSucceed(() => projects))}`;
   },
 );
 

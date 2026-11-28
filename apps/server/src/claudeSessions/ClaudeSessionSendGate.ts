@@ -271,17 +271,14 @@ type GatedRuntime = Pick<
 >;
 
 /**
- * Probes before every call that would start, drive or write to the native session and refuses with `ProviderAdapterThreadInUseError`, which callers never answer with a fresh session; it is marked `holderObserved` only when a holder was seen. Turn starts carry it inside a turn start error marked refused before the prompt, and a title waits for the next turn instead. `checkNativeThreadFree` runs the same probe. Forking only copies the transcript, and stopping a task only makes T3 Code's own process write less, so neither is gated.
+ * Probes a native session and fails with `ProviderAdapterThreadInUseError` when another process
+ * may hold it; a check that fails, or a holder only possibly there, is retried before refusing.
  */
-export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
-  runtime: Runtime,
+export function refuseHeldClaudeSession(
+  driver: ProviderAdapter.ProviderAdapterThreadInUseError["driver"],
   probe: ClaudeSessionHoldProbe,
-  /** What the host needs to list processes, told to the user when it cannot. */
   processTableRequirement: string,
-  takeOver: ClaudeSessionTakeOver,
-  secondWriters: Pick<ClaudeSecondWriterRuns["Service"], "record">,
-  bridge: ClaudeSessionBridge,
-): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
+) {
   // A failed check or a holder only possibly there may clear on its own (a slow `ps`, an entry
   // being written), so it is checked again before the write is refused.
   const settledProbe = (
@@ -310,20 +307,21 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
     );
     return attempt;
   };
-  const refuseHeld = (
-    providerThread: OrchestrationV2ProviderThread,
+  return (
+    input: {
+      readonly providerThreadId: ProviderAdapter.ProviderAdapterThreadInUseError["providerThreadId"];
+      readonly nativeId: string;
+    },
     choice: ClaudeHeldSessionSend = "ask",
     resend = false,
-  ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
-    const sessionId = providerThread.nativeThreadRef?.nativeId;
-    if (sessionId === undefined || sessionId === null) return Effect.void;
-    return Effect.flatMap(settledProbe(sessionId, PROBE_RETRIES, choice, resend), (refusal) =>
+  ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> =>
+    Effect.flatMap(settledProbe(input.nativeId, PROBE_RETRIES, choice, resend), (refusal) =>
       refusal === undefined
         ? Effect.void
         : Effect.fail(
             new ProviderAdapter.ProviderAdapterThreadInUseError({
-              driver: runtime.driver,
-              providerThreadId: providerThread.id,
+              driver,
+              providerThreadId: input.providerThreadId,
               detail: refusal.detail,
               cause: refusal,
               ...(refusal.holderObserved ? { holderObserved: true } : {}),
@@ -331,6 +329,30 @@ export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
             }),
           ),
     );
+}
+
+/**
+ * Probes before every call that would start, drive or write to the native session and refuses with `ProviderAdapterThreadInUseError`, which callers never answer with a fresh session; it is marked `holderObserved` only when a holder was seen. Turn starts carry it inside a turn start error marked refused before the prompt, and a title waits for the next turn instead. `checkNativeThreadFree` runs the same probe. Forking only copies the transcript, and stopping a task only makes T3 Code's own process write less, so neither is gated.
+ */
+export function gateHeldClaudeSessionRuntime<Runtime extends GatedRuntime>(
+  runtime: Runtime,
+  probe: ClaudeSessionHoldProbe,
+  /** What the host needs to list processes, told to the user when it cannot. */
+  processTableRequirement: string,
+  takeOver: ClaudeSessionTakeOver,
+  secondWriters: Pick<ClaudeSecondWriterRuns["Service"], "record">,
+  bridge: ClaudeSessionBridge,
+): Runtime & Required<Pick<SessionRuntime, "checkNativeThreadFree">> {
+  const refuseHeldSession = refuseHeldClaudeSession(runtime.driver, probe, processTableRequirement);
+  const refuseHeld = (
+    providerThread: OrchestrationV2ProviderThread,
+    choice: ClaudeHeldSessionSend = "ask",
+    resend = false,
+  ): Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError> => {
+    const nativeId = providerThread.nativeThreadRef?.nativeId;
+    return nativeId === undefined || nativeId === null
+      ? Effect.void
+      : refuseHeldSession({ providerThreadId: providerThread.id, nativeId }, choice, resend);
   };
   const inUse = (providerThread: OrchestrationV2ProviderThread, detail: string) =>
     new ProviderAdapter.ProviderAdapterThreadInUseError({

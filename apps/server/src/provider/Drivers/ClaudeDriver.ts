@@ -22,7 +22,9 @@ import {
   ClaudeTakeOverSignalError,
   gateHeldClaudeSessions,
   probeClaudeSessionHold,
+  refuseHeldClaudeSession,
 } from "../../claudeSessions/ClaudeSessionSendGate.ts";
+import { locateClaudeTranscript } from "../../claudeSessions/ClaudeSessionFiles.ts";
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -252,20 +254,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     yield* bridge.registerHome(configDir);
     const platform = yield* HostProcess.Platform;
     const sessionsDir = path.join(configDir, "sessions");
+    const holdProbe = (sessionId: string) =>
+      probeClaudeSessionHold({
+        sessionsDir,
+        sessionId,
+        ownRootPids: spawnedProcesses.pids(sessionsDir),
+        readProcesses: spawnedProcesses.readProcesses,
+        // Windows has no `ps lstart` to match `procStart` against; `startedAt` is checked instead.
+        matchStartTime: platform !== "win32",
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
     const sendGatedAdapter = gateHeldClaudeSessions(
       orchestrationAdapter,
-      (sessionId) =>
-        probeClaudeSessionHold({
-          sessionsDir,
-          sessionId,
-          ownRootPids: spawnedProcesses.pids(sessionsDir),
-          readProcesses: spawnedProcesses.readProcesses,
-          // Windows has no `ps lstart` to match `procStart` against; `startedAt` is checked instead.
-          matchStartTime: platform !== "win32",
-        }).pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-        ),
+      holdProbe,
       claudeProcessTableRequirement(platform),
       {
         terminate: (pid) =>
@@ -280,6 +283,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       secondWriters,
       bridge,
     );
+    const nativeThreadStore = {
+      root: configDir,
+      hasNativeThread: (nativeId: string) =>
+        locateClaudeTranscript(configDir, nativeId).pipe(
+          Effect.map((projectDir) => projectDir !== undefined),
+          Effect.orElseSucceed(() => false),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
+      checkNativeThreadFree: refuseHeldClaudeSession(
+        DRIVER_KIND,
+        holdProbe,
+        claudeProcessTableRequirement(platform),
+      ),
+    };
     const textGeneration = yield* makeClaudeTextGeneration(
       effectiveConfig,
       processEnv,
@@ -572,6 +590,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       textGeneration,
       consumeResetCredit,
       auth,
+      nativeThreadStore,
     } satisfies ProviderInstance;
   }),
 };

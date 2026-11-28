@@ -39,6 +39,8 @@ import {
   ClaudeAccountCreateResult,
   ClaudeThreadAccountConfirmInput,
   ClaudeThreadAccountConfirmResult,
+  ClaudeThreadMoveInput,
+  ClaudeThreadMoveResult,
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -543,6 +545,7 @@ export const WS_METHODS = {
   providerAuthLogout: "provider.auth.logout",
   claudeAccountCreate: "provider.claude.account.create",
   claudeThreadAccountConfirm: "provider.claude.thread-account.confirm",
+  claudeThreadMove: "provider.claude.thread.move",
   providerAuthSubscribe: "provider.auth.subscribe",
   providerInstallStart: "provider.install.start",
   providerInstallCancel: "provider.install.cancel",
@@ -907,6 +910,12 @@ const WsClaudeThreadAccountConfirmRpc = Rpc.make(WS_METHODS.claudeThreadAccountC
   payload: ClaudeThreadAccountConfirmInput,
   success: ClaudeThreadAccountConfirmResult,
   error: EnvironmentAuthorizationError,
+});
+
+const WsClaudeThreadMoveRpc = Rpc.make(WS_METHODS.claudeThreadMove, {
+  payload: ClaudeThreadMoveInput,
+  success: ClaudeThreadMoveResult,
+  error: ProviderSetupRpcError,
 });
 
 const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
@@ -2546,6 +2555,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAuthLogoutRpc,
   WsClaudeAccountCreateRpc,
   WsClaudeThreadAccountConfirmRpc,
+  WsClaudeThreadMoveRpc,
   WsProviderAuthSubscribeRpc,
   WsProviderInstallStartRpc,
   WsProviderInstallCancelRpc,

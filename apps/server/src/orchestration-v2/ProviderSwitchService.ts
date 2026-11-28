@@ -48,6 +48,10 @@ export class ProviderSwitchServiceV2 extends Context.Service<
   ProviderSwitchServiceV2Shape
 >()("t3/orchestration-v2/ProviderSwitchService/ProviderSwitchServiceV2") {}
 
+type InstanceMetadata = Effect.Success<
+  ReturnType<NonNullable<ProviderAdapterRegistry.ProviderAdapterRegistryV2Shape["getMetadata"]>>
+>;
+
 const isLiveProviderSession = (
   session: OrchestrationV2ThreadProjection["providerSessions"][number],
 ) => session.status !== "stopped" && session.status !== "error";
@@ -71,7 +75,7 @@ export const layer: Layer.Layer<
               : adapters.get(instanceId).pipe(
                   Effect.flatMap((adapter) =>
                     adapter.getCapabilities().pipe(
-                      Effect.map((capabilities) => ({
+                      Effect.map((capabilities): InstanceMetadata => ({
                         driver: adapter.driver,
                         continuationKey: `${adapter.driver}:instance:${instanceId}`,
                         enabled: true,
@@ -117,6 +121,17 @@ export const layer: Layer.Layer<
           // workspace of whichever thread opened it, not a move of this thread.
           const workspace =
             projection.thread.worktreePath ?? currentSession?.cwd ?? "<unresolved-workspace>";
+          // A native thread copied into another store (an account move) resumes there natively.
+          const nativeId = currentProviderThread?.nativeThreadRef?.nativeId;
+          const holdsNativeThread =
+            instanceChanged &&
+            nativeId != null &&
+            Option.isSome(currentInstance) &&
+            Option.isSome(targetInstance) &&
+            currentInstance.value.continuationKey !== targetInstance.value.continuationKey &&
+            targetInstance.value.hasNativeThread !== undefined
+              ? yield* targetInstance.value.hasNativeThread(nativeId)
+              : false;
           const transition =
             Option.isNone(targetInstance) || Option.isNone(targetAdapter)
               ? ({
@@ -150,6 +165,7 @@ export const layer: Layer.Layer<
                     interactionMode: projection.thread.interactionMode,
                     workspace,
                     available: targetInstance.value.enabled,
+                    holdsNativeThread,
                   },
                   ...(selectionTransition === undefined ? {} : { selectionTransition }),
                 });

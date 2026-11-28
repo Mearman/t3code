@@ -74,6 +74,7 @@ export interface ProviderInstance {
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;
+  readonly nativeThreadStore?: ProviderNativeThreadStore;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {
       readonly cwd: string;
@@ -97,6 +98,19 @@ export interface ProviderInstance {
       readonly providerId: string;
     }) => Effect.Effect<void, AcpRegistryOperationError>;
   };
+}
+
+/** Where an instance keeps its native threads, for moving one between instances. */
+export interface ProviderNativeThreadStore {
+  /** The directory the native threads live under. */
+  readonly root: string;
+  /** Whether this instance can resume `nativeId` from its own store. */
+  readonly hasNativeThread: (nativeId: string) => Effect.Effect<boolean>;
+  /** Fails when a process outside T3 Code holds `nativeId`, so it must not be written. */
+  readonly checkNativeThreadFree: (input: {
+    readonly providerThreadId: ProviderAdapter.ProviderAdapterThreadInUseError["providerThreadId"];
+    readonly nativeId: string;
+  }) => Effect.Effect<void, ProviderAdapter.ProviderAdapterThreadInUseError>;
 }
 
 export interface ProviderContinuationIdentity {

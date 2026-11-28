@@ -27,6 +27,8 @@ export interface ProviderSessionTransitionState {
 
 export interface ProviderSessionTransitionTarget extends ProviderSessionTransitionState {
   readonly available: boolean;
+  /** The target instance can resume the current native thread from its own store. */
+  readonly holdsNativeThread?: boolean;
 }
 
 export function decideProviderSessionTransition(input: {
@@ -45,7 +47,8 @@ export function decideProviderSessionTransition(input: {
   const target = input.target;
   const continuationCompatible =
     current.continuationIdentity.driverKind === target.continuationIdentity.driverKind &&
-    current.continuationIdentity.continuationKey === target.continuationIdentity.continuationKey;
+    (current.continuationIdentity.continuationKey === target.continuationIdentity.continuationKey ||
+      target.holdsNativeThread === true);
   if (!continuationCompatible || current.driver !== target.driver) {
     return { type: "create_with_handoff" };
   }

@@ -1112,6 +1112,8 @@ export const ClaudeSessionSyncSettings = Schema.Struct({
   heldSessionSend: ForwardCompatibleNullable(ClaudeHeldSessionSend).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Moving a thread to another account compacts it under the old one first; skippable per move. */
+  compactBeforeAccountMove: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClaudeSessionSyncSettings = typeof ClaudeSessionSyncSettings.Type;
 
@@ -2066,6 +2068,7 @@ export const ServerSettingsPatch = Schema.Struct({
       excludedCwdGlobs: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
       restoreSessionIds: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
       heldSessionSend: Schema.optionalKey(Schema.NullOr(ClaudeHeldSessionSend)),
+      compactBeforeAccountMove: Schema.optionalKey(Schema.Boolean),
     }),
   ),
   observability: Schema.optionalKey(
