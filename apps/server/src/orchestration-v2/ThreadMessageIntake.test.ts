@@ -589,6 +589,31 @@ it.effect("marks a queued edit from a client as a person's words", () =>
   }).pipe(Effect.provide(layerIntakeTest)),
 );
 
+it.effect("marks an answer to a pending question from a client as a person's", () =>
+  Effect.gen(function* () {
+    const captured: OrchestrationV2ServerCommand[] = [];
+    const layerCapture = Layer.mock(ThreadManagementService.ThreadManagementService)({
+      dispatch: layerFailingDispatchHandler(captured),
+    });
+    yield* dispatchCommand(
+      {
+        type: "runtime-request.respond",
+        commandId: CommandId.make("respond-by-person"),
+        threadId: ThreadId.make("thread-respond-by-person"),
+        requestId: RuntimeRequestId.make("request-respond-by-person"),
+        answers: { color: "Blue" },
+      },
+      { managesProviders: true, operatesTerminal: false },
+    ).pipe(Effect.provide(layerCapture), Effect.result);
+
+    expect(
+      captured.map((command) =>
+        command.type === "runtime-request.respond" ? command.respondedByPerson : "other",
+      ),
+    ).toEqual([true]);
+  }).pipe(Effect.provide(layerIntakeTest)),
+);
+
 it.effect("refuses a queued edit that keeps a file another edit already deleted", () =>
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;

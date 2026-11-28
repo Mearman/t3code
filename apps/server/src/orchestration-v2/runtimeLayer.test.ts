@@ -2740,6 +2740,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           answered.messages.at(-1)?.text,
           "Which color?\nBlue\n\nWhich sizes?\nSmall, Large",
         );
+        // No person's client stamped it, as when an agent answers through t3_pending_request.
+        assert.isTrue(answered.messages.at(-1)?.writtenByAgent);
         assert.deepEqual(
           (yield* (yield* EffectOutbox.EffectOutboxV2).listByCommandId(
             CommandId.make(`recovery-answer-${trigger}-${scope}`),
@@ -2847,6 +2849,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         threadId,
         requestId,
         answers: { color: "  Blue  ", sizes: [], note: "" },
+        respondedByPerson: true as const,
       };
       const accepted = yield* orchestrator.dispatch(command);
       const repeated = yield* orchestrator.dispatch(command);
@@ -2873,6 +2876,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       assert.equal(answered.messages.length, 1);
       assert.equal(answered.messages[0]?.text, "Which color?\nBlue\n\nWhich sizes?\nNone selected");
       assert.equal(answered.messages[0]?.role, "user");
+      assert.isUndefined(answered.messages[0]?.writtenByAgent);
       assert.equal(answered.runs.length, 1);
       assert.deepEqual(
         (yield* outbox.listByCommandId(command.commandId)).map((effect) => effect.request.type),
@@ -12316,7 +12320,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           const message = (yield* orchestrator.getThreadProjection(threadId)).messages.find(
             (candidate) => candidate.id === queuedRun.userMessageId,
           );
-          return [message?.createdBy, message?.editedByAgent];
+          return [message?.createdBy, message?.writtenByAgent];
         });
 
       assert.deepStrictEqual(yield* editAs("agent", false), ["user", true]);

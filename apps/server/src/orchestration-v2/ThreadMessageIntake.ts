@@ -148,6 +148,13 @@ function editWithTerminalAccess(
   return operatesTerminal ? { ...byPerson, heldSessionTerminalAccess: true } : byPerson;
 }
 
+// A client's session is a person's, so its answer is theirs; the client's own claim is not read.
+function respondByPerson(
+  command: Extract<OrchestrationV2Command, { readonly type: "runtime-request.respond" }>,
+): typeof command {
+  return { ...command, respondedByPerson: true };
+}
+
 export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
   incoming: OrchestrationV2Command,
   sender: { readonly managesProviders: boolean; readonly operatesTerminal: boolean },
@@ -162,7 +169,9 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
               : yield* withQueuedAttachmentsOnSignOutText(incoming),
             sender.operatesTerminal,
           )
-        : incoming;
+        : incoming.type === "runtime-request.respond"
+          ? respondByPerson(incoming)
+          : incoming;
   const threads = yield* ThreadManagement.ThreadManagementService;
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
