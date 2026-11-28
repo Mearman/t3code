@@ -59,7 +59,10 @@ export function findLegacyNames(
 }
 
 function readTrackedFiles(root: string): Map<string, string | null> {
-  const listed = NodeChildProcess.execFileSync("git", ["ls-files", "-z"], { cwd: root, maxBuffer: 1 << 28 });
+  const listed = NodeChildProcess.execFileSync("git", ["ls-files", "-z"], {
+    cwd: root,
+    maxBuffer: 1 << 28,
+  });
   const files = new Map<string, string | null>();
   for (const file of listed.toString("utf8").split("\0").filter(Boolean)) {
     const absolute = NodePath.join(root, file);
