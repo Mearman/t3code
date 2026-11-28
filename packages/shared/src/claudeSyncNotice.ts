@@ -10,6 +10,17 @@ export function claudeSecondWriterNoticeId(runId: string): string {
   return `${SECOND_WRITER_NOTICE_PREFIX}${runId}`;
 }
 
+const BRIDGE_FAILURE_NOTICE_PREFIX = "x:bridge-failed:";
+
+/** The notice on a run whose prompt the T3 bridge took but never got into the terminal. */
+export function claudeBridgeFailureNoticeId(runId: string): string {
+  return `${BRIDGE_FAILURE_NOTICE_PREFIX}${runId}`;
+}
+
+export function isClaudeBridgeFailureNoticeId(itemId: string): boolean {
+  return itemId.startsWith(BRIDGE_FAILURE_NOTICE_PREFIX);
+}
+
 export function isClaudeSecondWriterNoticeId(itemId: string): boolean {
   return itemId.startsWith(SECOND_WRITER_NOTICE_PREFIX);
 }

@@ -15,7 +15,10 @@ import {
   PROVIDER_THREAD_IN_USE_SEND_FAILURE_CODE,
 } from "@t3tools/provider-core/client";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { claudeSecondWriterNoticeId } from "@t3tools/shared/claudeSyncNotice";
+import {
+  claudeBridgeFailureNoticeId,
+  claudeSecondWriterNoticeId,
+} from "@t3tools/shared/claudeSyncNotice";
 import { unsentManualContinuationSource } from "@t3tools/shared/orchestrationV2ManualContinuation";
 import {
   latestRootProviderFailure,
@@ -200,7 +203,7 @@ const make = Effect.gen(function* () {
       "runs",
       "turnItems",
     ]);
-    const id = TurnItemId.make(`x:bridge-failed:${failure.runId}`);
+    const id = TurnItemId.make(claudeBridgeFailureNoticeId(failure.runId));
     if (turnItems.some((item) => item.id === id)) return;
     const run = runs.find((candidate) => candidate.id === failure.runId);
     const at = yield* DateTime.now;
@@ -223,7 +226,8 @@ const make = Effect.gen(function* () {
             parentItemId: null,
             ordinal: AFTER_THE_REPLY_ORDINAL,
             status: "failed",
-            title: message,
+            // Clients word the notice themselves around the reason, which the server words.
+            title: failure.reason,
             startedAt: at,
             completedAt: at,
             updatedAt: at,
