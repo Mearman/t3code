@@ -6,6 +6,7 @@ import {
   type ClaudeSessionMoveResult,
   type ClaudeSessionReplicationError,
   type EnvironmentId,
+  type PeerLinkName,
   repositoryGroupingKeyOf,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -31,11 +32,14 @@ import { ClaudeLiveSessions } from "./ClaudeLiveSessions.ts";
 import { downloadVerifiedFile } from "./ClaudeReplicaTransfer.ts";
 import {
   captureClaudeSessionCode,
+  checkClaudeSessionCodePackage,
   claudeSessionCodeFiles,
   git,
+  isClaudeMoveId,
   restoreClaudeSessionCode,
 } from "./ClaudeSessionCode.ts";
-import { readClaudeSessionRegistry } from "./ClaudeSessionRegistry.ts";
+import { claudeReplicaFitsReserve, freeBytesAt, isClaudeSessionId } from "./ClaudeSessionFiles.ts";
+import type { ClaudeSessionHolder } from "./ClaudeSessionRegistry.ts";
 import { ClaudeSessionReplication } from "./ClaudeSessionReplication.ts";
 
 /** How often a session's holder is looked for again after SIGTERM, and how many times. */
@@ -78,6 +82,8 @@ export class ClaudeSessionMove extends Context.Service<
     readonly accept: (
       offer: ClaudeSessionMoveOffer,
     ) => Effect.Effect<ClaudeSessionMoveResult, ClaudeSessionMoveError>;
+    /** Linked environments a session can move to: full-access links whose peer takes moves. */
+    readonly targets: Effect.Effect<ReadonlyArray<PeerLinkName>, ClaudeSessionMoveError>;
     /** The code a pending move carries, for its target. */
     readonly packageOf: (
       moveId: string,
@@ -119,47 +125,49 @@ export const claudeResumeCommand = (input: {
   ].join(" ");
 
 /**
- * Ends every idle `claude` that has the session open when `takeOver` asks it to, and refuses
- * otherwise. A holder is one `live` confirms by pid and start time; one working is never ended.
+ * Ends the idle `claude` that has the session open when `takeOver` asks it to, and refuses
+ * otherwise. Only a holder `holders` confirms by its pid's start time is signalled, so a stale
+ * registry entry whose pid another process now has is never; one working is never ended.
  */
 export const releaseClaudeSession = Effect.fn("releaseClaudeSession")(function* (input: {
   readonly sessionsDir: string;
   readonly sessionId: string;
   readonly takeOver: boolean;
-  readonly live: (sessionsDir: string) => Effect.Effect<ReadonlySet<string>>;
+  readonly holders: (
+    sessionsDir: string,
+  ) => Effect.Effect<ReadonlyMap<string, ClaudeSessionHolder>>;
   readonly signal: (pid: number) => Effect.Effect<void, ClaudeSessionMoveError>;
   /** Waits between checks that the holder has gone. */
   readonly pause: Effect.Effect<void>;
 }) {
-  if (!(yield* input.live(input.sessionsDir)).has(input.sessionId)) return;
-  const registry = yield* readClaudeSessionRegistry(input.sessionsDir).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ClaudeSessionMoveError({
-          reason: "storage",
-          message: "Claude Code's session registry could not be read.",
-          cause,
-        }),
-    ),
-  );
-  const holders = registry.entries.filter((entry) => entry.sessionId === input.sessionId);
-  if (!input.takeOver) {
-    return yield* new ClaudeSessionMoveError({
-      reason: "held",
-      message: `A claude (pid ${holders.map((entry) => entry.pid).join(", ")}) has this session open. Close it there, or move with take over.`,
-    });
-  }
-  const busy = holders.find((entry) => entry.status !== "idle");
-  if (busy !== undefined) {
-    return yield* new ClaudeSessionMoveError({
-      reason: "busy",
-      message: `The claude holding this session (pid ${busy.pid}) is ${busy.status ?? "in an unknown state"}, and a working session is never taken over. Move it once it is idle.`,
-    });
-  }
-  for (const holder of holders) yield* input.signal(holder.pid);
-  for (let check = 0; check < RELEASE_CHECKS; check++) {
+  const signalled = new Set<number>();
+  for (let check = 0; check <= RELEASE_CHECKS; check++) {
+    const holder = (yield* input.holders(input.sessionsDir)).get(input.sessionId);
+    if (holder === undefined) return;
+    const { pid, status } = holder.entry;
+    if (!input.takeOver) {
+      return yield* new ClaudeSessionMoveError({
+        reason: "held",
+        message: `A claude (pid ${pid}) has this session open. Close it there, or move with take over.`,
+      });
+    }
+    if (status !== "idle") {
+      return yield* new ClaudeSessionMoveError({
+        reason: "busy",
+        message: `The claude holding this session (pid ${pid}) is ${status ?? "in an unknown state"}, and a working session is never taken over. Move it once it is idle.`,
+      });
+    }
+    if (!holder.confirmed) {
+      return yield* new ClaudeSessionMoveError({
+        reason: "held",
+        message: `A claude (pid ${pid}) has this session open, but this machine cannot confirm that pid is still it, so it was not ended. Close it there.`,
+      });
+    }
+    if (!signalled.has(pid)) {
+      signalled.add(pid);
+      yield* input.signal(pid);
+    }
     yield* input.pause;
-    if (!(yield* input.live(input.sessionsDir)).has(input.sessionId)) return;
   }
   return yield* new ClaudeSessionMoveError({
     reason: "held",
@@ -201,7 +209,7 @@ const make = Effect.gen(function* () {
   }) =>
     releaseClaudeSession({
       ...input,
-      live: liveSessions.read,
+      holders: liveSessions.holders,
       pause: Effect.sleep(RELEASE_CHECK),
       signal: (pid) =>
         Effect.try({
@@ -239,17 +247,10 @@ const make = Effect.gen(function* () {
           message: "This environment is not linked to that one. Link them both ways first.",
         });
       }
-      yield* release({
-        sessionsDir: path.join(located.layout.home, "sessions"),
-        sessionId: input.sessionId,
-        takeOver: input.takeOver,
-      });
-      const compact = yield* ClaudeMoveCompaction;
-      yield* compact({
-        sessionId: input.sessionId,
-        targetEnvironmentId: input.targetEnvironmentId,
-      });
-
+      // Every refusal foreseeable here comes before take over ends anyone's claude.
+      yield* peers
+        .checkMoveTarget(input.targetEnvironmentId)
+        .pipe(Effect.mapError(fromReplication));
       const moveId = Hex.encode(yield* random.randomBytes(16));
       const packageDir = path.join(config.stateDir, "claude-moves", "out", moveId);
       const cleanup = Effect.all([
@@ -266,6 +267,16 @@ const make = Effect.gen(function* () {
           packageDir,
           canonicalKey,
         }).pipe(withHost);
+        yield* release({
+          sessionsDir: path.join(located.layout.home, "sessions"),
+          sessionId: input.sessionId,
+          takeOver: input.takeOver,
+        });
+        const compact = yield* ClaudeMoveCompaction;
+        yield* compact({
+          sessionId: input.sessionId,
+          targetEnvironmentId: input.targetEnvironmentId,
+        });
         yield* Ref.update(pending, (current) =>
           new Map(current).set(moveId, {
             sessionId: input.sessionId,
@@ -288,6 +299,27 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /** Refuses when writing `neededBytes` below `directory` would eat into the copies' reserve. */
+  const keepReserve = Effect.fn("ClaudeSessionMove.keepReserve")(function* (
+    directory: string,
+    neededBytes: number,
+    what: string,
+  ) {
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.mapError(storage("Could not read settings.")),
+    );
+    const { reserveGiB } = settings.claudeSessionSync.replication;
+    const free = yield* freeBytesAt(directory).pipe(
+      Effect.mapError((error) => storage(error.message)(error)),
+    );
+    if (!claudeReplicaFitsReserve({ freeBytes: free, neededBytes, reserveGiB })) {
+      return yield* new ClaudeSessionMoveError({
+        reason: "storage",
+        message: `There is not room to ${what} here and keep ${reserveGiB} GB free, as Settings asks.`,
+      });
+    }
+  });
+
   /** Where the target clones a repository it has no checkout of, beside its worktrees. */
   const cloneFor = Effect.fn("ClaudeSessionMove.cloneFor")(
     function* (code: Extract<ClaudeSessionCodePackage, { readonly kind: "git" }>, base: string) {
@@ -298,7 +330,10 @@ const make = Effect.gen(function* () {
         target = path.join(base, name, `${name}-${suffix}`);
       }
       yield* fileSystem.makeDirectory(path.dirname(target), { recursive: true });
-      yield* git(path.dirname(target), ["clone", "--quiet", code.remoteUrl, target]).pipe(withHost);
+      yield* keepReserve(path.dirname(target), 0, "clone the repository");
+      yield* git(path.dirname(target), ["clone", "--quiet", "--", code.remoteUrl, target]).pipe(
+        withHost,
+      );
       return target;
     },
     Effect.catchTags({ PlatformError: storage("The repository could not be cloned here.") }),
@@ -306,10 +341,22 @@ const make = Effect.gen(function* () {
 
   const accept: ClaudeSessionMove["Service"]["accept"] = Effect.fn("ClaudeSessionMove.accept")(
     function* (offer) {
+      // The offer's body names the source; asking it, over this machine's own link, for a package
+      // under the offer's random id proves it began this move, as a claim's nonce does.
       const source = offer.sourceEnvironmentId;
+      if (!isClaudeMoveId(offer.moveId) || !isClaudeSessionId(offer.sessionId)) {
+        return yield* new ClaudeSessionMoveError({
+          reason: "refused",
+          message:
+            "The source named a move or session that is not one, so nothing was changed here.",
+        });
+      }
       const code = yield* peers
         .moveManifest({ environmentId: source, moveId: offer.moveId })
         .pipe(Effect.mapError(fromReplication));
+      if (code.kind === "git") {
+        yield* checkClaudeSessionCodePackage({ code, moveId: offer.moveId }).pipe(withHost);
+      }
       const staging = path.join(config.stateDir, "claude-moves", "in", offer.moveId);
       const warnings: Array<string> = [];
       let codeBytes = 0;
@@ -355,7 +402,17 @@ const make = Effect.gen(function* () {
           );
           return { cwd: folder, worktreePath: null, branch: null };
         }
-        for (const file of claudeSessionCodeFiles(code)) {
+        const files = claudeSessionCodeFiles(code);
+        yield* fileSystem
+          .makeDirectory(base, { recursive: true })
+          .pipe(Effect.mapError(storage(`Could not create ${base}.`)));
+        // The package is staged and then written again into the worktree.
+        yield* keepReserve(
+          base,
+          2 * files.reduce((total, file) => total + file.size, 0),
+          "take in the session's code",
+        );
+        for (const file of files) {
           yield* downloadVerifiedFile({
             source: {
               readChunk: (chunk) =>
@@ -410,9 +467,33 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const targets = links.list.pipe(
+    Effect.mapError(
+      (cause) =>
+        new ClaudeSessionMoveError({
+          reason: "storage",
+          message: "This environment's links could not be read.",
+          cause,
+        }),
+    ),
+    Effect.flatMap((linked) =>
+      Effect.filter(
+        linked.filter((link) => link.access === "full-access"),
+        (link) =>
+          peers.checkMoveTarget(link.environmentId).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          ),
+        { concurrency: 4 },
+      ),
+    ),
+    Effect.map((found) => found.map(({ environmentId, label }) => ({ environmentId, label }))),
+  );
+
   return ClaudeSessionMove.of({
     move,
     accept,
+    targets,
     packageOf: Effect.fn("ClaudeSessionMove.packageOf")(function* (moveId: string) {
       const found = (yield* Ref.get(pending)).get(moveId);
       return found === undefined ? undefined : { code: found.code, packageDir: found.packageDir };

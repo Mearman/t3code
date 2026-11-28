@@ -88,6 +88,13 @@ export class PeerClaudeSessions extends Context.Service<
       readonly environmentId: EnvironmentId;
       readonly claim: ClaudeSessionClaimInput;
     }) => Effect.Effect<ClaudeSessionClaimResult, ClaudeSessionReplicationError>;
+    /**
+     * Fails unless the peer takes moves (it advertises `claudeSessionMove`) over a full-access
+     * link, so a move stops before anything here changes.
+     */
+    readonly checkMoveTarget: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<void, ClaudeSessionReplicationError>;
     /** Asks the target of a move to take the session in; it may clone and fetch for a while. */
     readonly offerMove: (input: {
       readonly environmentId: EnvironmentId;
@@ -376,6 +383,15 @@ const make = Effect.gen(function* () {
 
   const moveOptions = { capability: "claudeSessionMove", timeout: MOVE_TIMEOUT } as const;
 
+  const checkMoveTarget = Effect.fn("PeerClaudeSessions.checkMoveTarget")(function* (
+    environmentId: EnvironmentId,
+  ) {
+    const resolved = yield* resolve(environmentId, "claudeSessionMove");
+    if (resolved.link.access !== "full-access") {
+      return yield* fromStatus(403, "full_access_required", resolved.link.label);
+    }
+  });
+
   const offerMove = Effect.fn("PeerClaudeSessions.offerMove")(function* (input: {
     readonly environmentId: EnvironmentId;
     readonly offer: ClaudeSessionMoveOffer;
@@ -426,6 +442,7 @@ const make = Effect.gen(function* () {
     manifest,
     readChunk,
     claim,
+    checkMoveTarget,
     offerMove,
     moveManifest,
     readMoveChunk,

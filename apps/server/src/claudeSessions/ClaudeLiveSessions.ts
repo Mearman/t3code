@@ -7,6 +7,7 @@ import * as Path from "effect/Path";
 
 import { type ClaudeProcessTableError, indexClaudeProcessTable } from "./ClaudeProcessTable.ts";
 import {
+  type ClaudeSessionHolder,
   externalClaudeSessionHolders,
   liveClaudeEntryPids,
   readClaudeSessionRegistry,
@@ -27,6 +28,13 @@ export class ClaudeLiveSessions extends Context.Service<
     readonly readOrFail: (
       sessionsDir: string,
     ) => Effect.Effect<ReadonlySet<string>, ClaudeProcessTableError>;
+    /**
+     * The holder of each session `readOrFail` returns, with whether its pid's start confirmed
+     * it, failing as it does.
+     */
+    readonly holders: (
+      sessionsDir: string,
+    ) => Effect.Effect<ReadonlyMap<string, ClaudeSessionHolder>, ClaudeProcessTableError>;
   }
 >()("t3/claudeSessions/ClaudeLiveSessions") {}
 
@@ -37,23 +45,24 @@ const make = Effect.gen(function* () {
   // Windows has no `ps lstart` to match `procStart` against; `startedAt` is checked instead.
   const matchStartTime = (yield* HostProcess.Platform) !== "win32";
 
-  const readOrFail = Effect.fn("ClaudeLiveSessions.readOrFail")(function* (sessionsDir: string) {
+  const holders = Effect.fn("ClaudeLiveSessions.holders")(function* (sessionsDir: string) {
     const registry = yield* readClaudeSessionRegistry(sessionsDir).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.orElseSucceed(() => ({ entries: [], unrecognised: [] })),
     );
-    if (registry.entries.length === 0) return new Set<string>();
+    if (registry.entries.length === 0) return new Map<string, ClaudeSessionHolder>();
     const processes = yield* spawned.readProcesses;
-    const holders = externalClaudeSessionHolders({
+    return externalClaudeSessionHolders({
       entries: registry.entries,
       entryPids: liveClaudeEntryPids(registry, indexClaudeProcessTable(processes), matchStartTime),
       processes,
       ownRootPids: yield* spawned.pids(sessionsDir),
       matchStartTime,
     });
-    return new Set(holders.keys());
   });
+  const readOrFail = (sessionsDir: string) =>
+    holders(sessionsDir).pipe(Effect.map((found): ReadonlySet<string> => new Set(found.keys())));
 
   // The send gate's rule for what sync shows: an unreadable table holds nothing.
   const read = (sessionsDir: string) =>
@@ -61,7 +70,7 @@ const make = Effect.gen(function* () {
       Effect.tapError((error) => Effect.logWarning("Could not read the process table", { error })),
       Effect.orElseSucceed(() => new Set<string>()),
     );
-  return ClaudeLiveSessions.of({ read, readOrFail });
+  return ClaudeLiveSessions.of({ read, readOrFail, holders });
 });
 
 export const layer = Layer.effect(ClaudeLiveSessions, make);

@@ -1,5 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off - node:crypto hashes session files for verified copies.
+// @effect-diagnostics nodeBuiltinImport:off - node:crypto hashes files; node:fs reads free space.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
 
 import { type ClaudeSessionFile, ClaudeSessionReplicationError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -248,6 +249,18 @@ export const claudeSessionWriteStaysInside = Effect.fn("claudeSessionWriteStaysI
     return realRoot === unlinkedRoot && target.startsWith(`${realRoot}${path.sep}`);
   },
 );
+
+/** Bytes free to this process on the disk holding `directory`. */
+export const freeBytesAt = (directory: string) =>
+  Effect.tryPromise({
+    try: () => NodeFSP.statfs(directory),
+    catch: (cause) =>
+      new ClaudeSessionReplicationError({
+        reason: "storage",
+        message: `Could not read the free space at ${directory}.`,
+        cause,
+      }),
+  }).pipe(Effect.map((stats) => Number(stats.bavail) * Number(stats.bsize)));
 
 /** Whether copying `neededBytes` leaves at least `reserveGiB` free of `freeBytes`. */
 export const claudeReplicaFitsReserve = (input: {

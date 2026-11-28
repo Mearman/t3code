@@ -1,6 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off - node:fs reports the free space a replica must leave.
-import * as NodeFSP from "node:fs/promises";
-
 import {
   CLAUDE_SESSION_FILE_CHUNK_BYTES,
   ClaudeSettings,
@@ -56,6 +53,7 @@ import {
   claudeProjectSlug,
   claudeReplicaBytesNeeded,
   claudeReplicaFitsReserve,
+  freeBytesAt,
   likeContaining,
   resolveServedClaudeSessionFile,
   claudeSessionFileAbsolutePath,
@@ -194,6 +192,8 @@ export class ClaudeSessionReplication extends Context.Service<
 
 const storage = (message: string) => (cause: unknown) =>
   new ClaudeSessionReplicationError({ reason: "storage", message, cause });
+
+const isReplicationError = Schema.is(ClaudeSessionReplicationError);
 
 const notFound = (sessionId: string) =>
   new ClaudeSessionReplicationError({
@@ -707,16 +707,11 @@ const make = Effect.gen(function* () {
     return { cwd, slug: cwd === null ? ownerSlug : claudeProjectSlug(cwd) };
   });
 
-  const freeBytes = (directory: string) =>
-    Effect.tryPromise({
-      try: () => NodeFSP.statfs(directory),
-      catch: storage(`Could not read the free space at ${directory}.`),
-    }).pipe(Effect.map((stats) => Number(stats.bavail) * Number(stats.bsize)));
-
   /**
    * Moves a copy's transcript and project sidecars into the project folder of `cwd` in the same
    * home, so a session moved with its code resumes from its new directory. Nothing moves when
-   * either destination is taken, and the sidecars move back when the transcript cannot follow.
+   * either destination is taken. The row follows the transcript before the sidecars move, so a
+   * failure then leaves only sidecars the next pass copies again, never a second transcript.
    */
   const relocate = Effect.fn("ClaudeSessionReplication.relocate")(
     function* (row: ClaudeSessionReplicas.ClaudeSessionReplicaRow, cwd: string) {
@@ -736,23 +731,15 @@ const make = Effect.gen(function* () {
         }
       }
       yield* fileSystem.makeDirectory(toDir, { recursive: true });
-      const sidecarsMoved = yield* fileSystem.exists(sidecarsFrom);
-      if (sidecarsMoved) yield* fileSystem.rename(sidecarsFrom, sidecarsTo);
-      yield* fileSystem
-        .rename(row.transcriptPath, transcriptPath)
-        .pipe(
-          Effect.onError(() =>
-            sidecarsMoved
-              ? fileSystem.rename(sidecarsTo, sidecarsFrom).pipe(Effect.ignore)
-              : Effect.void,
-          ),
-        );
+      yield* fileSystem.rename(row.transcriptPath, transcriptPath);
       const moved = { ...row, transcriptPath, cwd };
       yield* replicas.upsert(moved);
+      if (yield* fileSystem.exists(sidecarsFrom))
+        yield* fileSystem.rename(sidecarsFrom, sidecarsTo);
       return moved;
     },
     Effect.mapError((error) =>
-      error instanceof ClaudeSessionReplicationError
+      isReplicationError(error)
         ? error
         : storage("Could not move the copy into its new project folder.")(error),
     ),
@@ -947,7 +934,7 @@ const make = Effect.gen(function* () {
         transcriptBytes: remote.transcript.size,
         sidecars,
       });
-      const free = yield* freeBytes(layout.home);
+      const free = yield* freeBytesAt(layout.home);
       if (
         !claudeReplicaFitsReserve({
           freeBytes: free,
