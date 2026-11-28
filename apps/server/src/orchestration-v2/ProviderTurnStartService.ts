@@ -9,6 +9,7 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import {
   CommandId,
+  claudeBridgeSubmitsAsPerson,
   resolveClaudeHeldSessionSend,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   latestProviderTurnForAttempt,
@@ -2550,11 +2551,12 @@ export const layer: Layer.Layer<
           ...(run.heldSessionTerminalAccess === true
             ? { heldSessionTerminalAccess: true as const }
             : {}),
-          // Only a person's own choice of `adopt`, which needs terminal:operate to dispatch, goes
-          // to the holder as their words; a setting or the default submits it under the mod's name.
-          ...(run.heldSessionSend === "adopt" &&
-          message.createdBy === "user" &&
-          run.heldSessionTerminalAccess === true
+          // The words submitted are `providerMessage`'s, which a resend takes from the refused run.
+          ...(claudeBridgeSubmitsAsPerson({
+            choice: run.heldSessionSend,
+            terminalAccess: run.heldSessionTerminalAccess === true,
+            submittedBy: providerMessage.createdBy,
+          })
             ? { adoptAsUser: true as const }
             : {}),
         },

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import * as Schema from "effect/Schema";
 
-import { resolveClaudeHeldSessionSend } from "./claudeSessions.ts";
+import { claudeBridgeSubmitsAsPerson, resolveClaudeHeldSessionSend } from "./claudeSessions.ts";
 import { OrchestrationV2Run } from "./orchestrationV2.ts";
 import { ServerSettings } from "./settings.ts";
 
@@ -91,5 +91,24 @@ describe("a held-session choice from a newer server", () => {
     const knownChoice: unknown = { heldSessionSend: "fork" };
     expect(decodeRunChoice(unknownChoice)).toEqual({});
     expect(decodeRunChoice(knownChoice)).toEqual({ heldSessionSend: "fork" });
+  });
+});
+
+describe("claudeBridgeSubmitsAsPerson", () => {
+  it("submits as the person only words a person wrote, whoever pressed resend", () => {
+    expect(
+      claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, submittedBy: "user" }),
+    ).toBe(true);
+    for (const submittedBy of ["agent", "system"] as const) {
+      expect(claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: true, submittedBy })).toBe(
+        false,
+      );
+    }
+    expect(
+      claudeBridgeSubmitsAsPerson({ choice: "adopt", terminalAccess: false, submittedBy: "user" }),
+    ).toBe(false);
+    expect(
+      claudeBridgeSubmitsAsPerson({ choice: undefined, terminalAccess: true, submittedBy: "user" }),
+    ).toBe(false);
   });
 });
