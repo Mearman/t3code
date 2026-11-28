@@ -80,6 +80,7 @@ type PollOutcome =
         readonly item: Pending;
         readonly reason: string | undefined;
       }>;
+      readonly expired: ReadonlyArray<Pending>;
     })
   | Extract<ClaudeBridgePollAnswer, { readonly _tag: "refused" }>;
 
@@ -149,6 +150,14 @@ const make = Effect.gen(function* () {
 
   const isAttached = (session: Session | undefined, now: number) =>
     session !== undefined && now - session.lastPollAt <= Duration.toMillis(ATTACHED_GRACE);
+  // A command the mod has taken is timed from then, so a slow submit is not reported lost.
+  const isExpired = (item: Pending, now: number) =>
+    now - (item.firstHandedOutAt ?? item.queuedAt) >= Duration.toMillis(CLAUDE_BRIDGE_COMMAND_TTL);
+  const expiredFailure = (item: Pending): ClaudeBridgeFailure => ({
+    threadId: item.threadId,
+    runId: item.command.commandId,
+    reason: "the terminal's claude did not take it in time",
+  });
 
   // Drops expired prompts, and sessions no mod polls that hold nothing, reporting each prompt.
   const sweep = Effect.fn("ClaudeBridge.sweep")(function* () {
@@ -157,12 +166,7 @@ const make = Effect.gen(function* () {
       const gone: Array<Pending> = [];
       const next = new Map<string, Session>();
       for (const [sessionId, session] of current) {
-        const live = session.pending.filter(
-          // A command the mod has taken is timed from then, so a slow submit is not reported lost.
-          (item) =>
-            now - (item.firstHandedOutAt ?? item.queuedAt) <
-            Duration.toMillis(CLAUDE_BRIDGE_COMMAND_TTL),
-        );
+        const live = session.pending.filter((item) => !isExpired(item, now));
         gone.push(...session.pending.filter((item) => !live.includes(item)));
         if (live.length > 0 || isAttached(session, now)) {
           next.set(sessionId, { ...session, pending: live });
@@ -170,14 +174,7 @@ const make = Effect.gen(function* () {
       }
       return [gone, next] as const;
     });
-    yield* Queue.offerAll(
-      failures,
-      expired.map((item) => ({
-        threadId: item.threadId,
-        runId: item.command.commandId,
-        reason: "the terminal's claude did not take it in time",
-      })),
-    );
+    yield* Queue.offerAll(failures, expired.map(expiredFailure));
   });
 
   const attached: ClaudeBridge["Service"]["attached"] = Effect.fn("ClaudeBridge.attached")(
@@ -246,7 +243,12 @@ const make = Effect.gen(function* () {
           return [{ _tag: "refused", reason: "full" }, current];
         }
         const acks = new Map(request.acks.map((ack) => [ack.commandId, ack]));
-        const kept = (session?.pending ?? []).filter((item) => !acks.has(item.command.commandId));
+        // Acks first, so one in this poll never expires; then expiry, so nothing expired is handed out.
+        const unacked = (session?.pending ?? []).filter(
+          (item) => !acks.has(item.command.commandId),
+        );
+        const expired = unacked.filter((item) => isExpired(item, now));
+        const kept = unacked.filter((item) => !isExpired(item, now));
         const refused = (session?.pending ?? []).flatMap((item) => {
           const ack = acks.get(item.command.commandId);
           return ack === undefined || ack.submitted ? [] : [{ item, reason: ack.reason }];
@@ -269,22 +271,23 @@ const make = Effect.gen(function* () {
             pollerKey,
             commands: kept.filter(due).map((item) => item.command),
             refused,
+            expired,
           },
           new Map(current).set(request.sessionId, { pollerKey, lastPollAt: now, pending: handed }),
         ];
       },
     );
-    // Acknowledgements are applied first, so a command acknowledged in this poll never expires.
+    // Other sessions' prompts; this session's expired ones were taken out above.
     yield* sweep();
     if (outcome._tag === "refused") return outcome;
-    yield* Queue.offerAll(
-      failures,
-      outcome.refused.map(({ item, reason }) => ({
+    yield* Queue.offerAll(failures, [
+      ...outcome.refused.map(({ item, reason }) => ({
         threadId: item.threadId,
         runId: item.command.commandId,
         reason: reason ?? "the terminal's claude refused it",
       })),
-    );
+      ...outcome.expired.map(expiredFailure),
+    ]);
     return { _tag: "accepted", pollerKey: outcome.pollerKey, commands: outcome.commands };
   });
 
